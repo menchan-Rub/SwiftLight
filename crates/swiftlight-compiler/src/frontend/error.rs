@@ -1,91 +1,79 @@
-//! # SwiftLight コンパイラエラー処理
+//! # エラー処理モジュール
 //! 
-//! コンパイラのエラー処理機能を提供します。エラーの種類、位置情報、
-//! 詳細なメッセージなどを含むエラー型を定義します。
+//! SwiftLightコンパイラのエラー処理に関連する型定義を提供します。
+//! ソースコードの位置情報や、コンパイル時のエラーメッセージを管理します。
 
 use std::fmt;
-use std::error::Error;
+use std::path::Path;
 use std::result;
+use std::error::Error as StdError;
 
-use crate::frontend::diagnostic::{Diagnostic, DiagnosticLevel};
-
-/// SwiftLightコンパイラの結果型
+/// コンパイラの結果型
 pub type Result<T> = result::Result<T, CompilerError>;
 
-/// エラーの種類を表す列挙型
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ErrorKind {
-    /// 字句解析エラー
-    Lexical,
-    /// 構文解析エラー
-    Syntax,
-    /// 意味解析エラー
-    Semantic,
-    /// 型検査エラー
-    Type,
-    /// シンボル解決エラー
-    SymbolResolution,
-    /// コード生成エラー
-    CodeGeneration,
-    /// 最適化エラー
-    Optimization,
-    /// I/Oエラー
-    IO,
-    /// その他のエラー
-    Other,
-}
-
-impl fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ErrorKind::Lexical => write!(f, "字句解析エラー"),
-            ErrorKind::Syntax => write!(f, "構文解析エラー"),
-            ErrorKind::Semantic => write!(f, "意味解析エラー"),
-            ErrorKind::Type => write!(f, "型検査エラー"),
-            ErrorKind::SymbolResolution => write!(f, "シンボル解決エラー"),
-            ErrorKind::CodeGeneration => write!(f, "コード生成エラー"),
-            ErrorKind::Optimization => write!(f, "最適化エラー"),
-            ErrorKind::IO => write!(f, "I/Oエラー"),
-            ErrorKind::Other => write!(f, "その他のエラー"),
-        }
-    }
-}
-
-/// ソースコード内の位置情報
+/// ソースコード内の位置
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
     /// ファイル名
     pub file_name: String,
-    /// 行番号（1から始まる）
+    /// 行番号 (1から始まる)
     pub line: usize,
-    /// 列番号（1から始まる）
+    /// 列番号 (1から始まる)
     pub column: usize,
-    /// 開始位置（バイトオフセット）
-    pub start: usize,
-    /// 終了位置（バイトオフセット）
-    pub end: usize,
+    /// オフセット位置
+    pub offset: usize,
+    /// 領域の長さ
+    pub length: usize,
 }
 
 impl SourceLocation {
     /// 新しい位置情報を作成
-    pub fn new(file_name: impl Into<String>, line: usize, column: usize, start: usize, end: usize) -> Self {
+    pub fn new(file_name: &str, line: usize, column: usize, offset: usize, length: usize) -> Self {
         Self {
-            file_name: file_name.into(),
+            file_name: file_name.to_string(),
             line,
             column,
-            start,
-            end,
+            offset,
+            length,
         }
     }
     
-    /// 位置情報が未知であることを示す特殊な値
-    pub fn unknown() -> Self {
+    /// ファイルパスから位置情報を作成
+    pub fn from_path(path: &Path, line: usize, column: usize, offset: usize, length: usize) -> Self {
         Self {
-            file_name: "<unknown>".to_string(),
-            line: 0,
-            column: 0,
-            start: 0,
-            end: 0,
+            file_name: path.to_string_lossy().to_string(),
+            line,
+            column,
+            offset,
+            length,
+        }
+    }
+    
+    /// 単一の位置情報を作成
+    pub fn at_point(file_name: &str, line: usize, column: usize, offset: usize) -> Self {
+        Self::new(file_name, line, column, offset, 0)
+    }
+    
+    /// 隣接する2つの位置情報を結合
+    pub fn merge(&self, other: &SourceLocation) -> Self {
+        assert_eq!(self.file_name, other.file_name, "異なるファイルの位置情報は結合できません");
+        
+        let start_offset = self.offset.min(other.offset);
+        let end_offset = (self.offset + self.length).max(other.offset + other.length);
+        
+        let (start_line, start_column) = 
+            if self.offset <= other.offset {
+                (self.line, self.column)
+            } else {
+                (other.line, other.column)
+            };
+        
+        Self {
+            file_name: self.file_name.clone(),
+            line: start_line,
+            column: start_column,
+            offset: start_offset,
+            length: end_offset - start_offset,
         }
     }
 }
@@ -96,124 +84,331 @@ impl fmt::Display for SourceLocation {
     }
 }
 
-/// コンパイラエラー型
+/// エラーの種類
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// 字句解析エラー
+    Lexical,
+    /// 構文解析エラー
+    Syntax,
+    /// 名前解決エラー
+    NameResolution,
+    /// 型チェックエラー
+    Type,
+    /// コード生成エラー
+    CodeGeneration,
+    /// 入出力エラー
+    IO,
+    /// その他の内部エラー
+    Internal,
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorKind::Lexical => write!(f, "字句解析エラー"),
+            ErrorKind::Syntax => write!(f, "構文解析エラー"),
+            ErrorKind::NameResolution => write!(f, "名前解決エラー"),
+            ErrorKind::Type => write!(f, "型エラー"),
+            ErrorKind::CodeGeneration => write!(f, "コード生成エラー"),
+            ErrorKind::IO => write!(f, "入出力エラー"),
+            ErrorKind::Internal => write!(f, "内部エラー"),
+        }
+    }
+}
+
+/// コンパイラエラー
 #[derive(Debug, Clone)]
 pub struct CompilerError {
     /// エラーの種類
     pub kind: ErrorKind,
     /// エラーメッセージ
     pub message: String,
-    /// ソースコード内の位置情報（オプション）
+    /// エラーの発生位置
     pub location: Option<SourceLocation>,
-    /// 原因となったエラー（オプション）
-    pub cause: Option<Box<CompilerError>>,
-    /// 関連する診断情報
-    pub diagnostics: Vec<Diagnostic>,
+    /// 詳細情報（追加メッセージなど）
+    pub details: Option<String>,
+    /// 関連するエラー（派生エラーやヒントなど）
+    pub related: Vec<RelatedError>,
 }
 
 impl CompilerError {
     /// 新しいコンパイラエラーを作成
-    pub fn new(kind: ErrorKind, message: impl Into<String>, location: Option<SourceLocation>) -> Self {
+    pub fn new(kind: ErrorKind, message: String, location: Option<SourceLocation>, 
+              details: Option<String>) -> Self {
         Self {
             kind,
-            message: message.into(),
+            message,
             location,
-            cause: None,
-            diagnostics: Vec::new(),
+            details,
+            related: Vec::new(),
         }
     }
     
-    /// 原因エラーを設定
-    pub fn with_cause(mut self, cause: CompilerError) -> Self {
-        self.cause = Some(Box::new(cause));
-        self
+    /// 字句解析エラーを作成
+    pub fn lexical_error(message: impl Into<String>, location: SourceLocation) -> Self {
+        Self::new(
+            ErrorKind::Lexical,
+            message.into(),
+            Some(location),
+            None,
+        )
     }
     
-    /// 診断情報を追加
-    pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) {
-        self.diagnostics.push(diagnostic);
+    /// 構文解析エラーを作成
+    pub fn syntax_error(message: impl Into<String>, location: SourceLocation) -> Self {
+        Self::new(
+            ErrorKind::Syntax,
+            message.into(),
+            Some(location),
+            None,
+        )
     }
     
-    /// 診断情報を設定して自身を返す
-    pub fn with_diagnostic(mut self, diagnostic: Diagnostic) -> Self {
-        self.add_diagnostic(diagnostic);
-        self
+    /// 名前解決エラーを作成
+    pub fn name_resolution_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
+        Self::new(
+            ErrorKind::NameResolution,
+            message.into(),
+            location,
+            None,
+        )
     }
     
-    /// 字句解析エラーを作成するヘルパーメソッド
-    pub fn lexical_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
-        Self::new(ErrorKind::Lexical, message, location)
-    }
-    
-    /// 構文解析エラーを作成するヘルパーメソッド
-    pub fn syntax_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
-        Self::new(ErrorKind::Syntax, message, location)
-    }
-    
-    /// 意味解析エラーを作成するヘルパーメソッド
-    pub fn semantic_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
-        Self::new(ErrorKind::Semantic, message, location)
-    }
-    
-    /// 型エラーを作成するヘルパーメソッド
+    /// 型チェックエラーを作成
     pub fn type_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
-        Self::new(ErrorKind::Type, message, location)
+        Self::new(
+            ErrorKind::Type,
+            message.into(),
+            location,
+            None,
+        )
+    }
+    
+    /// コード生成エラーを作成
+    pub fn code_generation_error(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
+        Self::new(
+            ErrorKind::CodeGeneration,
+            message.into(),
+            location,
+            None,
+        )
+    }
+    
+    /// 入出力エラーを作成
+    pub fn io_error(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorKind::IO,
+            message.into(),
+            None,
+            None,
+        )
+    }
+    
+    /// 内部エラーを作成
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorKind::Internal,
+            message.into(),
+            None,
+            None,
+        )
+    }
+    
+    /// 警告を作成
+    pub fn warning(message: impl Into<String>, location: Option<SourceLocation>) -> Self {
+        let mut error = Self::new(
+            ErrorKind::Internal, // 仮の種類
+            message.into(),
+            location,
+            None,
+        );
+        error.related.push(RelatedError::Warning {
+            message: error.message.clone(),
+            location: error.location.clone(),
+        });
+        error
+    }
+    
+    /// 詳細情報を追加
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+    
+    /// ヒント（提案）を追加
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.related.push(RelatedError::Hint {
+            message: hint.into(),
+            location: None,
+        });
+        self
+    }
+    
+    /// 関連エラーを追加
+    pub fn with_related(mut self, related: RelatedError) -> Self {
+        self.related.push(related);
+        self
+    }
+    
+    /// 型エラーに対する型情報を追加
+    pub fn with_type_info(mut self, expected: &str, found: &str) -> Self {
+        self.details = Some(format!("期待された型: {}, 実際の型: {}", expected, found));
+        self
     }
 }
 
 impl fmt::Display for CompilerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref loc) = self.location {
-            write!(f, "{} at {}: {}", self.kind, loc, self.message)?;
+        // エラーの基本情報
+        if let Some(location) = &self.location {
+            write!(f, "{} at {}: {}", self.kind, location, self.message)?;
         } else {
             write!(f, "{}: {}", self.kind, self.message)?;
         }
         
-        // 原因エラーがある場合は表示
-        if let Some(ref cause) = self.cause {
-            write!(f, "\n原因: {}", cause)?;
+        // 詳細情報があれば追加
+        if let Some(details) = &self.details {
+            write!(f, "\n  詳細: {}", details)?;
+        }
+        
+        // 関連エラーがあれば追加
+        for related in &self.related {
+            write!(f, "\n  {}", related)?;
         }
         
         Ok(())
     }
 }
 
-impl Error for CompilerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.cause.as_ref().map(|e| e.as_ref() as &(dyn Error + 'static))
+impl StdError for CompilerError {}
+
+/// 関連エラー（ヒントやサブエラーなど）
+#[derive(Debug, Clone)]
+pub enum RelatedError {
+    /// ヒント（対処方法など）
+    Hint {
+        /// ヒントのメッセージ
+        message: String,
+        /// 関連する位置
+        location: Option<SourceLocation>,
+    },
+    /// メモ（補足情報）
+    Note {
+        /// メモのメッセージ
+        message: String,
+        /// 関連する位置
+        location: Option<SourceLocation>,
+    },
+    /// 警告
+    Warning {
+        /// 警告メッセージ
+        message: String,
+        /// 関連する位置
+        location: Option<SourceLocation>,
+    },
+    /// 関連エラー
+    Related {
+        /// エラーメッセージ
+        message: String,
+        /// 関連する位置
+        location: Option<SourceLocation>,
+    },
+}
+
+impl fmt::Display for RelatedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RelatedError::Hint { message, location } => {
+                if let Some(loc) = location {
+                    write!(f, "ヒント at {}: {}", loc, message)
+                } else {
+                    write!(f, "ヒント: {}", message)
+                }
+            },
+            RelatedError::Note { message, location } => {
+                if let Some(loc) = location {
+                    write!(f, "メモ at {}: {}", loc, message)
+                } else {
+                    write!(f, "メモ: {}", message)
+                }
+            },
+            RelatedError::Warning { message, location } => {
+                if let Some(loc) = location {
+                    write!(f, "警告 at {}: {}", loc, message)
+                } else {
+                    write!(f, "警告: {}", message)
+                }
+            },
+            RelatedError::Related { message, location } => {
+                if let Some(loc) = location {
+                    write!(f, "関連 at {}: {}", loc, message)
+                } else {
+                    write!(f, "関連: {}", message)
+                }
+            },
+        }
     }
 }
 
-/// テスト
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
-    fn test_error_creation() {
-        let location = SourceLocation::new("test.swl", 10, 5, 100, 105);
-        let error = CompilerError::syntax_error("不正な式です", Some(location.clone()));
+    fn test_source_location() {
+        let loc = SourceLocation::new("test.swl", 10, 5, 100, 10);
+        assert_eq!(loc.file_name, "test.swl");
+        assert_eq!(loc.line, 10);
+        assert_eq!(loc.column, 5);
+        assert_eq!(loc.offset, 100);
+        assert_eq!(loc.length, 10);
         
-        assert_eq!(error.kind, ErrorKind::Syntax);
-        assert_eq!(error.message, "不正な式です");
-        assert_eq!(error.location, Some(location));
+        assert_eq!(loc.to_string(), "test.swl:10:5");
     }
     
     #[test]
-    fn test_error_with_cause() {
-        let cause = CompilerError::lexical_error("不正な文字です", None);
-        let error = CompilerError::syntax_error("式の解析に失敗しました", None)
-            .with_cause(cause);
+    fn test_source_location_merge() {
+        let loc1 = SourceLocation::new("test.swl", 10, 5, 100, 10);
+        let loc2 = SourceLocation::new("test.swl", 10, 15, 110, 10);
         
-        assert!(error.cause.is_some());
-        assert_eq!(error.cause.unwrap().kind, ErrorKind::Lexical);
+        let merged = loc1.merge(&loc2);
+        assert_eq!(merged.file_name, "test.swl");
+        assert_eq!(merged.line, 10);
+        assert_eq!(merged.column, 5);
+        assert_eq!(merged.offset, 100);
+        assert_eq!(merged.length, 20);
+    }
+    
+    #[test]
+    fn test_compiler_error() {
+        let location = SourceLocation::new("test.swl", 10, 5, 100, 10);
+        let error = CompilerError::syntax_error("予期しないトークンです", location.clone());
+        
+        assert_eq!(error.kind, ErrorKind::Syntax);
+        assert_eq!(error.message, "予期しないトークンです");
+        assert_eq!(error.location, Some(location));
+        
+        // 追加情報付きのエラー
+        let error = CompilerError::type_error("型が一致しません", Some(location.clone()))
+            .with_details("int型とstring型は互換性がありません")
+            .with_hint("string型に明示的にキャストしてください");
+        
+        assert_eq!(error.kind, ErrorKind::Type);
+        assert_eq!(error.message, "型が一致しません");
+        assert_eq!(error.location, Some(location));
+        assert_eq!(error.details, Some("int型とstring型は互換性がありません".to_string()));
+        assert_eq!(error.related.len(), 1);
     }
     
     #[test]
     fn test_error_display() {
-        let location = SourceLocation::new("test.swl", 10, 5, 100, 105);
-        let error = CompilerError::syntax_error("不正な式です", Some(location));
+        let location = SourceLocation::new("test.swl", 10, 5, 100, 10);
+        let error = CompilerError::syntax_error("予期しないトークンです", location);
         
-        assert_eq!(format!("{}", error), "構文解析エラー at test.swl:10:5: 不正な式です");
+        let error_str = format!("{}", error);
+        assert!(error_str.contains("構文解析エラー"));
+        assert!(error_str.contains("test.swl:10:5"));
+        assert!(error_str.contains("予期しないトークンです"));
     }
 } 

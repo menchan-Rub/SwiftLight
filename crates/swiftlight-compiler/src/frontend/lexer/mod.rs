@@ -1,20 +1,17 @@
-//! # 字句解析器
+//! # レキサー（字句解析器）
 //! 
-//! SwiftLight言語のソースコードを解析し、トークンの列に変換する字句解析器を提供します。
-//! 字句解析はコンパイラフロントエンドの最初の段階として、ソースコードを構文解析可能な
-//! トークンに分割します。
+//! SwiftLight言語のソースコードを字句解析し、トークン列に変換するモジュールです。
 
-use std::iter::Peekable;
+use std::iter::{Iterator, Peekable};
 use std::str::Chars;
 
-use crate::frontend::error::{CompilerError, ErrorKind, Result, SourceLocation};
-pub use self::token::{Token, TokenKind};
-use self::unicode;
+use crate::frontend::error::{CompilerError, Result, SourceLocation};
+use token::Token;
+use token::TokenKind;
 
 pub mod token;
-pub mod unicode;
 
-/// SwiftLight言語の字句解析器
+/// レキサー
 pub struct Lexer<'a> {
     /// ソースコード
     source: &'a str,
@@ -39,10 +36,12 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    /// 新しい字句解析器を作成
+    /// 新しいレキサーを作成
     pub fn new(source: &'a str, file_name: &str) -> Self {
+        let mut line_starts = Vec::new();
+        line_starts.push(0); // 最初の行の開始位置
+        
         // 行の開始位置を計算
-        let mut line_starts = vec![0]; // 最初の行は0から始まる
         for (i, c) in source.char_indices() {
             if c == '\n' {
                 line_starts.push(i + 1);
@@ -51,7 +50,7 @@ impl<'a> Lexer<'a> {
         
         Self {
             source,
-            file_name: file_name.to_owned(),
+            file_name: file_name.to_string(),
             chars: source.chars().peekable(),
             position: 0,
             line: 1,
@@ -65,440 +64,622 @@ impl<'a> Lexer<'a> {
     
     /// 次のトークンを取得
     pub fn next_token(&mut self) -> Result<Token> {
-        // 空白文字をスキップ
-        self.skip_whitespace();
-        
         // 現在位置を保存
         self.start_position = self.position;
         self.start_line = self.line;
         self.start_column = self.column;
         
-        // ファイル終端に達した場合
+        // 空白文字をスキップ
+        self.skip_whitespace();
+        
+        // ファイル終端チェック
         if self.is_at_end() {
-            return Ok(self.make_token(TokenKind::Eof));
+            return Ok(self.make_token(TokenKind::EOF));
         }
         
-        // 次の文字を取得
+        // 文字を取得して、トークン解析
         let c = self.advance();
         
-        // 文字種別に応じたトークン生成
+        // 識別子、キーワード
+        if is_alpha(c) {
+            return self.identifier(c);
+        }
+        
+        // 数値
+        if is_digit(c) {
+            return self.number(c);
+        }
+        
+        // 各種トークン解析
         match c {
-            // 識別子または予約語
-            c if unicode::is_identifier_start(c) => self.identifier(c),
-            
-            // 数値リテラル
-            c if unicode::is_digit_start(c) => self.number(c),
-            
-            // 文字列リテラル
-            '"' => self.string(),
-            
-            // 文字リテラル
-            '\'' => self.char_literal(),
-            
-            // 記号と演算子
-            '+' => self.match_char('=', TokenKind::PlusEqual, TokenKind::Plus),
-            '-' => self.match_two_chars('=', TokenKind::MinusEqual, '>', TokenKind::Arrow, TokenKind::Minus),
-            '*' => self.match_two_chars('=', TokenKind::StarEqual, '*', TokenKind::DoubleStar, TokenKind::Star),
-            '/' => {
-                if self.match_char('/', true) {
-                    // 行コメント
-                    self.line_comment()
-                } else if self.match_char('*', true) {
-                    // ブロックコメント
-                    self.block_comment()
-                } else {
-                    self.match_char('=', TokenKind::SlashEqual, TokenKind::Slash)
-                }
-            },
-            '%' => self.match_char('=', TokenKind::PercentEqual, TokenKind::Percent),
-            
-            '=' => self.match_two_chars('=', TokenKind::EqualEqual, '>', TokenKind::FatArrow, TokenKind::Equal),
-            '!' => self.match_char('=', TokenKind::BangEqual, TokenKind::Bang),
-            '<' => self.match_three_chars('=', TokenKind::LessEqual, '<', TokenKind::LessLess, '<', TokenKind::LessLess, TokenKind::Less),
-            '>' => self.match_three_chars('=', TokenKind::GreaterEqual, '>', TokenKind::GreaterGreater, '>', TokenKind::GreaterGreater, TokenKind::Greater),
-            
-            '&' => self.match_two_chars('&', TokenKind::AmpersandAmpersand, '=', TokenKind::AmpersandEqual, TokenKind::Ampersand),
-            '|' => self.match_two_chars('|', TokenKind::PipePipe, '=', TokenKind::PipeEqual, TokenKind::Pipe),
-            '^' => self.match_char('=', TokenKind::CaretEqual, TokenKind::Caret),
-            '~' => Ok(self.make_token(TokenKind::Tilde)),
-            
-            // 区切り記号
-            ';' => Ok(self.make_token(TokenKind::Semicolon)),
-            ':' => self.match_char(':', TokenKind::DoubleColon, TokenKind::Colon),
-            ',' => Ok(self.make_token(TokenKind::Comma)),
-            '.' => self.dot_token(),
-            '?' => Ok(self.make_token(TokenKind::Question)),
-            
-            // 括弧
+            // 単一文字トークン
             '(' => Ok(self.make_token(TokenKind::LeftParen)),
             ')' => Ok(self.make_token(TokenKind::RightParen)),
             '{' => Ok(self.make_token(TokenKind::LeftBrace)),
             '}' => Ok(self.make_token(TokenKind::RightBrace)),
             '[' => Ok(self.make_token(TokenKind::LeftBracket)),
             ']' => Ok(self.make_token(TokenKind::RightBracket)),
+            ',' => Ok(self.make_token(TokenKind::Comma)),
+            ';' => Ok(self.make_token(TokenKind::Semicolon)),
+            ':' => Ok(self.make_token(TokenKind::Colon)),
+            '@' => Ok(self.make_token(TokenKind::At)),
+            
+            // 複合トークン
+            '.' => self.dot_token(),
+            
+            // 演算子
+            '+' => {
+                if self.match_char('+') {
+                    Ok(self.make_token(TokenKind::PlusPlus))
+                } else if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::PlusEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Plus))
+                }
+            },
+            '-' => {
+                if self.match_char('-') {
+                    Ok(self.make_token(TokenKind::MinusMinus))
+                } else if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::MinusEqual))
+                } else if self.match_char('>') {
+                    Ok(self.make_token(TokenKind::Arrow))
+                } else {
+                    Ok(self.make_token(TokenKind::Minus))
+                }
+            },
+            '*' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::StarEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Star))
+                }
+            },
+            '/' => {
+                if self.match_char('/') {
+                    self.line_comment()
+                } else if self.match_char('*') {
+                    self.block_comment()
+                } else if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::SlashEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Slash))
+                }
+            },
+            '%' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::PercentEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Percent))
+                }
+            },
+            
+            // 比較演算子
+            '=' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::EqualEqual))
+                } else if self.match_char('>') {
+                    Ok(self.make_token(TokenKind::FatArrow))
+                } else {
+                    Ok(self.make_token(TokenKind::Equal))
+                }
+            },
+            '!' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::BangEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Bang))
+                }
+            },
+            '<' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::LessEqual))
+                } else if self.match_char('<') {
+                    if self.match_char('=') {
+                        Ok(self.make_token(TokenKind::LeftShiftEqual))
+                    } else {
+                        Ok(self.make_token(TokenKind::LeftShift))
+                    }
+                } else {
+                    Ok(self.make_token(TokenKind::Less))
+                }
+            },
+            '>' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::GreaterEqual))
+                } else if self.match_char('>') {
+                    if self.match_char('=') {
+                        Ok(self.make_token(TokenKind::RightShiftEqual))
+                    } else {
+                        Ok(self.make_token(TokenKind::RightShift))
+                    }
+                } else {
+                    Ok(self.make_token(TokenKind::Greater))
+                }
+            },
+            
+            // ビット演算子
+            '&' => {
+                if self.match_char('&') {
+                    Ok(self.make_token(TokenKind::AmpersandAmpersand))
+                } else if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::AmpersandEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Ampersand))
+                }
+            },
+            '|' => {
+                if self.match_char('|') {
+                    Ok(self.make_token(TokenKind::PipePipe))
+                } else if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::PipeEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Pipe))
+                }
+            },
+            '^' => {
+                if self.match_char('=') {
+                    Ok(self.make_token(TokenKind::CaretEqual))
+                } else {
+                    Ok(self.make_token(TokenKind::Caret))
+                }
+            },
+            '~' => Ok(self.make_token(TokenKind::Tilde)),
+            
+            // 特殊文字
+            '?' => Ok(self.make_token(TokenKind::QuestionMark)),
+            
+            // 文字列、文字リテラル
+            '"' => self.string(),
+            '\'' => self.char_literal(),
             
             // 不明な文字
-            c => {
-                let error = CompilerError::lexical_error(
-                    format!("不明な文字です: '{}'", unicode::escape_char(c)),
-                    Some(self.current_location()),
-                );
-                
-                Ok(self.make_token(TokenKind::Unknown(c)))
-            }
+            _ => Err(CompilerError::lexical_error(
+                format!("不明な文字です: '{}'", c),
+                self.current_location(),
+            )),
         }
     }
     
-    /// ドット（.）から始まるトークンを処理
+    /// ドット関連のトークン（., .., ..=）
     fn dot_token(&mut self) -> Result<Token> {
-        if self.match_char('.', true) {
-            if self.match_char('.', true) {
-                // 省略記号 ...
-                Ok(self.make_token(TokenKind::Ellipsis))
+        if self.match_char('.') {
+            if self.match_char('=') {
+                Ok(self.make_token(TokenKind::RangeInclusive))
             } else {
-                // 範囲演算子 .. は現在サポート外
-                let error = CompilerError::lexical_error(
-                    "範囲演算子はサポートされていません",
-                    Some(self.current_location()),
-                );
-                Ok(self.make_token(TokenKind::Unknown('.')))
+                Ok(self.make_token(TokenKind::Range))
             }
         } else {
-            // 単なるドット .
             Ok(self.make_token(TokenKind::Dot))
         }
     }
     
-    /// 識別子または予約語の処理
+    /// 識別子またはキーワードの解析
     fn identifier(&mut self, first: char) -> Result<Token> {
         let mut ident = first.to_string();
         
-        // 識別子の2文字目以降を読み込む
+        // 2文字目以降を解析
         while let Some(&c) = self.chars.peek() {
-            if !unicode::is_identifier_continue(c) {
+            if is_alpha(c) || is_digit(c) || c == '_' {
+                ident.push(self.advance());
+            } else {
                 break;
             }
-            
-            ident.push(c);
-            self.advance();
         }
         
-        // 予約語かどうかチェック
-        let kind = TokenKind::from_keyword(&ident);
-        Ok(self.make_token(kind))
+        // キーワードかどうかを判定
+        let kind = match ident.as_str() {
+            "let" => TokenKind::KeywordLet,
+            "var" => TokenKind::KeywordVar,
+            "const" => TokenKind::KeywordConst,
+            "fn" => TokenKind::KeywordFn,
+            "return" => TokenKind::KeywordReturn,
+            "if" => TokenKind::KeywordIf,
+            "else" => TokenKind::KeywordElse,
+            "while" => TokenKind::KeywordWhile,
+            "for" => TokenKind::KeywordFor,
+            "in" => TokenKind::KeywordIn,
+            "break" => TokenKind::KeywordBreak,
+            "continue" => TokenKind::KeywordContinue,
+            "struct" => TokenKind::KeywordStruct,
+            "enum" => TokenKind::KeywordEnum,
+            "trait" => TokenKind::KeywordTrait,
+            "impl" => TokenKind::KeywordImpl,
+            "type" => TokenKind::KeywordType,
+            "true" => TokenKind::KeywordTrue,
+            "false" => TokenKind::KeywordFalse,
+            "nil" => TokenKind::KeywordNil,
+            "self" => TokenKind::KeywordSelf,
+            "super" => TokenKind::KeywordSuper,
+            "pub" => TokenKind::KeywordPub,
+            "as" => TokenKind::KeywordAs,
+            "match" => TokenKind::KeywordMatch,
+            "import" => TokenKind::KeywordImport,
+            "module" => TokenKind::KeywordModule,
+            "async" => TokenKind::KeywordAsync,
+            "await" => TokenKind::KeywordAwait,
+            "try" => TokenKind::KeywordTry,
+            "catch" => TokenKind::KeywordCatch,
+            "throw" => TokenKind::KeywordThrow,
+            "mut" => TokenKind::KeywordMut,
+            "unsafe" => TokenKind::KeywordUnsafe,
+            "where" => TokenKind::KeywordWhere,
+            _ => TokenKind::Identifier,
+        };
+        
+        Ok(Token::new(kind, ident, self.current_location()))
     }
     
-    /// 数値リテラルの処理
+    /// 数値リテラルの解析
     fn number(&mut self, first: char) -> Result<Token> {
-        let mut num = first.to_string();
+        let mut number = first.to_string();
         let mut is_float = false;
         
-        // 接頭辞による基数の判定
-        if first == '0' && self.chars.peek().copied() == Some('x') {
-            // 16進数
-            num.push('x');
-            self.advance(); // 'x'を消費
-            
-            // 16進数の桁を読み込む
-            while let Some(&c) = self.chars.peek() {
-                if !unicode::is_hex_digit(c) {
-                    break;
-                }
-                
-                num.push(c);
-                self.advance();
-            }
-            
-            return Ok(self.make_token(TokenKind::IntLiteral(num)));
-        } else if first == '0' && self.chars.peek().copied() == Some('o') {
-            // 8進数
-            num.push('o');
-            self.advance(); // 'o'を消費
-            
-            // 8進数の桁を読み込む
-            while let Some(&c) = self.chars.peek() {
-                if !unicode::is_octal_digit(c) {
-                    break;
-                }
-                
-                num.push(c);
-                self.advance();
-            }
-            
-            return Ok(self.make_token(TokenKind::IntLiteral(num)));
-        } else if first == '0' && self.chars.peek().copied() == Some('b') {
-            // 2進数
-            num.push('b');
-            self.advance(); // 'b'を消費
-            
-            // 2進数の桁を読み込む
-            while let Some(&c) = self.chars.peek() {
-                if !unicode::is_binary_digit(c) {
-                    break;
-                }
-                
-                num.push(c);
-                self.advance();
-            }
-            
-            return Ok(self.make_token(TokenKind::IntLiteral(num)));
-        }
-        
-        // 10進数の処理
+        // 整数部分
         while let Some(&c) = self.chars.peek() {
-            if c.is_ascii_digit() {
-                // 数字
-                num.push(c);
+            if is_digit(c) {
+                number.push(self.advance());
+            } else if c == '_' {
+                // 数値の可読性のためのアンダースコアはスキップ
                 self.advance();
-            } else if c == '.' && !is_float {
-                // 小数点（初回のみ）
-                if let Some(&next) = self.chars.clone().nth(1) {
-                    if next.is_ascii_digit() {
-                        num.push(c);
-                        self.advance();
-                        is_float = true;
-                    } else {
-                        // 次が数字でない場合は小数点として扱わない（ドット演算子など）
-                        break;
-                    }
-                } else {
-                    // 小数点の後に文字がない場合
-                    break;
-                }
-            } else if c == 'e' || c == 'E' {
-                // 指数表記
-                let mut peek = self.chars.clone();
-                peek.next(); // 'e'または'E'をスキップ
-                
-                let has_sign = peek.next().map_or(false, |c| c == '+' || c == '-');
-                let has_digit = if has_sign {
-                    peek.next().map_or(false, |c| c.is_ascii_digit())
-                } else {
-                    peek.next().map_or(false, |c| c.is_ascii_digit())
-                };
-                
-                if has_digit {
-                    // 有効な指数表記
-                    num.push(c);
-                    self.advance(); // 'e'または'E'を消費
-                    
-                    if has_sign {
-                        num.push(self.advance()); // '+'または'-'を消費
-                    }
-                    
-                    // 指数の数字を読み込む
-                    while let Some(&c) = self.chars.peek() {
-                        if !c.is_ascii_digit() {
-                            break;
-                        }
-                        
-                        num.push(c);
-                        self.advance();
-                    }
-                    
-                    is_float = true;
-                } else {
-                    // 無効な指数表記
-                    break;
-                }
             } else {
-                // 数値以外の文字
                 break;
             }
         }
         
-        if is_float {
-            Ok(self.make_token(TokenKind::FloatLiteral(num)))
-        } else {
-            Ok(self.make_token(TokenKind::IntLiteral(num)))
+        // 小数部分
+        if let Some(&c) = self.chars.peek() {
+            if c == '.' {
+                // 次の文字もピークしてドットドット演算子（..）と区別
+                if let Some(&next) = self.chars.clone().nth(1) {
+                    if is_digit(next) {
+                        is_float = true;
+                        number.push(self.advance()); // '.' を追加
+                        
+                        // 小数点以下の数字を解析
+                        while let Some(&c) = self.chars.peek() {
+                            if is_digit(c) {
+                                number.push(self.advance());
+                            } else if c == '_' {
+                                self.advance(); // アンダースコアはスキップ
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
+        
+        // 指数部分 (1e10, 1.5e-3 など)
+        if let Some(&c) = self.chars.peek() {
+            if c == 'e' || c == 'E' {
+                let mut has_exponent = false;
+                
+                // 次の文字をチェック
+                if let Some(&next) = self.chars.clone().nth(1) {
+                    if is_digit(next) || next == '+' || next == '-' {
+                        is_float = true;
+                        has_exponent = true;
+                        number.push(self.advance()); // 'e' または 'E' を追加
+                        
+                        // 符号があれば追加
+                        if let Some(&c) = self.chars.peek() {
+                            if c == '+' || c == '-' {
+                                number.push(self.advance());
+                            }
+                        }
+                        
+                        // 指数の数字を解析
+                        let mut has_digit = false;
+                        while let Some(&c) = self.chars.peek() {
+                            if is_digit(c) {
+                                number.push(self.advance());
+                                has_digit = true;
+                            } else if c == '_' {
+                                self.advance(); // アンダースコアはスキップ
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        // 指数部分に数字がない場合はエラー
+                        if !has_digit {
+                            return Err(CompilerError::lexical_error(
+                                "指数部分に数字がありません",
+                                self.current_location(),
+                            ));
+                        }
+                    }
+                }
+                
+                // 指数記法でない場合は、eは識別子の一部として扱う
+                if !has_exponent {
+                    // 後続の文字が識別子の一部であれば、数値リテラルは終了
+                    break;
+                }
+            }
+        }
+        
+        // 型サフィックス (i32, f64 など)
+        let mut has_suffix = false;
+        if let Some(&c) = self.chars.peek() {
+            if is_alpha(c) {
+                // 型サフィックスの開始
+                let suffix_start = self.position;
+                
+                // サフィックスを収集
+                let mut suffix = String::new();
+                while let Some(&c) = self.chars.peek() {
+                    if is_alpha(c) || is_digit(c) {
+                        suffix.push(self.advance());
+                    } else {
+                        break;
+                    }
+                }
+                
+                // 有効な型サフィックスかチェック
+                match suffix.as_str() {
+                    // 整数型サフィックス
+                    "i8" | "i16" | "i32" | "i64" | "i128" |
+                    "u8" | "u16" | "u32" | "u64" | "u128" => {
+                        has_suffix = true;
+                        // サフィックスは数値リテラルの一部として扱わない
+                    },
+                    // 浮動小数点型サフィックス
+                    "f32" | "f64" => {
+                        has_suffix = true;
+                        is_float = true;
+                        // サフィックスは数値リテラルの一部として扱わない
+                    },
+                    _ => {
+                        // 無効なサフィックスの場合は、数値リテラルの終了とし、
+                        // サフィックスは別の識別子として扱う
+                        // 位置を戻す
+                        self.position = suffix_start;
+                    }
+                }
+            }
+        }
+        
+        // トークンの種類を決定
+        let kind = if is_float {
+            TokenKind::FloatLiteral
+        } else {
+            TokenKind::IntLiteral
+        };
+        
+        Ok(Token::new(kind, number, self.current_location()))
     }
     
-    /// 文字列リテラルの処理
+    /// 文字列リテラルの解析
     fn string(&mut self) -> Result<Token> {
-        let mut value = String::new();
-        let mut terminated = false;
+        let mut string = String::new();
+        let mut raw_lexeme = String::from("\"");
         
         while let Some(&c) = self.chars.peek() {
             if c == '"' {
-                self.advance(); // 閉じ引用符を消費
-                terminated = true;
+                // 終端の引用符
+                raw_lexeme.push(self.advance());
                 break;
             } else if c == '\\' {
                 // エスケープシーケンス
-                self.advance(); // バックスラッシュを消費
+                raw_lexeme.push(self.advance()); // バックスラッシュ
                 
                 if let Some(escaped) = self.escape_sequence() {
-                    value.push(escaped);
+                    string.push(escaped);
+                    // エスケープシーケンスの文字もraw_lexemeに追加
+                    if let Some(&next) = self.chars.peek() {
+                        raw_lexeme.push(next);
+                    }
                 } else {
-                    // 無効なエスケープシーケンス
-                    let error = CompilerError::lexical_error(
+                    return Err(CompilerError::lexical_error(
                         "無効なエスケープシーケンスです",
-                        Some(self.current_location()),
-                    );
-                    value.push('\\');
+                        self.current_location(),
+                    ));
                 }
             } else if c == '\n' {
-                // 改行を含む文字列はエラー
-                let error = CompilerError::lexical_error(
-                    "文字列リテラル内に改行があります",
-                    Some(self.current_location()),
-                );
-                break;
+                // 改行は許可されない（マルチライン文字列は別途対応）
+                return Err(CompilerError::lexical_error(
+                    "文字列リテラル内で改行が検出されました",
+                    self.current_location(),
+                ));
             } else {
                 // 通常の文字
-                value.push(c);
-                self.advance();
+                let ch = self.advance();
+                string.push(ch);
+                raw_lexeme.push(ch);
             }
         }
         
-        if !terminated {
-            let error = CompilerError::lexical_error(
-                "文字列リテラルが終了していません",
-                Some(self.current_location()),
-            );
+        // 文字列の終端チェック
+        if self.is_at_end() {
+            return Err(CompilerError::lexical_error(
+                "文字列リテラルが閉じられていません",
+                self.current_location(),
+            ));
         }
         
-        Ok(self.make_token(TokenKind::StringLiteral(value)))
+        Ok(Token::new(TokenKind::StringLiteral, raw_lexeme, self.current_location()))
     }
     
-    /// 文字リテラルの処理
+    /// 文字リテラルの解析
     fn char_literal(&mut self) -> Result<Token> {
-        let c = if let Some(&c) = self.chars.peek() {
-            if c == '\\' {
+        let mut raw_lexeme = String::from("'");
+        let mut ch = '\0';
+        let mut count = 0;
+        
+        while let Some(&c) = self.chars.peek() {
+            if c == '\'' {
+                // 終端のクォート
+                raw_lexeme.push(self.advance());
+                break;
+            } else if c == '\\' {
                 // エスケープシーケンス
-                self.advance(); // バックスラッシュを消費
+                raw_lexeme.push(self.advance()); // バックスラッシュ
                 
                 if let Some(escaped) = self.escape_sequence() {
-                    escaped
+                    ch = escaped;
+                    count += 1;
+                    // エスケープシーケンスの文字もraw_lexemeに追加
+                    if let Some(&next) = self.chars.peek() {
+                        raw_lexeme.push(next);
+                    }
                 } else {
-                    // 無効なエスケープシーケンス
-                    let error = CompilerError::lexical_error(
+                    return Err(CompilerError::lexical_error(
                         "無効なエスケープシーケンスです",
-                        Some(self.current_location()),
-                    );
-                    '?'
+                        self.current_location(),
+                    ));
                 }
+            } else if c == '\n' {
+                // 改行は許可されない
+                return Err(CompilerError::lexical_error(
+                    "文字リテラル内で改行が検出されました",
+                    self.current_location(),
+                ));
             } else {
                 // 通常の文字
-                self.advance()
+                ch = self.advance();
+                count += 1;
+                raw_lexeme.push(ch);
             }
-        } else {
-            let error = CompilerError::lexical_error(
-                "文字リテラルが空です",
-                Some(self.current_location()),
-            );
-            '?'
-        };
-        
-        // 閉じ引用符を期待
-        if !self.match_char('\'', true) {
-            let error = CompilerError::lexical_error(
-                "文字リテラルが終了していません",
-                Some(self.current_location()),
-            );
         }
         
-        Ok(self.make_token(TokenKind::CharLiteral(c)))
+        // 文字リテラルの終端チェック
+        if self.is_at_end() {
+            return Err(CompilerError::lexical_error(
+                "文字リテラルが閉じられていません",
+                self.current_location(),
+            ));
+        }
+        
+        // 文字リテラルは1文字のみ
+        if count != 1 {
+            return Err(CompilerError::lexical_error(
+                format!("文字リテラルには1文字のみ指定できます（{}文字検出）", count),
+                self.current_location(),
+            ));
+        }
+        
+        Ok(Token::new(TokenKind::CharLiteral, raw_lexeme, self.current_location()))
     }
     
-    /// 行コメントの処理
+    /// 行コメントの解析
     fn line_comment(&mut self) -> Result<Token> {
-        // 行末まで読み飛ばす
+        let mut comment = String::from("//");
+        
+        // 行末または改行までの文字を消費
         while let Some(&c) = self.chars.peek() {
             if c == '\n' {
                 break;
-            }
-            self.advance();
-        }
-        
-        Ok(self.make_token(TokenKind::Comment))
-    }
-    
-    /// ブロックコメントの処理
-    fn block_comment(&mut self) -> Result<Token> {
-        let mut terminated = false;
-        let mut nesting = 1; // ネストレベル
-        
-        while let Some(&c) = self.chars.peek() {
-            if c == '*' {
-                self.advance();
-                
-                if let Some(&next) = self.chars.peek() {
-                    if next == '/' {
-                        self.advance();
-                        nesting -= 1;
-                        
-                        if nesting == 0 {
-                            terminated = true;
-                            break;
-                        }
-                    }
-                }
-            } else if c == '/' {
-                self.advance();
-                
-                if let Some(&next) = self.chars.peek() {
-                    if next == '*' {
-                        self.advance();
-                        nesting += 1;
-                    }
-                }
             } else {
-                self.advance();
+                comment.push(self.advance());
             }
         }
         
-        if !terminated {
-            let error = CompilerError::lexical_error(
-                "ブロックコメントが終了していません",
-                Some(self.current_location()),
-            );
-        }
-        
-        Ok(self.make_token(TokenKind::Comment))
+        Ok(Token::new(TokenKind::Comment, comment, self.current_location()))
     }
     
-    /// エスケープシーケンスの処理
+    /// ブロックコメントの解析
+    fn block_comment(&mut self) -> Result<Token> {
+        let mut comment = String::from("/*");
+        let mut nesting = 1;
+        
+        while nesting > 0 {
+            if self.is_at_end() {
+                return Err(CompilerError::lexical_error(
+                    "ブロックコメントが閉じられていません",
+                    self.current_location(),
+                ));
+            }
+            
+            let c = self.advance();
+            comment.push(c);
+            
+            if c == '/' && self.match_char('*') {
+                comment.push('*');
+                nesting += 1;
+            } else if c == '*' && self.match_char('/') {
+                comment.push('/');
+                nesting -= 1;
+            }
+        }
+        
+        Ok(Token::new(TokenKind::Comment, comment, self.current_location()))
+    }
+    
+    /// エスケープシーケンスの解析
     fn escape_sequence(&mut self) -> Option<char> {
         if let Some(&c) = self.chars.peek() {
             let escaped = match c {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '\\' => '\\',
-                '\'' => '\'',
-                '"' => '"',
-                '0' => '\0',
+                'n' => '\n',   // 改行
+                'r' => '\r',   // キャリッジリターン
+                't' => '\t',   // タブ
+                '\\' => '\\',  // バックスラッシュ
+                '\'' => '\'',  // シングルクォート
+                '"' => '"',    // ダブルクォート
+                '0' => '\0',   // ヌル文字
                 'u' => {
-                    // Unicode文字（\u{XXXX}形式）
+                    // Unicodeエスケープシーケンス
                     self.advance(); // 'u'を消費
                     
-                    if !self.match_char('{', true) {
+                    // 次の文字が'{'であることを確認
+                    if !self.match_char('{') {
                         return None;
                     }
                     
+                    // 16進数の桁を読み取る（最大6桁）
                     let mut hex = String::new();
-                    while let Some(&c) = self.chars.peek() {
-                        if c == '}' {
-                            self.advance(); // '}'を消費
-                            break;
-                        } else if unicode::is_hex_digit(c) {
-                            hex.push(c);
-                            self.advance();
+                    for _ in 0..6 {
+                        if let Some(&c) = self.chars.peek() {
+                            if c == '}' {
+                                break;
+                            } else if c.is_digit(16) {
+                                hex.push(self.advance());
+                            } else {
+                                return None;
+                            }
                         } else {
                             return None;
                         }
                     }
                     
+                    // 終了の'}'を確認
+                    if !self.match_char('}') {
+                        return None;
+                    }
+                    
+                    // 16進数をUnicode値に変換
                     if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                        if let Some(c) = std::char::from_u32(code) {
-                            return Some(c);
+                        if let Some(unicode) = std::char::from_u32(code) {
+                            return Some(unicode);
+                        }
+                    }
+                    return None;
+                },
+                'x' => {
+                    // 16進数エスケープシーケンス（2桁）
+                    self.advance(); // 'x'を消費
+                    
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        if let Some(&c) = self.chars.peek() {
+                            if c.is_digit(16) {
+                                hex.push(self.advance());
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
                         }
                     }
                     
+                    // 16進数をUnicode値に変換
+                    if let Ok(code) = u8::from_str_radix(&hex, 16) {
+                        return Some(code as char);
+                    }
                     return None;
-                }
+                },
                 _ => return None,
             };
             
@@ -509,65 +690,11 @@ impl<'a> Lexer<'a> {
         }
     }
     
-    /// 次の文字が期待する文字と一致するかチェック
-    fn match_char(&mut self, expected: char, match_kind: TokenKind, else_kind: TokenKind) -> Result<Token> {
-        if self.match_char(expected, true) {
-            Ok(self.make_token(match_kind))
-        } else {
-            Ok(self.make_token(else_kind))
-        }
-    }
-    
-    /// 次の文字が期待する2つの文字のいずれかと一致するかチェック
-    fn match_two_chars(
-        &mut self,
-        expected1: char,
-        match_kind1: TokenKind,
-        expected2: char,
-        match_kind2: TokenKind,
-        else_kind: TokenKind,
-    ) -> Result<Token> {
-        if self.match_char(expected1, true) {
-            Ok(self.make_token(match_kind1))
-        } else if self.match_char(expected2, true) {
-            Ok(self.make_token(match_kind2))
-        } else {
-            Ok(self.make_token(else_kind))
-        }
-    }
-    
-    /// 次の文字が期待する3つの文字のいずれかと一致するかチェック
-    fn match_three_chars(
-        &mut self,
-        expected1: char,
-        match_kind1: TokenKind,
-        expected2: char,
-        match_kind2: TokenKind,
-        expected3: char,
-        match_kind3: TokenKind,
-        else_kind: TokenKind,
-    ) -> Result<Token> {
-        if self.match_char(expected1, true) {
-            Ok(self.make_token(match_kind1))
-        } else if self.match_char(expected2, true) {
-            // expected2が続く場合は expected3 もチェック
-            if self.match_char(expected3, true) {
-                Ok(self.make_token(match_kind3))
-            } else {
-                Ok(self.make_token(match_kind2))
-            }
-        } else {
-            Ok(self.make_token(else_kind))
-        }
-    }
-    
-    /// 次の文字が期待する文字と一致するかチェック
-    fn match_char(&mut self, expected: char, consume: bool) -> bool {
+    /// 指定した文字とマッチするか確認し、マッチすれば消費する
+    fn match_char(&mut self, expected: char) -> bool {
         if let Some(&c) = self.chars.peek() {
             if c == expected {
-                if consume {
-                    self.advance();
-                }
+                self.advance();
                 return true;
             }
         }
@@ -577,7 +704,7 @@ impl<'a> Lexer<'a> {
     /// 空白文字をスキップ
     fn skip_whitespace(&mut self) {
         while let Some(&c) = self.chars.peek() {
-            if unicode::is_whitespace(c) {
+            if c.is_whitespace() {
                 self.advance();
             } else {
                 break;
@@ -585,7 +712,7 @@ impl<'a> Lexer<'a> {
         }
     }
     
-    /// 次の文字を取得して位置を進める
+    /// 次の文字を取得して進める
     fn advance(&mut self) -> char {
         if let Some(c) = self.chars.next() {
             self.position += c.len_utf8();
@@ -603,32 +730,26 @@ impl<'a> Lexer<'a> {
         }
     }
     
-    /// ファイル終端に達したかどうかを判定
+    /// ファイル終端かどうか
     fn is_at_end(&self) -> bool {
         self.chars.peek().is_none()
     }
     
-    /// 現在のトークンの位置情報を取得
+    /// 現在の位置情報
     fn current_location(&self) -> SourceLocation {
         SourceLocation::new(
             &self.file_name,
             self.start_line,
             self.start_column,
             self.start_position,
-            self.position,
+            self.position - self.start_position,
         )
     }
     
     /// トークンを作成
     fn make_token(&self, kind: TokenKind) -> Token {
-        let location = self.current_location();
-        let lexeme = if let TokenKind::Eof = kind {
-            "".to_string()
-        } else {
-            self.source[self.start_position..self.position].to_string()
-        };
-        
-        Token::new(kind, location, lexeme)
+        let lexeme = self.source[self.start_position..self.position].to_string();
+        Token::new(kind, lexeme, self.current_location())
     }
 }
 
@@ -637,42 +758,58 @@ impl<'a> Iterator for Lexer<'a> {
     
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_token() {
-            Ok(token) if token.kind == TokenKind::Eof => None,
-            Ok(token) => Some(Ok(token)),
-            Err(e) => Some(Err(e)),
+            Ok(token) => {
+                if token.kind == TokenKind::EOF {
+                    None
+                } else {
+                    Some(Ok(token))
+                }
+            },
+            Err(err) => Some(Err(err)),
         }
     }
 }
 
-/// トークン化
-/// 
-/// 与えられたソースコードをトークンに分割
+/// ソースコードをトークン列に変換する
 pub fn tokenize(source: &str, file_name: &str) -> Result<Vec<Token>> {
     let lexer = Lexer::new(source, file_name);
     lexer.collect()
 }
 
-/// テスト
+// ユーティリティ関数
+
+/// 文字がアルファベットまたはアンダースコアかどうか
+fn is_alpha(c: char) -> bool {
+    c.is_alphabetic() || c == '_'
+}
+
+/// 文字が数字かどうか
+fn is_digit(c: char) -> bool {
+    c.is_digit(10)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
     fn test_tokenize_keywords() {
-        let source = "let func if else while";
+        let source = "let var const fn if else while";
         let tokens = tokenize(source, "test.swl").unwrap();
         
-        assert_eq!(tokens.len(), 5);
-        assert_eq!(tokens[0].kind, TokenKind::Let);
-        assert_eq!(tokens[1].kind, TokenKind::Func);
-        assert_eq!(tokens[2].kind, TokenKind::If);
-        assert_eq!(tokens[3].kind, TokenKind::Else);
-        assert_eq!(tokens[4].kind, TokenKind::While);
+        assert_eq!(tokens.len(), 7);
+        assert_eq!(tokens[0].kind, TokenKind::KeywordLet);
+        assert_eq!(tokens[1].kind, TokenKind::KeywordVar);
+        assert_eq!(tokens[2].kind, TokenKind::KeywordConst);
+        assert_eq!(tokens[3].kind, TokenKind::KeywordFn);
+        assert_eq!(tokens[4].kind, TokenKind::KeywordIf);
+        assert_eq!(tokens[5].kind, TokenKind::KeywordElse);
+        assert_eq!(tokens[6].kind, TokenKind::KeywordWhile);
     }
     
     #[test]
     fn test_tokenize_operators() {
-        let source = "+ - * / % == != < > <= >= && ||";
+        let source = "+ - * / % == != < > <= >= && || !";
         let tokens = tokenize(source, "test.swl").unwrap();
         
         assert_eq!(tokens.len(), 13);
@@ -688,80 +825,110 @@ mod tests {
         assert_eq!(tokens[9].kind, TokenKind::LessEqual);
         assert_eq!(tokens[10].kind, TokenKind::GreaterEqual);
         assert_eq!(tokens[11].kind, TokenKind::AmpersandAmpersand);
-        assert_eq!(tokens[12].kind, TokenKind::PipePipe);
+        assert_eq!(tokens[12].kind, TokenKind::Bang);
     }
     
     #[test]
     fn test_tokenize_literals() {
-        let source = r#"42 3.14 "hello" 'c'"#;
+        let source = r#"123 3.14 "hello" 'a' true false nil"#;
         let tokens = tokenize(source, "test.swl").unwrap();
         
-        assert_eq!(tokens.len(), 4);
-        assert!(matches!(tokens[0].kind, TokenKind::IntLiteral(ref s) if s == "42"));
-        assert!(matches!(tokens[1].kind, TokenKind::FloatLiteral(ref s) if s == "3.14"));
-        assert!(matches!(tokens[2].kind, TokenKind::StringLiteral(ref s) if s == "hello"));
-        assert!(matches!(tokens[3].kind, TokenKind::CharLiteral(c) if c == 'c'));
+        assert_eq!(tokens.len(), 7);
+        assert_eq!(tokens[0].kind, TokenKind::IntLiteral);
+        assert_eq!(tokens[1].kind, TokenKind::FloatLiteral);
+        assert_eq!(tokens[2].kind, TokenKind::StringLiteral);
+        assert_eq!(tokens[3].kind, TokenKind::CharLiteral);
+        assert_eq!(tokens[4].kind, TokenKind::KeywordTrue);
+        assert_eq!(tokens[5].kind, TokenKind::KeywordFalse);
+        assert_eq!(tokens[6].kind, TokenKind::KeywordNil);
     }
     
     #[test]
     fn test_tokenize_identifiers() {
-        let source = "foo bar baz";
+        let source = "foo bar baz snake_case camelCase";
         let tokens = tokenize(source, "test.swl").unwrap();
         
-        assert_eq!(tokens.len(), 3);
-        assert!(matches!(tokens[0].kind, TokenKind::Identifier(ref s) if s == "foo"));
-        assert!(matches!(tokens[1].kind, TokenKind::Identifier(ref s) if s == "bar"));
-        assert!(matches!(tokens[2].kind, TokenKind::Identifier(ref s) if s == "baz"));
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+        assert_eq!(tokens[0].lexeme, "foo");
+        assert_eq!(tokens[1].kind, TokenKind::Identifier);
+        assert_eq!(tokens[1].lexeme, "bar");
+        assert_eq!(tokens[2].kind, TokenKind::Identifier);
+        assert_eq!(tokens[2].lexeme, "baz");
+        assert_eq!(tokens[3].kind, TokenKind::Identifier);
+        assert_eq!(tokens[3].lexeme, "snake_case");
+        assert_eq!(tokens[4].kind, TokenKind::Identifier);
+        assert_eq!(tokens[4].lexeme, "camelCase");
     }
     
     #[test]
     fn test_tokenize_comments() {
-        let source = "let x = 5; // This is a comment\n/* Block comment */ let y = 10;";
+        let source = r#"// This is a line comment
+/* This is a
+   block comment */
+let x = 5; // End of line comment"#;
+        
         let tokens = tokenize(source, "test.swl").unwrap();
         
-        // コメントはスキップされないので含まれる
-        assert_eq!(tokens.len(), 11);
-        assert_eq!(tokens[0].kind, TokenKind::Let);
-        assert!(matches!(tokens[1].kind, TokenKind::Identifier(ref s) if s == "x"));
-        assert_eq!(tokens[2].kind, TokenKind::Equal);
-        assert!(matches!(tokens[3].kind, TokenKind::IntLiteral(ref s) if s == "5"));
-        assert_eq!(tokens[4].kind, TokenKind::Semicolon);
-        assert_eq!(tokens[5].kind, TokenKind::Comment);
-        assert_eq!(tokens[6].kind, TokenKind::Comment);
-        assert_eq!(tokens[7].kind, TokenKind::Let);
-        assert!(matches!(tokens[8].kind, TokenKind::Identifier(ref s) if s == "y"));
-        assert_eq!(tokens[9].kind, TokenKind::Equal);
-        assert!(matches!(tokens[10].kind, TokenKind::IntLiteral(ref s) if s == "10"));
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0].kind, TokenKind::Comment);
+        assert_eq!(tokens[1].kind, TokenKind::Comment);
+        assert_eq!(tokens[2].kind, TokenKind::KeywordLet);
+        assert_eq!(tokens[3].kind, TokenKind::Identifier);
+        assert_eq!(tokens[3].lexeme, "x");
+        assert_eq!(tokens[4].kind, TokenKind::Equal);
+    }
+    
+    #[test]
+    fn test_tokenize_with_locations() {
+        let source = "let x = 5";
+        let tokens = tokenize(source, "test.swl").unwrap();
+        
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].location.line, 1);
+        assert_eq!(tokens[0].location.column, 1);
+        assert_eq!(tokens[1].location.line, 1);
+        assert_eq!(tokens[1].location.column, 5);
+        assert_eq!(tokens[2].location.line, 1);
+        assert_eq!(tokens[2].location.column, 7);
+        assert_eq!(tokens[3].location.line, 1);
+        assert_eq!(tokens[3].location.column, 9);
     }
     
     #[test]
     fn test_tokenize_complex_source() {
         let source = r#"
-            func factorial(n: Int) -> Int {
-                if n <= 1 {
-                    return 1;
-                } else {
-                    return n * factorial(n - 1);
-                }
-            }
-        "#;
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        return 1;
+    } else {
+        return n * factorial(n - 1);
+    }
+}
+
+// Call the function
+let result = factorial(5);
+"#;
         
         let tokens = tokenize(source, "test.swl").unwrap();
         
-        // トークン数を検証
-        assert!(tokens.len() > 20); // 正確な数ではなく十分な数があるか
+        // 簡易的な確認
+        assert!(tokens.len() > 20);
         
-        // いくつかの重要なトークンを検証
-        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        // 重要なトークンをチェック
+        let keywords = tokens.iter()
+            .filter(|t| t.is_keyword())
+            .count();
+        assert!(keywords >= 5); // fn, if, return, else, let
         
-        assert!(kinds.contains(&&TokenKind::Func));
-        assert!(kinds.contains(&&TokenKind::If));
-        assert!(kinds.contains(&&TokenKind::Else));
-        assert!(kinds.contains(&&TokenKind::Return));
-        assert!(kinds.contains(&&TokenKind::Arrow));
+        let identifiers = tokens.iter()
+            .filter(|t| t.kind == TokenKind::Identifier)
+            .count();
+        assert!(identifiers >= 3); // factorial, n, result
         
-        // 識別子 "factorial" が含まれているか検証
-        let has_factorial = tokens.iter().any(|t| matches!(&t.kind, TokenKind::Identifier(ref s) if s == "factorial"));
-        assert!(has_factorial);
+        let operators = tokens.iter()
+            .filter(|t| t.is_operator())
+            .count();
+        assert!(operators >= 4); // <=, *, -, =
     }
 }

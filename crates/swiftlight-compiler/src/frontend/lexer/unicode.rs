@@ -87,6 +87,54 @@ pub fn escape_char(c: char) -> String {
     }
 }
 
+/// 文字列内のエスケープシーケンスを解析する
+///
+/// エスケープシーケンスを実際の文字に変換する
+pub fn unescape_char(s: &str) -> Result<char, String> {
+    if s.len() == 1 {
+        return Ok(s.chars().next().unwrap());
+    }
+
+    if !s.starts_with('\\') {
+        return Err(format!("エスケープシーケンスは\\で始まる必要があります: {}", s));
+    }
+
+    let escaped = &s[1..];
+    match escaped {
+        "n" => Ok('\n'),
+        "r" => Ok('\r'),
+        "t" => Ok('\t'),
+        "\\" => Ok('\\'),
+        "'" => Ok('\''),
+        "\"" => Ok('\"'),
+        "0" => Ok('\0'),
+        _ if escaped.starts_with('u') && escaped.len() >= 3 => {
+            // Unicode エスケープシーケンス (\u{XXXX})
+            if !escaped.starts_with("u{") || !escaped.ends_with('}') {
+                return Err(format!("無効なUnicodeエスケープシーケンス: {}", s));
+            }
+            
+            let hex_str = &escaped[2..escaped.len() - 1];
+            match u32::from_str_radix(hex_str, 16) {
+                Ok(code) => match char::try_from(code) {
+                    Ok(c) => Ok(c),
+                    Err(_) => Err(format!("無効なUnicodeコードポイント: {}", code))
+                },
+                Err(_) => Err(format!("無効な16進数: {}", hex_str))
+            }
+        },
+        _ => Err(format!("未知のエスケープシーケンス: {}", s))
+    }
+}
+
+/// 文字が有効なSwiftLight言語の演算子文字かどうかを判定
+pub fn is_operator_char(c: char) -> bool {
+    matches!(c, 
+        '/' | '=' | '-' | '+' | '!' | '*' | '%' | '<' | '>' | '&' | 
+        '|' | '^' | '~' | '?' | ':' | '.'
+    )
+}
+
 /// テスト
 #[cfg(test)]
 mod tests {
@@ -145,6 +193,13 @@ mod tests {
         // 8進数として無効な文字
         assert!(!is_octal_digit('8'));
         assert!(!is_octal_digit('9'));
+        
+        // 2進数として有効な文字
+        assert!(is_binary_digit('0'));
+        assert!(is_binary_digit('1'));
+        
+        // 2進数として無効な文字
+        assert!(!is_binary_digit('2'));
     }
     
     #[test]
@@ -156,5 +211,66 @@ mod tests {
         assert_eq!(escape_char('a'), "a");
         assert_eq!(escape_char('あ'), "あ");
         assert_eq!(escape_char('\u{0007}'), "\\u{0007}"); // BEL制御文字
+    }
+    
+    #[test]
+    fn test_unescape_char() {
+        assert_eq!(unescape_char("a").unwrap(), 'a');
+        assert_eq!(unescape_char("\\n").unwrap(), '\n');
+        assert_eq!(unescape_char("\\t").unwrap(), '\t');
+        assert_eq!(unescape_char("\\\\").unwrap(), '\\');
+        assert_eq!(unescape_char("\\'").unwrap(), '\'');
+        assert_eq!(unescape_char("\\\"").unwrap(), '\"');
+        assert_eq!(unescape_char("\\0").unwrap(), '\0');
+        assert_eq!(unescape_char("\\u{3042}").unwrap(), 'あ');
+        
+        // エラーケース
+        assert!(unescape_char("\\x").is_err());
+        assert!(unescape_char("\\u").is_err());
+        assert!(unescape_char("\\u{ZZZZ}").is_err());
+        assert!(unescape_char("\\u{D800}").is_err()); // サロゲートペア
+    }
+    
+    #[test]
+    fn test_operator_chars() {
+        // 演算子として有効な文字
+        assert!(is_operator_char('+'));
+        assert!(is_operator_char('-'));
+        assert!(is_operator_char('*'));
+        assert!(is_operator_char('/'));
+        assert!(is_operator_char('%'));
+        assert!(is_operator_char('='));
+        assert!(is_operator_char('<'));
+        assert!(is_operator_char('>'));
+        assert!(is_operator_char('!'));
+        assert!(is_operator_char('&'));
+        assert!(is_operator_char('|'));
+        assert!(is_operator_char('^'));
+        assert!(is_operator_char('~'));
+        assert!(is_operator_char('?'));
+        assert!(is_operator_char(':'));
+        assert!(is_operator_char('.'));
+        
+        // 演算子として無効な文字
+        assert!(!is_operator_char('a'));
+        assert!(!is_operator_char('0'));
+        assert!(!is_operator_char('_'));
+        assert!(!is_operator_char('@'));
+        assert!(!is_operator_char('#'));
+    }
+    
+    #[test]
+    fn test_whitespace() {
+        // 空白文字
+        assert!(is_whitespace(' '));
+        assert!(is_whitespace('\t'));
+        assert!(is_whitespace('\n'));
+        assert!(is_whitespace('\r'));
+        assert!(is_whitespace('\u{3000}')); // 全角空白
+        
+        // 空白でない文字
+        assert!(!is_whitespace('a'));
+        assert!(!is_whitespace('0'));
+        assert!(!is_whitespace('_'));
     }
 }
