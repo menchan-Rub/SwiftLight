@@ -1,7 +1,7 @@
 [package]
 name = "swiftlight-debugger"
 version = "0.1.0"
-edition = "2025"
+edition = "2021"
 authors = ["Shard"]
 description = "SwiftLight言語のデバッガー"
 license = "MIT"
@@ -38,7 +38,7 @@ serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"] }
 
 # デバッグプロトコル
-dap = "0.3" # Debug Adapter Protocol
+dap = "0.4.1-alpha1" # Debug Adapter Protocol
 
 # LLVM バインディング
 llvm-sys = { version = "170", optional = true }

@@ -1,0 +1,32 @@
+[package]
+name = "swiftlight-lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SwiftLight言語のLanguage Server Protocol実装"
+
+[dependencies]
+# SwiftLightコンパイラライブラリ
+swiftlight-compiler = { workspace = true }
+
+# LSP関連
+lsp-server = "0.7"
+lsp-types = "0.94"
+
+# 並行処理
+tokio = { version = "1.35", features = ["full"] }
+
+# ユーティリティ
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# JSONシリアライゼーション
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

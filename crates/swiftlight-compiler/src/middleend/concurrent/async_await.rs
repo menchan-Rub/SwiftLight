@@ -664,7 +664,7 @@ impl AsyncOptimizer {
         // 実際の実装では、すぐに完了するFutureに対するawaitを除去する
         // 例: ready(value).await -> value
         
-        // 簡略化のため、ダミーの統計を更新
+        // 化のため、ダミーの統計を更新
         self.stats.elided_awaits += 1;
         
         Ok(())

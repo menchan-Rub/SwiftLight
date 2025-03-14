@@ -772,23 +772,206 @@ impl ARM64Optimizer {
                     }
                 }
             },
-            "bl" => {
+            "tst" => {
+                if parts.len() >= 3 {
+                    // 例: tst x0, x1
+                    use_regs.push(parts[1].trim_end_matches(',').to_string());
+                    if !parts[2].starts_with('#') {
+                        use_regs.push(parts[2].to_string());
+                    }
+                }
+            },
+            "b" | "beq" | "bne" | "blt" | "ble" | "bgt" | "bge" => {
+                // 分岐命令はレジスタを定義/使用しない（フラグレジスタは暗黙的に使用）
+                // ただし、条件付き分岐はCPSRフラグを使用するため、将来的にはこれを追加する可能性あり
+            },
+            "bl" | "blr" => {
                 // 関数呼び出しは特別扱い（引数レジスタと戻り値レジスタに依存）
                 // x0-x7は引数レジスタとして使用
                 for i in 0..8 {
                     use_regs.push(format!("x{}", i));
                 }
-                // x0は戻り値レジスタとして定義
+                // x0-x1は戻り値レジスタとして定義
                 def_regs.push("x0".to_string());
+                def_regs.push("x1".to_string());
+                // リンクレジスタx30(lr)も定義される
+                def_regs.push("x30".to_string());
+                // 呼び出し規約に従い、揮発性レジスタも定義される
+                for i in 9..16 {
+                    def_regs.push(format!("x{}", i));
+                }
+            },
+            "ret" | "br" => {
+                // リターン命令はx30(lr)を使用
+                if parts[0] == "ret" {
+                    use_regs.push("x30".to_string());
+                } else if parts.len() >= 2 {
+                    // br xN の形式
+                    use_regs.push(parts[1].to_string());
+                }
+            },
+            "cbz" | "cbnz" => {
+                if parts.len() >= 3 {
+                    // 例: cbz x0, label
+                    use_regs.push(parts[1].trim_end_matches(',').to_string());
+                }
+            },
+            "adrp" | "adr" => {
+                if parts.len() >= 3 {
+                    // 例: adrp x0, symbol
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                }
+            },
+            "ldp" | "stp" => {
+                if parts.len() >= 4 {
+                    // 例: ldp x0, x1, [x2]
+                    if parts[0].starts_with("ldp") {
+                        def_regs.push(parts[1].trim_end_matches(',').to_string());
+                        def_regs.push(parts[2].trim_end_matches(',').to_string());
+                    } else {
+                        use_regs.push(parts[1].trim_end_matches(',').to_string());
+                        use_regs.push(parts[2].trim_end_matches(',').to_string());
+                    }
+                    
+                    // アドレスレジスタを抽出
+                    let addr_part = parts[3].trim_start_matches('[').trim_end_matches(']');
+                    // ベースレジスタとオフセットを分離
+                    let base_reg = if addr_part.contains(',') {
+                        addr_part.split(',').next().unwrap().trim()
+                    } else {
+                        addr_part
+                    };
+                    use_regs.push(base_reg.to_string());
+                }
+            },
+            "svc" | "hvc" | "smc" => {
+                // システムコール命令は特別な処理が必要
+                // x0-x7は引数として使用
+                for i in 0..8 {
+                    use_regs.push(format!("x{}", i));
+                }
+                // x0-x1は戻り値として定義
+                def_regs.push("x0".to_string());
+                def_regs.push("x1".to_string());
+            },
+            "mrs" | "msr" => {
+                if parts.len() >= 3 {
+                    // 例: mrs x0, sctlr_el1 または msr sctlr_el1, x0
+                    if parts[0] == "mrs" {
+                        def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    } else {
+                        use_regs.push(parts[2].to_string());
+                    }
+                }
+            },
+            "dmb" | "dsb" | "isb" => {
+                // メモリバリア命令はレジスタを定義/使用しない
+            },
+            "fmov" | "fadd" | "fsub" | "fmul" | "fdiv" => {
+                if parts.len() >= 4 {
+                    // 例: fadd d0, d1, d2
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].trim_end_matches(',').to_string());
+                    use_regs.push(parts[3].to_string());
+                } else if parts.len() >= 3 {
+                    // 例: fmov d0, d1
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].to_string());
+                }
+            },
+            "fcmp" => {
+                if parts.len() >= 3 {
+                    // 例: fcmp d0, d1
+                    use_regs.push(parts[1].trim_end_matches(',').to_string());
+                    if !parts[2].starts_with('#') {
+                        use_regs.push(parts[2].to_string());
+                    }
+                }
+            },
+            "scvtf" | "fcvtzs" | "fcvtzu" => {
+                if parts.len() >= 3 {
+                    // 例: scvtf d0, w0
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].to_string());
+                }
+            },
+            "csel" | "csinc" | "csinv" | "csneg" => {
+                if parts.len() >= 5 {
+                    // 例: csel x0, x1, x2, eq
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].trim_end_matches(',').to_string());
+                    use_regs.push(parts[3].trim_end_matches(',').to_string());
+                    // 条件コードはレジスタではないので追加しない
+                }
+            },
+            "madd" | "msub" | "smaddl" | "smsubl" | "umaddl" | "umsubl" => {
+                if parts.len() >= 5 {
+                    // 例: madd x0, x1, x2, x3
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].trim_end_matches(',').to_string());
+                    use_regs.push(parts[3].trim_end_matches(',').to_string());
+                    use_regs.push(parts[4].to_string());
+                }
+            },
+            "movk" | "movz" | "movn" => {
+                if parts.len() >= 3 {
+                    // 例: movk x0, #0xFFFF, lsl #16
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    // 即値操作なのでuse_regsには追加しない
+                }
+            },
+            "sxtw" | "sxtb" | "sxth" | "uxtb" | "uxth" | "uxtw" => {
+                if parts.len() >= 3 {
+                    // 例: sxtw x0, w1
+                    def_regs.push(parts[1].trim_end_matches(',').to_string());
+                    use_regs.push(parts[2].to_string());
+                }
             },
             _ => {
-                // その他の命令は簡略化して処理
+                // その他の命令は一般的なパターンで解析
+                if parts.len() >= 2 {
+                    // 最初のオペランドは通常、結果を格納するレジスタ
+                    let first_operand = parts[1].trim_end_matches(',');
+                    if !first_operand.starts_with('#') && !first_operand.starts_with('[') {
+                        def_regs.push(first_operand.to_string());
+                    }
+                    
+                    // 残りのオペランドは入力として使用
+                    for i in 2..parts.len() {
+                        let operand = parts[i].trim_end_matches(',');
+                        if !operand.starts_with('#') {
+                            // 即値でない場合のみ追加
+                            // メモリアドレス [x0] の場合は x0 を抽出
+                            if operand.starts_with('[') && operand.ends_with(']') {
+                                let addr = operand.trim_start_matches('[').trim_end_matches(']');
+                                // オフセット付きアドレッシングの場合（例: [x0, #8]）
+                                if addr.contains(',') {
+                                    let base_reg = addr.split(',').next().unwrap().trim();
+                                    use_regs.push(base_reg.to_string());
+                                } else {
+                                    use_regs.push(addr.to_string());
+                                }
+                            } else {
+                                use_regs.push(operand.to_string());
+                            }
+                        }
+                    }
+                }
             }
         }
         
+        // 重複を除去
+        def_regs.sort();
+        def_regs.dedup();
+        use_regs.sort();
+        use_regs.dedup();
+        
+        // 定義と使用の両方に現れるレジスタは、実際には再定義されるため
+        // use_regsから同じレジスタを削除
+        use_regs.retain(|reg| !def_regs.contains(reg));
+        
         (def_regs, use_regs)
     }
-    
     /// 命令の実行遅延を分析
     fn analyze_instruction_latencies(&self, instructions: &[String]) -> Vec<usize> {
         let mut latencies = Vec::with_capacity(instructions.len());

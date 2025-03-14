@@ -16,11 +16,9 @@ use log::{info, warn, debug, error};
 use semver::{Version, VersionReq};
 use serde::{Serialize, Deserialize};
 use toml::{Value as TomlValue, Table as TomlTable};
-use chrono::{DateTime, Utc};
+use time::{OffsetDateTime as DateTime};
 
-use crate::registry::{get_package_info, PackageInfo, Registry};
-use crate::security::{SecurityAudit, VulnerabilityInfo, audit_package};
-use crate::cache::DependencyCache;
+use crate::registry::{get_package_info, PackageInfo};
 use crate::lock::{LockFile, LockEntry};
 
 /// SwiftLightパッケージの依存関係を表す構造体

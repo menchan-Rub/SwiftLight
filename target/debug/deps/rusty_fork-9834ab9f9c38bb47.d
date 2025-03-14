@@ -1,0 +1,11 @@
+/home/menchan/Programming/SwiftLight/target/debug/deps/librusty_fork-9834ab9f9c38bb47.rmeta: /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/lib.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/sugar.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork_test.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/error.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/cmdline.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/child_wrapper.rs
+
+/home/menchan/Programming/SwiftLight/target/debug/deps/rusty_fork-9834ab9f9c38bb47.d: /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/lib.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/sugar.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork_test.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/error.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/cmdline.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/child_wrapper.rs
+
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/lib.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/sugar.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork_test.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/error.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/cmdline.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/fork.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusty-fork-0.3.0/src/child_wrapper.rs:

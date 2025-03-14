@@ -1,0 +1,33 @@
+[package]
+name = "swiftlight-fuzzer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SwiftLight言語のファジングテストツール"
+
+[dependencies]
+# SwiftLightコンパイラライブラリ
+swiftlight-compiler = { workspace = true }
+
+# ファジングフレームワーク
+arbitrary = { version = "1.3", features = ["derive"] }
+libfuzzer-sys = "0.4"
+
+# コマンドライン引数解析
+clap = { workspace = true }
+
+# ユーティリティ
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+rand = "0.8"
+tempfile = { workspace = true }
+
+# 並列処理
+rayon = "1.8"
+
+[dev-dependencies]
+proptest = "1.3"

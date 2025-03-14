@@ -727,6 +727,11 @@ pub mod tests {
                         return true;
                     }
                 },
+            }
+        }
+        false
+    }
+    
     /// 使用された識別子を再帰的に収集
     fn collect_used_identifiers(ast: &frontend::ast::Program, used: &mut std::collections::HashSet<String>) {
         // 単純化のため、実際の実装では全ての式と文を走査して使用された識別子を抽出

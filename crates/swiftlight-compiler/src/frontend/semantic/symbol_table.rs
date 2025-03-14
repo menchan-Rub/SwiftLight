@@ -390,11 +390,14 @@ impl SymbolTable {
     }
     
     /// シンボルが定義されているスコープがアクセス可能かチェック
+    /// 
+    /// 可視性モディファイアに基づいて、現在のスコープからシンボルにアクセスできるかを判断します。
+    /// 高度なモジュールシステムとアクセス制御をサポートし、安全性と柔軟性を両立します。
     pub fn is_accessible(&self, symbol: &Symbol) -> bool {
         match symbol.visibility {
             Visibility::Public => true,
             Visibility::Private => {
-                // 同一スコープまたはその子スコープからのみアクセス可能
+                // 同一スコープまたはその親スコープからのみアクセス可能
                 let mut current_scope = self.current_scope_id;
                 
                 loop {
@@ -413,10 +416,228 @@ impl SymbolTable {
                     current_scope = parent_scope;
                 }
                 
-                false
+                // 子スコープからのアクセスチェック
+                self.is_child_scope(self.current_scope_id, symbol.scope_id)
             },
-            Visibility::Crate => true, // 同一クレート内はすべてアクセス可能（現状では簡略化）
-            Visibility::Trait => false, // トレイト可視性は現時点ではサポート外
+            Visibility::Crate => {
+                // 同一クレート内のシンボルへのアクセスチェック
+                let symbol_crate_id = self.get_crate_id(symbol.scope_id);
+                let current_crate_id = self.get_crate_id(self.current_scope_id);
+                
+                symbol_crate_id == current_crate_id
+            },
+            Visibility::Protected => {
+                // 同一スコープ、子スコープ、または継承関係にあるスコープからのみアクセス可能
+                if self.is_same_or_child_scope(self.current_scope_id, symbol.scope_id) {
+                    return true;
+                }
+                
+                // 継承関係チェック
+                self.is_derived_from(self.current_scope_id, symbol.scope_id)
+            },
+            Visibility::Internal => {
+                // 同一モジュール内からのみアクセス可能
+                let symbol_module_id = self.get_module_id(symbol.scope_id);
+                let current_module_id = self.get_module_id(self.current_scope_id);
+                
+                symbol_module_id == current_module_id
+            },
+            Visibility::Trait => {
+                // トレイト内で定義されたシンボルへのアクセスチェック
+                if self.is_same_scope(self.current_scope_id, symbol.scope_id) {
+                    return true;
+                }
+                
+                // トレイトを実装している型からのアクセスチェック
+                if let Some(implementing_types) = self.trait_implementations.get(&symbol.scope_id) {
+                    let current_type_scope = self.get_containing_type_scope(self.current_scope_id);
+                    implementing_types.contains(&current_type_scope)
+                } else {
+                    false
+                }
+            },
+            Visibility::Package => {
+                // 同一パッケージ内からのみアクセス可能
+                let symbol_package_id = self.get_package_id(symbol.scope_id);
+                let current_package_id = self.get_package_id(self.current_scope_id);
+                
+                symbol_package_id == current_package_id
+            },
+            Visibility::Friend(friend_scopes) => {
+                // フレンドスコープからのアクセスチェック
+                if self.is_same_scope(self.current_scope_id, symbol.scope_id) {
+                    return true;
+                }
+                
+                friend_scopes.contains(&self.current_scope_id) || 
+                friend_scopes.iter().any(|&scope| self.is_child_scope(self.current_scope_id, scope))
+            },
+            Visibility::Custom(predicate) => {
+                // カスタム可視性ルールの評価
+                // 高度なメタプログラミングによるコンテキスト依存の可視性制御
+                self.evaluate_visibility_predicate(predicate, self.current_scope_id, symbol.scope_id)
+            },
+        }
+    }
+    
+    /// 指定されたスコープが別のスコープの子スコープかどうかを判断
+    fn is_child_scope(&self, potential_child: usize, potential_parent: usize) -> bool {
+        if potential_child == potential_parent {
+            return false; // 同一スコープは子スコープではない
+        }
+        
+        let mut current = potential_child;
+        
+        while current != 0 { // 0はグローバルスコープと仮定
+            let parent = self.scope_parents[&current];
+            
+            if parent == current {
+                return false; // グローバルスコープに達した
+            }
+            
+            if parent == potential_parent {
+                return true; // 親スコープが見つかった
+            }
+            
+            current = parent;
+        }
+        
+        false
+    }
+    
+    /// 指定されたスコープが同一または子スコープかどうかを判断
+    fn is_same_or_child_scope(&self, scope1: usize, scope2: usize) -> bool {
+        scope1 == scope2 || self.is_child_scope(scope1, scope2)
+    }
+    
+    /// 指定されたスコープが同一スコープかどうかを判断
+    fn is_same_scope(&self, scope1: usize, scope2: usize) -> bool {
+        scope1 == scope2
+    }
+    
+    /// スコープが属するクレートIDを取得
+    fn get_crate_id(&self, scope_id: usize) -> usize {
+        let mut current = scope_id;
+        
+        while let Some(&parent) = self.scope_parents.get(&current) {
+            if self.scope_types.get(&current) == Some(&ScopeType::Crate) {
+                return current;
+            }
+            
+            if parent == current {
+                break; // グローバルスコープに達した
+            }
+            
+            current = parent;
+        }
+        
+        0 // デフォルトのクレートID
+    }
+    
+    /// スコープが属するモジュールIDを取得
+    fn get_module_id(&self, scope_id: usize) -> usize {
+        let mut current = scope_id;
+        
+        while let Some(&parent) = self.scope_parents.get(&current) {
+            if self.scope_types.get(&current) == Some(&ScopeType::Module) {
+                return current;
+            }
+            
+            if parent == current {
+                break; // グローバルスコープに達した
+            }
+            
+            current = parent;
+        }
+        
+        0 // デフォルトのモジュールID
+    }
+    
+    /// スコープが属するパッケージIDを取得
+    fn get_package_id(&self, scope_id: usize) -> usize {
+        let mut current = scope_id;
+        
+        while let Some(&parent) = self.scope_parents.get(&current) {
+            if self.scope_types.get(&current) == Some(&ScopeType::Package) {
+                return current;
+            }
+            
+            if parent == current {
+                break; // グローバルスコープに達した
+            }
+            
+            current = parent;
+        }
+        
+        0 // デフォルトのパッケージID
+    }
+    
+    /// スコープを含む型スコープを取得
+    fn get_containing_type_scope(&self, scope_id: usize) -> usize {
+        let mut current = scope_id;
+        
+        while let Some(&parent) = self.scope_parents.get(&current) {
+            if let Some(scope_type) = self.scope_types.get(&current) {
+                if matches!(scope_type, ScopeType::Struct | ScopeType::Class | ScopeType::Enum | ScopeType::Interface) {
+                    return current;
+                }
+            }
+            
+            if parent == current {
+                break; // グローバルスコープに達した
+            }
+            
+            current = parent;
+        }
+        
+        0 // 型スコープが見つからない場合
+    }
+    
+    /// 継承関係チェック
+    fn is_derived_from(&self, derived_scope: usize, base_scope: usize) -> bool {
+        if let Some(inheritance_graph) = &self.inheritance_graph {
+            inheritance_graph.is_derived_from(derived_scope, base_scope)
+        } else {
+            false
+        }
+    }
+    
+    /// カスタム可視性述語を評価
+    fn evaluate_visibility_predicate(&self, predicate: VisibilityPredicate, current_scope: usize, symbol_scope: usize) -> bool {
+        match predicate {
+            VisibilityPredicate::Always => true,
+            VisibilityPredicate::Never => false,
+            VisibilityPredicate::SameModule => {
+                let current_module = self.get_module_id(current_scope);
+                let symbol_module = self.get_module_id(symbol_scope);
+                current_module == symbol_module
+            },
+            VisibilityPredicate::SamePackage => {
+                let current_package = self.get_package_id(current_scope);
+                let symbol_package = self.get_package_id(symbol_scope);
+                current_package == symbol_package
+            },
+            VisibilityPredicate::InheritedOnly => {
+                self.is_derived_from(current_scope, symbol_scope)
+            },
+            VisibilityPredicate::FriendOnly(friends) => {
+                friends.contains(&current_scope)
+            },
+            VisibilityPredicate::And(left, right) => {
+                self.evaluate_visibility_predicate(*left, current_scope, symbol_scope) &&
+                self.evaluate_visibility_predicate(*right, current_scope, symbol_scope)
+            },
+            VisibilityPredicate::Or(left, right) => {
+                self.evaluate_visibility_predicate(*left, current_scope, symbol_scope) ||
+                self.evaluate_visibility_predicate(*right, current_scope, symbol_scope)
+            },
+            VisibilityPredicate::Not(inner) => {
+                !self.evaluate_visibility_predicate(*inner, current_scope, symbol_scope)
+            },
+            VisibilityPredicate::Custom(func) => {
+                // コンパイル時に評価可能なカスタム関数
+                func(self, current_scope, symbol_scope)
+            },
         }
     }
 }

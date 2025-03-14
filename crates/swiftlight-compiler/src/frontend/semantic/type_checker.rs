@@ -1817,21 +1817,92 @@ impl TypeChecker {
                 }
                 
                 // 必須フィールドがすべて提供されているかチェック
-                for (field_name, _) in struct_fields {
+                for (field_name, field_type) in struct_fields {
                     if !provided_fields.contains(field_name) {
-                        // デフォルト値があるかどうかチェック（ここでは簡略化）
-                        let has_default = false; // 実際の実装では構造体定義を調べる
+                        // 構造体定義からフィールドのデフォルト値情報を取得
+                        let struct_def = self.get_struct_definition(*struct_id)?;
+                        let has_default = struct_def.fields.iter()
+                            .find(|f| f.name.name == *field_name)
+                            .map(|f| f.default_value.is_some())
+                            .unwrap_or(false);
                         
-                        if !has_default {
+                        // オプショナル型かどうかをチェック
+                        let is_optional = match &field_type.kind {
+                            TypeKind::Optional(_) => true,
+                            // 依存型の場合、条件によってはオプショナルになる可能性がある
+                            TypeKind::Dependent(base_type, condition) => {
+                                self.evaluate_dependent_type_optionality(base_type, condition)?
+                            },
+                            _ => false
+                        };
+                        
+                        // コンパイル時定数式の評価によるデフォルト値の存在チェック
+                        let has_compile_time_default = if !has_default {
+                            self.check_compile_time_default_for_field(*struct_id, field_name)?
+                        } else {
+                            false
+                        };
+                        
+                        // デフォルト値がなく、オプショナル型でもない場合はエラー
+                        if !has_default && !is_optional && !has_compile_time_default {
+                            // フィールドの重要度を取得（ドキュメンテーションコメントから解析）
+                            let field_importance = self.get_field_importance(*struct_id, field_name);
+                            
+                            // 重要なフィールドの場合はエラーレベルを上げる
+                            let error_message = match field_importance {
+                                FieldImportance::Critical => 
+                                    format!("重大: 構造体 '{}' の必須フィールド '{}' が指定されていません。このフィールドは正常な動作に不可欠です。", 
+                                            name.name, field_name),
+                                FieldImportance::High => 
+                                    format!("構造体 '{}' の重要フィールド '{}' が指定されていません。このフィールドは推奨されています。", 
+                                            name.name, field_name),
+                                _ => 
+                                    format!("構造体 '{}' のフィールド '{}' が指定されていません", 
+                                            name.name, field_name)
+                            };
+                            
+                            // 型情報を含めたエラーメッセージを生成
+                            let detailed_error = format!("{}。期待される型: {}", 
+                                                        error_message, 
+                                                        self.type_to_string(field_type));
+                            
+                            // 可能な修正候補を提案
+                            let suggestions = self.generate_field_suggestions(*struct_id, field_name);
+                            let error_with_suggestions = if !suggestions.is_empty() {
+                                format!("{}。推奨される値: {}", detailed_error, suggestions.join(", "))
+                            } else {
+                                detailed_error
+                            };
+                            
+                            return Err(CompilerError::type_error_with_help(
+                                error_with_suggestions,
+                                name.location.clone(),
+                                format!("フィールド '{}' を追加するか、構造体定義でデフォルト値を設定してください", field_name)
+                            ));
+                        }
+                    }
+                }
+                
+                // 構造体の不変条件（invariant）をチェック
+                if let Some(invariants) = self.get_struct_invariants(*struct_id) {
+                    for invariant in invariants {
+                        if !self.check_invariant(invariant, fields, struct_fields)? {
                             return Err(CompilerError::type_error(
-                                format!("構造体 '{}' のフィールド '{}' が指定されていません", 
-                                        name.name, field_name),
+                                format!("構造体 '{}' の不変条件に違反しています: {}", 
+                                        name.name, invariant.description),
                                 name.location.clone(),
                             ));
                         }
                     }
                 }
                 
+                // フィールド間の依存関係をチェック
+                self.check_field_dependencies(*struct_id, fields)?;
+                
+                // 型レベルの計算を実行（依存型の場合）
+                if self.has_dependent_types(*struct_id) {
+                    self.evaluate_dependent_types(*struct_id, fields)?;
+                }
                 // 構造体型を返す
                 return Ok(TypeAnnotation {
                     id: ast::generate_id(),
@@ -2126,8 +2197,114 @@ impl TypeChecker {
             },
             
             // 識別子パターン（変数バインディング）
-            ExpressionKind::Identifier(_) => {
-                // 変数バインディングは任意の型とマッチする
+            ExpressionKind::Identifier(ident) => {
+                // 変数バインディングは基本的に任意の型とマッチするが、
+                // 型アノテーションがある場合は互換性をチェックする
+                if let Some(symbol) = self.symbol_table.lookup(&ident.name) {
+                    if let Some(symbol_type) = &symbol.type_annotation {
+                        if !self.is_compatible(expr_type, symbol_type) && !self.is_compatible(symbol_type, expr_type) {
+                            return Err(self.type_error(
+                                "変数の型アノテーションがマッチ対象の式の型と互換性がありません",
+                                expr_type,
+                                symbol_type,
+                                location,
+                            ));
+                        }
+                    }
+                }
+                
+                // 変数の型情報を環境に追加または更新
+                self.update_variable_type(&ident.name, expr_type.clone())?;
+                return Ok(());
+            },
+            
+            // タプルパターン
+            ExpressionKind::TupleLiteral(elements) => {
+                if let TypeKind::Tuple(type_elements) = &expr_type.kind {
+                    // 要素数が一致するか確認
+                    if elements.len() != type_elements.len() {
+                        return Err(CompilerError::type_error(
+                            format!("タプルパターンの要素数 {} がマッチ対象のタプル型の要素数 {} と一致しません",
+                                    elements.len(), type_elements.len()),
+                            location,
+                        ));
+                    }
+                    
+                    // 各要素のパターンマッチングを再帰的にチェック
+                    for (i, (pattern_elem, type_elem)) in elements.iter().zip(type_elements.iter()).enumerate() {
+                        self.check_pattern_compatibility(pattern_elem, type_elem, pattern_elem.location.clone())?;
+                    }
+                    
+                    return Ok(());
+                } else {
+                    return Err(CompilerError::type_error(
+                        format!("タプルパターンに対して型 '{}' とマッチできません",
+                                self.type_to_string(expr_type)),
+                        location,
+                    ));
+                }
+            },
+            
+            // 配列パターン
+            ExpressionKind::ArrayLiteral(elements) => {
+                if let TypeKind::Array(elem_type) = &expr_type.kind {
+                    // 各要素のパターンマッチングを再帰的にチェック
+                    for (i, pattern_elem) in elements.iter().enumerate() {
+                        self.check_pattern_compatibility(pattern_elem, elem_type, pattern_elem.location.clone())?;
+                    }
+                    
+                    return Ok(());
+                } else {
+                    return Err(CompilerError::type_error(
+                        format!("配列パターンに対して型 '{}' とマッチできません",
+                                self.type_to_string(expr_type)),
+                        location,
+                    ));
+                }
+            },
+            
+            // レンジパターン
+            ExpressionKind::Range(start, end) => {
+                // レンジパターンは整数型または文字型とのみマッチ可能
+                if !matches!(expr_type.kind, TypeKind::Int | TypeKind::Char) {
+                    return Err(CompilerError::type_error(
+                        format!("レンジパターンは整数型または文字型とのみマッチ可能ですが、型 '{}' が指定されました",
+                                self.type_to_string(expr_type)),
+                        location,
+                    ));
+                }
+                
+                // 開始値と終了値の型チェック
+                if let Some(start_expr) = start {
+                    let start_type = self.check_expression(start_expr)?;
+                    if !self.is_compatible(expr_type, &start_type) {
+                        return Err(self.type_error(
+                            "レンジの開始値の型がマッチ対象の型と互換性がありません",
+                            expr_type,
+                            &start_type,
+                            start_expr.location.clone(),
+                        ));
+                    }
+                }
+                
+                if let Some(end_expr) = end {
+                    let end_type = self.check_expression(end_expr)?;
+                    if !self.is_compatible(expr_type, &end_type) {
+                        return Err(self.type_error(
+                            "レンジの終了値の型がマッチ対象の型と互換性がありません",
+                            expr_type,
+                            &end_type,
+                            end_expr.location.clone(),
+                        ));
+                    }
+                }
+                
+                return Ok(());
+            },
+            
+            // ワイルドカードパターン
+            ExpressionKind::Wildcard => {
+                // ワイルドカードは任意の型とマッチする
                 return Ok(());
             },
             
@@ -2144,8 +2321,56 @@ impl TypeChecker {
                         ));
                     }
                     
-                    // フィールドのパターンマッチングはここで再帰的にチェックする
-                    // （簡略化のため省略）
+                    // 構造体の定義を取得
+                    let struct_def = match self.get_struct_definition(&name.name) {
+                        Some(def) => def,
+                        None => return Err(CompilerError::type_error(
+                            format!("構造体 '{}' の定義が見つかりません", name.name),
+                            location,
+                        )),
+                    };
+                    
+                    // フィールドの存在確認とパターンマッチング
+                    let mut matched_fields = std::collections::HashSet::new();
+                    
+                    for (field_name, pattern) in fields {
+                        // フィールドが構造体に存在するか確認
+                        let field_type = match struct_def.fields.iter().find(|f| f.name == field_name.name) {
+                            Some(field) => &field.type_annotation,
+                            None => return Err(CompilerError::type_error(
+                                format!("フィールド '{}' は構造体 '{}' に存在しません", 
+                                        field_name.name, name.name),
+                                field_name.location.clone(),
+                            )),
+                        };
+                        
+                        // フィールドのパターンマッチングを再帰的にチェック
+                        self.check_pattern_compatibility(pattern, field_type, pattern.location.clone())?;
+                        
+                        // 同じフィールドが複数回指定されていないか確認
+                        if !matched_fields.insert(field_name.name.clone()) {
+                            return Err(CompilerError::type_error(
+                                format!("フィールド '{}' が複数回指定されています", field_name.name),
+                                field_name.location.clone(),
+                            ));
+                        }
+                    }
+                    
+                    // 必須フィールドがすべて指定されているか確認（非オプショナルフィールド）
+                    for field in &struct_def.fields {
+                        if !matched_fields.contains(&field.name) && 
+                           !matches!(field.type_annotation.kind, TypeKind::Optional(_)) {
+                            // デフォルト値があるフィールドはスキップ可能
+                            if field.default_value.is_none() {
+                                return Err(CompilerError::type_error(
+                                    format!("必須フィールド '{}' がパターンで指定されていません", field.name),
+                                    location,
+                                ));
+                            }
+                        }
+                    }
+                    
+                    return Ok(());
                 } else {
                     return Err(CompilerError::type_error(
                         format!("構造体パターンに対して型 '{}' とマッチできません",

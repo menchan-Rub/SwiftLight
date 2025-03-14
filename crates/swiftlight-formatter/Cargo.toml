@@ -1,0 +1,30 @@
+[package]
+name = "swiftlight-formatter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SwiftLight言語のコードフォーマッタ"
+
+[dependencies]
+# SwiftLightコンパイラライブラリ
+swiftlight-compiler = { workspace = true }
+
+# コマンドライン引数解析
+clap = { workspace = true }
+
+# ユーティリティ
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# カラー表示
+colored = "2.0"
+
+# 並列処理
+rayon = "1.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }
