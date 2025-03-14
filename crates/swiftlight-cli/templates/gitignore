@@ -1,0 +1,43 @@
+# SwiftLight プロジェクトの .gitignore テンプレート
+
+# ビルド成果物
+/build/
+/target/
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# デバッグ情報
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# エディタ設定
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# SwiftLight 固有のファイル
+.swiftlight/
+*.sl.o
+*.sl.ir
+
+# OS 固有のファイル
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ログファイル
+*.log
+
+# キャッシュディレクトリ
+.cache/ 

@@ -1,0 +1,62 @@
+[workspace]
+members = [
+    "crates/swiftlight-compiler",
+    "crates/swiftlight-stdlib",
+    "crates/swiftlight-cli",
+    "crates/swiftlight-package-manager",
+    "crates/swiftlight-formatter",
+    "crates/swiftlight-lsp",
+    "crates/swiftlight-debugger",
+    "crates/swiftlight-fuzzer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2025"
+authors = ["Shard"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/menchan-Rub/swiftlight"
+description = "The SwiftLight Programming Language"
+
+[workspace.dependencies]
+# 外部依存クレート
+clap = { version = "4.4", features = ["derive"] }
+inkwell = { version = "0.2.0", features = ["llvm15-0"] }
+tempfile = "3.8"
+thiserror = "1.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+regex = "1.9"
+toml = "0.8"
+
+# プロジェクト内部クレート
+swiftlight-compiler = { path = "crates/swiftlight-compiler", version = "0.1.0" }
+swiftlight-stdlib = { path = "crates/swiftlight-stdlib", version = "0.1.0" }
+swiftlight-cli = { path = "crates/swiftlight-cli", version = "0.1.0" }
+swiftlight-package-manager = { path = "crates/swiftlight-package-manager", version = "0.1.0" }
+swiftlight-formatter = { path = "crates/swiftlight-formatter", version = "0.1.0" }
+swiftlight-lsp = { path = "crates/swiftlight-lsp", version = "0.1.0" }
+swiftlight-debugger = { path = "crates/swiftlight-debugger", version = "0.1.0" }
+swiftlight-fuzzer = { path = "crates/swiftlight-fuzzer", version = "0.1.0" }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.bench]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

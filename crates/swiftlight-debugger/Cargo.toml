@@ -1,0 +1,63 @@
+[package]
+name = "swiftlight-debugger"
+version = "0.1.0"
+edition = "2025"
+authors = ["Shard"]
+description = "SwiftLight言語のデバッガー"
+license = "MIT"
+repository = "https://github.com/menchan-Rub/swiftlight"
+
+# コマンドラインアプリケーション
+[[bin]]
+name = "swiftlight-debug"
+path = "src/main.rs"
+
+[dependencies]
+# SwiftLightコンパイラライブラリ
+swiftlight-compiler = { path = "../swiftlight-compiler", version = "0.1.0" }
+
+# コマンドライン引数解析
+clap = { version = "4.4", features = ["derive"] }
+
+# エラーハンドリング
+anyhow = "1.0"
+thiserror = "1.0"
+
+# ログ出力
+log = "0.4"
+env_logger = "0.10"
+
+# カラー表示
+colored = "2.0"
+
+# JSONシリアライゼーション
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# TCP/IPソケット通信
+tokio = { version = "1.35", features = ["full"] }
+
+# デバッグプロトコル
+dap = "0.3" # Debug Adapter Protocol
+
+# LLVM バインディング
+llvm-sys = { version = "170", optional = true }
+
+# ソースマップ
+source-map = "0.7"
+
+# 端末UI
+tui = { version = "0.19", default-features = false, features = ["crossterm"] }
+crossterm = "0.27"
+
+# 開発依存
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3.8"
+tokio-test = "0.4"
+
+[features]
+default = []
+llvm-debug = ["llvm-sys"]
+wasm-debug = []

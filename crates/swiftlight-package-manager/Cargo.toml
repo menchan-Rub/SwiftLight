@@ -1,0 +1,53 @@
+[package]
+name = "swiftlight-package-manager"
+version = "0.1.0"
+edition = "2021"
+authors = ["SwiftLight開発チーム"]
+description = "SwiftLight言語のパッケージマネージャ"
+license = "MIT"
+repository = "https://github.com/swiftlight/swiftlight"
+
+# コマンドラインアプリケーション
+[[bin]]
+name = "swiftlight-package"
+path = "src/main.rs"
+
+[dependencies]
+# コマンドライン引数解析
+clap = { version = "4.4", features = ["derive"] }
+
+# エラーハンドリング
+anyhow = "1.0"
+thiserror = "1.0"
+
+# ログ出力
+log = "0.4"
+env_logger = "0.10"
+
+# カラー表示
+colored = "2.0"
+
+# ファイル操作
+walkdir = "2.3"
+dirs = "5.0"
+
+# TOML設定ファイル解析
+toml = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+
+# HTTPクライアント（パッケージレジストリと通信）
+reqwest = { version = "0.11", features = ["json"] }
+
+# 圧縮
+flate2 = "1.0"
+tar = "0.4"
+
+# セマンティックバージョニング
+semver = "1.0"
+
+# 開発依存
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3.8"
+wiremock = "0.5"

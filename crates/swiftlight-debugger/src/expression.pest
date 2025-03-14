@@ -1,0 +1,122 @@
+// SwiftLight デバッガー式パーサーの文法定義
+
+// 全体の式
+expression = { SOI ~ binary_expr ~ EOI }
+
+// 二項演算式
+binary_expr = { 
+    unary_expr ~ (binary_op ~ unary_expr)* 
+}
+
+// 二項演算子の優先順位に合わせて定義
+binary_op = _{ 
+    add | subtract | multiply | divide | modulo |
+    equal | not_equal | less_than | less_equal | greater_than | greater_equal |
+    bit_and | bit_or | bit_xor | shift_left | shift_right |
+    and | or
+}
+
+// 算術演算子
+add = { "+" }
+subtract = { "-" }
+multiply = { "*" }
+divide = { "/" }
+modulo = { "%" }
+
+// 比較演算子
+equal = { "==" }
+not_equal = { "!=" }
+less_than = { "<" }
+less_equal = { "<=" }
+greater_than = { ">" }
+greater_equal = { ">=" }
+
+// ビット演算子
+bit_and = { "&" }
+bit_or = { "|" }
+bit_xor = { "^" }
+shift_left = { "<<" }
+shift_right = { ">>" }
+
+// 論理演算子
+and = { "&&" }
+or = { "||" }
+
+// 単項演算式
+unary_expr = {
+    unary_op* ~ primary_expr
+}
+
+// 単項演算子
+unary_op = _{
+    negate | not | bit_not | deref | addr_of
+}
+
+negate = { "-" }
+not = { "!" }
+bit_not = { "~" }
+deref = { "*" }
+addr_of = { "&" }
+
+// 基本式
+primary_expr = _{
+    literal |
+    variable |
+    function_call |
+    member_access |
+    index_access |
+    conditional |
+    cast |
+    "(" ~ binary_expr ~ ")"
+}
+
+// リテラル
+literal = {
+    null |
+    boolean |
+    integer |
+    float |
+    string |
+    char
+}
+
+null = { "null" }
+boolean = { "true" | "false" }
+integer = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+float = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+char = @{ "'" ~ (!"'" ~ ANY) ~ "'" }
+
+// 変数参照
+variable = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// 関数呼び出し
+function_call = {
+    variable ~ "(" ~ (binary_expr ~ ("," ~ binary_expr)*)? ~ ")"
+}
+
+// メンバーアクセス
+member_access = {
+    primary_expr ~ "." ~ variable
+}
+
+// インデックスアクセス
+index_access = {
+    primary_expr ~ "[" ~ binary_expr ~ "]"
+}
+
+// 条件演算子 (三項演算子)
+conditional = {
+    binary_expr ~ "?" ~ binary_expr ~ ":" ~ binary_expr
+}
+
+// キャスト式
+cast = {
+    primary_expr ~ "as" ~ type_name
+}
+
+// 型名
+type_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// 空白スキップ
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" } 
