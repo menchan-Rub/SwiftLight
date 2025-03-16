@@ -396,7 +396,11 @@ impl<'a> Lexer<'a> {
                 // 指数記法でない場合は、eは識別子の一部として扱う
                 if !has_exponent {
                     // 後続の文字が識別子の一部であれば、数値リテラルは終了
-                    break;
+                    return Ok(Token::new(
+                        if is_float { TokenKind::Float } else { TokenKind::Integer },
+                        number,
+                        self.current_location(),
+                    ));
                 }
             }
         }

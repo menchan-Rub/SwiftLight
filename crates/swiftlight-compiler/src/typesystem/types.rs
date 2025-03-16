@@ -19,23 +19,96 @@
 //! - コンテキスト依存型システム
 //! - エフェクトシステム
 
-use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
+// 標準ライブラリからの実際に使用される重要なインポートのみを残す
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::hash::{Hash, Hasher};
-use std::cmp::{Eq, PartialEq};
-use std::ops::{Deref, DerefMut};
-use std::borrow::Cow;
 
-use super::{Type, TypeId, TypeError, BuiltinType, TraitBound};
-use crate::frontend::source_map::{SourceLocation, SourceSpan};
-use crate::frontend::error::{Result, ErrorKind, CompileError};
-use crate::utils::interner::{Symbol, SymbolInterner};
-use crate::utils::arena::{Arena, ArenaId};
-use crate::utils::bitvec::BitVector;
-use crate::utils::smallvec::{SmallVec, SmallVecExt};
+// 基本的な型定義のみをインポート
+use super::{TypeId, Symbol, SourceSpan, RegionId};
+
+// 型エイリアスと仮定義（コンパイルを通すため）
+// 実際のプロジェクト実装時に適切に置き換える
+pub type SourceLocation = (usize, usize);
+
+// 前方宣言（後で詳細に定義されるため、ここでは簡略型を使用）
+#[derive(Debug, Clone)]
+pub struct Type {
+    pub id: TypeId,
+    pub name: String,
+    pub flags: TypeFlags,
+    // kind: TypeKindは型の詳細定義で使用（ファイル後半に定義）
+}
+
+// 存在しないか、別のファイルで定義すべき型の一時的な定義
+#[derive(Debug, Clone)]
+pub struct TypeError {
+    pub message: String,
+    pub span: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitBound {
+    pub trait_id: TypeId,
+    pub parameters: Vec<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BuiltinType {
+    Int,
+    Float,
+    Bool,
+    String,
+    Char,
+    Unit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variance {
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectSet {
+    pub effects: Vec<Effect>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Effect {
+    IO,
+    Memory(MemoryEffect),
+    Exception,
+    // 他のエフェクト
+}
+
+#[derive(Debug, Clone)]
+pub enum MemoryEffect {
+    Read,
+    Write,
+    Allocate,
+    Deallocate,
+}
+
+#[derive(Debug, Clone)]
+pub enum PointerProvenance {
+    Stack,
+    Heap,
+    Static,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeAnnotation {
+    pub type_id: TypeId,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct Kind;  // 一時的な定義
 
 /// 型の特性を表すフラグ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -362,7 +435,6 @@ impl fmt::Display for TypeFlags {
 }
 
 /// 型のレイアウト情報
-#[derive(Debug, Clone)]
 pub struct TypeLayout {
     /// 型のサイズ（バイト単位）
     pub size: usize,
@@ -426,7 +498,6 @@ pub struct TypeLayout {
 }
 
 /// キャッシュライン最適化情報
-#[derive(Debug, Clone)]
 pub struct CacheLineOptimization {
     /// キャッシュラインサイズ（バイト単位）
     pub cache_line_size: usize,
@@ -454,7 +525,6 @@ pub struct CacheLineOptimization {
 }
 
 /// キャッシュ階層情報
-#[derive(Debug, Clone)]
 pub struct CacheHierarchyInfo {
     /// L1キャッシュサイズ
     pub l1_cache_size: usize,
@@ -482,7 +552,6 @@ pub struct CacheHierarchyInfo {
 }
 
 /// SIMD最適化情報
-#[derive(Debug, Clone)]
 pub struct SIMDOptimization {
     /// SIMDレーン数
     pub simd_lanes: usize,
@@ -507,7 +576,6 @@ pub struct SIMDOptimization {
 }
 
 /// SIMDデータレイアウト
-#[derive(Debug, Clone)]
 pub enum SIMDDataLayout {
     /// 構造体配列（Structure of Arrays）
     SoA,
@@ -526,7 +594,6 @@ pub enum SIMDDataLayout {
 }
 
 /// メモリ領域情報
-#[derive(Debug, Clone)]
 pub struct MemoryRegionInfo {
     /// 領域ID
     pub region_id: Option<usize>,
@@ -560,7 +627,6 @@ pub struct MemoryRegionInfo {
 }
 
 /// メモリ領域タイプ
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryRegionType {
     /// スタック領域
     Stack,
@@ -600,7 +666,6 @@ pub enum MemoryRegionType {
 }
 
 /// メモリアクセス権限
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPermissions {
     /// 読み取り権限
     pub read: bool,
@@ -613,7 +678,6 @@ pub struct MemoryPermissions {
 }
 
 /// メモリ共有情報
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemorySharing {
     /// 非共有
     Private,
@@ -632,7 +696,6 @@ pub enum MemorySharing {
 }
 
 /// 型の表現形式
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRepresentation {
     /// デフォルト表現
     Default,
@@ -657,7 +720,6 @@ pub enum TypeRepresentation {
 }
 
 /// レイアウト最適化ヒント
-#[derive(Debug, Clone)]
 pub enum LayoutOptimizationHint {
     /// ホットフィールド
     HotField(String),
@@ -679,7 +741,103 @@ pub enum LayoutOptimizationHint {
     
     /// アクセスパターン最適化
     OptimizeForAccessPattern(AccessPattern),
-    
+}
+
+/// メモリアクセスパターン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessPattern {
+    /// 順次アクセス
+    Sequential,
+    /// ランダムアクセス
+    Random,
+    /// ストライドアクセス
+    Strided(usize),
+    /// 一度書き込み多数読み取り
+    WriteOnceReadMany,
+    /// 多数書き込み一度読み取り
+    WriteManyReadOnce,
+    /// バランスされた読み書き
+    BalancedReadWrite,
+    /// 滅多にアクセスされない
+    RarelyAccessed,
+    /// 頻繁にアクセスされる
+    FrequentlyAccessed,
+    /// バーストアクセス
+    Bursty,
+}
+
+/// オブジェクトのライフサイクルパターン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecyclePattern {
+    /// 一時的（短命）
+    Temporary,
+    /// 長命
+    LongLived,
+    /// グローバルライフタイム
+    Global,
+    /// スコープベースのライフタイム
+    ScopeBased,
+    /// プールされる
+    Pooled,
+    /// キャッシュされる
+    Cached,
+    /// 再利用される
+    Reused,
+}
+
+/// 並行アクセスパターン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcurrencyPattern {
+    /// シングルスレッド
+    SingleThreaded,
+    /// 読み取り専用並行
+    ReadOnlyConcurrent,
+    /// 多数読み取り単一書き込み
+    ManyReadersOneWriter,
+    /// 多数書き込み多数読み取り
+    ManyWritersManyReaders,
+    /// スレッドローカル
+    ThreadLocal,
+    /// ロックベースの並行
+    LockBased,
+    /// ロックフリー並行
+    LockFree,
+    /// アトミック操作
+    Atomic,
+}
+
+/// メモリ階層最適化
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryHierarchyOptimization {
+    /// 最適化なし
+    None,
+    /// レジスタ最適化
+    RegisterOptimized,
+    /// L1キャッシュ最適化
+    L1CacheOptimized,
+    /// L2キャッシュ最適化
+    L2CacheOptimized,
+    /// L3キャッシュ最適化
+    L3CacheOptimized,
+    /// メインメモリ最適化
+    MainMemoryOptimized,
+    /// 分散メモリ最適化
+    DistributedMemoryOptimized,
+}
+
+/// エンディアン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endianness {
+    /// リトルエンディアン
+    Little,
+    /// ビッグエンディアン
+    Big,
+    /// ミドルエンディアン
+    Middle,
+    /// ネイティブエンディアン（プラットフォームに依存）
+    Native,
+}
+
 impl TypeLayout {
     /// プリミティブ型のレイアウトを作成
     pub fn primitive(size: usize, align: usize) -> Self {
@@ -690,92 +848,163 @@ impl TypeLayout {
             contained_types: None,
             is_stack_allocated: true,
             padding: 0,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: None,
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::BalancedReadWrite,
+            lifecycle_pattern: LifecyclePattern::ScopeBased,
+            concurrency_pattern: ConcurrencyPattern::SingleThreaded,
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::None,
         }
     }
     
     /// 構造体型のレイアウトを計算
     pub fn compute_struct(fields: Vec<FieldLayout>) -> Self {
+        if fields.is_empty() {
+            return TypeLayout::primitive(0, 1);
+        }
+
         let mut size = 0;
         let mut max_align = 1;
-        let mut padding = 0;
-        
-        // 各フィールドのサイズとアラインメントを計算
+        let mut field_layouts = Vec::new();
+
+        // 最大アラインメントを見つける
         for field in &fields {
-            // フィールドのアラインメント要件を満たすためのパディングを計算
-            let field_offset = align_to(size, field.layout.align);
-            let field_padding = field_offset - size;
-            padding += field_padding;
-            size = field_offset;
-            
-            // フィールドのサイズを加算
-            size += field.layout.size;
-            
-            // 最大アラインメントを更新
             max_align = max_align.max(field.layout.align);
         }
-        
-        // 構造体全体のサイズを最大アラインメントに合わせる
+
+        // フィールドを配置して総サイズを計算
+        for field in fields {
+            // このフィールドの開始オフセットを計算（アラインメントに合わせる）
+            let field_offset = align_to(size, field.layout.align);
+            let mut adjusted_field = field;
+            adjusted_field.offset = field_offset;
+            
+            // 次のフィールドの開始位置を更新
+            size = field_offset + adjusted_field.layout.size;
+            
+            field_layouts.push(adjusted_field);
+        }
+
+        // 構造体全体のサイズもアラインメントに合わせる
         let aligned_size = align_to(size, max_align);
-        padding += aligned_size - size;
-        size = aligned_size;
+        let padding = aligned_size - size;
         
         TypeLayout {
-            size,
+            size: aligned_size,
             align: max_align,
-            fields: Some(fields),
+            fields: Some(field_layouts),
             contained_types: None,
             is_stack_allocated: true,
             padding,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: None,
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::BalancedReadWrite,
+            lifecycle_pattern: LifecyclePattern::ScopeBased,
+            concurrency_pattern: ConcurrencyPattern::SingleThreaded,
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::None,
         }
     }
     
     /// 配列型のレイアウトを計算
     pub fn compute_array(element_layout: TypeLayout, count: usize) -> Self {
-        let size = element_layout.size * count;
+        let element_size = element_layout.size;
+        let element_align = element_layout.align;
+        let total_size = element_size * count;
         
         TypeLayout {
-            size,
-            align: element_layout.align,
+            size: total_size,
+            align: element_align,
             fields: None,
             contained_types: Some(vec![element_layout]),
             is_stack_allocated: true,
             padding: 0,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: None,
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::Sequential,
+            lifecycle_pattern: LifecyclePattern::ScopeBased,
+            concurrency_pattern: ConcurrencyPattern::SingleThreaded,
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::None,
         }
     }
     
     /// タプル型のレイアウトを計算
     pub fn compute_tuple(element_layouts: Vec<TypeLayout>) -> Self {
+        if element_layouts.is_empty() {
+            return TypeLayout::primitive(0, 1);
+        }
+
         let mut size = 0;
         let mut max_align = 1;
-        let mut padding = 0;
-        
-        // 各要素のサイズとアラインメントを計算
+        let mut fields = Vec::new();
+
+        // 最大アラインメントを見つける
         for layout in &element_layouts {
-            // 要素のアラインメント要件を満たすためのパディングを計算
-            let elem_offset = align_to(size, layout.align);
-            let elem_padding = elem_offset - size;
-            padding += elem_padding;
-            size = elem_offset;
-            
-            // 要素のサイズを加算
-            size += layout.size;
-            
-            // 最大アラインメントを更新
             max_align = max_align.max(layout.align);
         }
-        
-        // タプル全体のサイズを最大アラインメントに合わせる
+
+        // 各要素を配置して総サイズを計算
+        for (i, layout) in element_layouts.iter().enumerate() {
+            let field_offset = align_to(size, layout.align);
+            
+            fields.push(FieldLayout {
+                name: format!("{}", i),
+                offset: field_offset,
+                layout: layout.clone(),
+                visibility: Visibility::Public,
+            });
+            
+            size = field_offset + layout.size;
+        }
+
+        // タプル全体のサイズもアラインメントに合わせる
         let aligned_size = align_to(size, max_align);
-        padding += aligned_size - size;
-        size = aligned_size;
+        let padding = aligned_size - size;
         
         TypeLayout {
-            size,
+            size: aligned_size,
             align: max_align,
-            fields: None,
+            fields: Some(fields),
             contained_types: Some(element_layouts),
             is_stack_allocated: true,
             padding,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: None,
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::BalancedReadWrite,
+            lifecycle_pattern: LifecyclePattern::ScopeBased,
+            concurrency_pattern: ConcurrencyPattern::SingleThreaded,
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::None,
         }
     }
     
@@ -790,6 +1019,24 @@ impl TypeLayout {
             contained_types: None,
             is_stack_allocated: true,
             padding: 0,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: None,
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::Random,
+            lifecycle_pattern: LifecyclePattern::ScopeBased,
+            concurrency_pattern: if is_mutable { 
+                ConcurrencyPattern::SingleThreaded 
+            } else { 
+                ConcurrencyPattern::ReadOnlyConcurrent 
+            },
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::None,
         }
     }
     
@@ -803,12 +1050,40 @@ impl TypeLayout {
             contained_types: Some(vec![content_layout]),
             is_stack_allocated: false,
             padding: 0,
+            cache_line_optimization: None,
+            simd_optimization: None,
+            memory_region: Some(MemoryRegionInfo {
+                region_id: None,
+                region_name: None,
+                region_type: MemoryRegionType::Heap,
+                region_size: None,
+                region_lifetime: None,
+                region_allocator: None,
+                region_permissions: MemoryPermissions {
+                    read: true,
+                    write: true,
+                    execute: false,
+                },
+                region_sharing: MemorySharing::Private,
+                region_hierarchy: None,
+                region_metadata: HashMap::new(),
+            }),
+            custom_align: None,
+            is_packed: false,
+            representation: TypeRepresentation::Default,
+            optimization_hints: Vec::new(),
+            bit_width: None,
+            bit_offset: None,
+            endianness: Endianness::Native,
+            access_pattern: AccessPattern::Random,
+            lifecycle_pattern: LifecyclePattern::LongLived,
+            concurrency_pattern: ConcurrencyPattern::SingleThreaded,
+            memory_hierarchy_optimization: MemoryHierarchyOptimization::MainMemoryOptimized,
         }
     }
 }
 
 /// 構造体フィールドのレイアウト情報
-#[derive(Debug, Clone)]
 pub struct FieldLayout {
     /// フィールド名
     pub name: String,
@@ -1168,11 +1443,15 @@ pub fn builtin_type_layout(builtin: BuiltinType) -> TypeLayout {
         BuiltinType::UInt64 => TypeLayout::primitive(8, 8),
         BuiltinType::Float32 => TypeLayout::primitive(4, 4),
         BuiltinType::Float64 => TypeLayout::primitive(8, 8),
-        BuiltinType::Char => TypeLayout::primitive(4, 4), // Unicode文字（UTF-32）
+        BuiltinType::Char => TypeLayout::primitive(4, 4),
         BuiltinType::String => TypeLayout::compute_heap_allocated(
             TypeLayout::primitive(24, 8) // 長さ、容量、データポインタを含む
         ),
+        BuiltinType::Unit => TypeLayout::primitive(0, 1),
         BuiltinType::Never => TypeLayout::primitive(0, 1),
+        BuiltinType::Any => TypeLayout::primitive(16, 8), // 型情報ポインタ + データポインタ
+        BuiltinType::Byte => TypeLayout::primitive(1, 1),
+        BuiltinType::Symbol => TypeLayout::primitive(4, 4),
     }
 }
 
@@ -1192,11 +1471,12 @@ pub fn builtin_type_flags(builtin: BuiltinType) -> TypeFlags {
         BuiltinType::Float32 |
         BuiltinType::Float64 => TypeFlags::PRIMITIVE.union(TypeFlags::CONST_EVALUABLE),
         BuiltinType::Char => TypeFlags::PRIMITIVE.union(TypeFlags::CONST_EVALUABLE),
-        BuiltinType::String => TypeFlags::SIZED
-            .union(TypeFlags::INHABITED)
-            .union(TypeFlags::SEND)
-            .union(TypeFlags::SYNC),
-        BuiltinType::Never => TypeFlags::NONE,
+        BuiltinType::String => TypeFlags::DEFAULT,
+        BuiltinType::Unit => TypeFlags::PRIMITIVE.union(TypeFlags::CONST_EVALUABLE),
+        BuiltinType::Never => TypeFlags::DEFAULT.union(TypeFlags::ZERO_COST),
+        BuiltinType::Any => TypeFlags::DEFAULT.union(TypeFlags::DYNAMIC_SIZED),
+        BuiltinType::Byte => TypeFlags::PRIMITIVE.union(TypeFlags::CONST_EVALUABLE),
+        BuiltinType::Symbol => TypeFlags::PRIMITIVE.union(TypeFlags::CONST_EVALUABLE),
     }
 }
 
@@ -1205,11 +1485,11 @@ pub fn format_type(ty: &Type, type_registry: &super::TypeRegistry) -> String {
     match ty {
         Type::Builtin(builtin) => format!("{:?}", builtin),
         
-        Type::Named { name, module_path, params } => {
+        Type::Named { name, module_path, params, kind } => {
             let full_path = if module_path.is_empty() {
-                name.clone()
+                name.to_string()
             } else {
-                format!("{}::{}", module_path.join("::"), name)
+                format!("{}::{}", module_path.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("::"), name)
             };
             
             if params.is_empty() {
@@ -1221,7 +1501,7 @@ pub fn format_type(ty: &Type, type_registry: &super::TypeRegistry) -> String {
                         if let Some(param_type) = type_registry.get_type(*param_id) {
                             format_type(param_type, type_registry)
                         } else {
-                            format!("Unknown<{}>", param_id)
+                            format!("TypeId({})", param_id.value())
                         }
                     })
                     .collect();
@@ -1230,69 +1510,97 @@ pub fn format_type(ty: &Type, type_registry: &super::TypeRegistry) -> String {
             }
         },
         
-        Type::Function { params, return_type, is_async, is_unsafe } => {
+        Type::Function { params, param_names, return_type, is_async, is_unsafe, effects, closure_env } => {
             let param_strs: Vec<String> = params
                 .iter()
-                .map(|param_id| {
-                    if let Some(param_type) = type_registry.get_type(*param_id) {
+                .enumerate()
+                .map(|(i, param_id)| {
+                    let name = if let Some(names) = param_names {
+                        if i < names.len() {
+                            format!("{}: ", names[i])
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    
+                    let type_str = if let Some(param_type) = type_registry.get_type(*param_id) {
                         format_type(param_type, type_registry)
                     } else {
-                        format!("Unknown<{}>", param_id)
-                    }
+                        format!("TypeId({})", param_id.value())
+                    };
+                    
+                    format!("{}{}", name, type_str)
                 })
                 .collect();
+                
+            let fn_prefix = match (is_unsafe, is_async) {
+                (true, true) => "unsafe async fn",
+                (true, false) => "unsafe fn",
+                (false, true) => "async fn",
+                (false, false) => "fn",
+            };
+            
+            let effects_str = if let Some(fx) = effects {
+                if !fx.effects.is_empty() {
+                    format!(" effects[{}]", fx.effects.len())
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
             
             let return_type_str = if let Some(ret_type) = type_registry.get_type(**return_type) {
                 format_type(ret_type, type_registry)
             } else {
-                format!("Unknown<{}>", return_type)
+                format!("TypeId({})", return_type.value())
             };
             
-            let prefix = if *is_unsafe { "unsafe " } else { "" };
-            let fn_keyword = if *is_async { "async fn" } else { "fn" };
-            
-            format!("{}{} ({}) -> {}", prefix, fn_keyword, param_strs.join(", "), return_type_str)
+            format!("{}{} ({}) -> {}", fn_prefix, effects_str, param_strs.join(", "), return_type_str)
         },
         
-        Type::Array { element_type, size } => {
+        Type::Array { element_type, size, is_fixed } => {
             let element_type_str = if let Some(el_type) = type_registry.get_type(*element_type) {
                 format_type(el_type, type_registry)
             } else {
-                format!("Unknown<{}>", element_type)
+                format!("TypeId({})", element_type.value())
             };
             
-            if let Some(size) = size {
-                format!("[{}; {}]", element_type_str, size)
+            if let Some(s) = size {
+                format!("[{}; {}]", element_type_str, s)
             } else {
                 format!("[{}]", element_type_str)
             }
         },
         
-        Type::Reference { referenced_type, is_mutable, lifetime } => {
+        Type::Reference { referenced_type, is_mutable, lifetime, region } => {
             let ref_type_str = if let Some(ref_type) = type_registry.get_type(*referenced_type) {
                 format_type(ref_type, type_registry)
             } else {
-                format!("Unknown<{}>", referenced_type)
+                format!("TypeId({})", referenced_type.value())
             };
             
-            let lifetime_str = if let Some(lt) = lifetime {
-                format!("'{} ", lt)
-            } else {
-                "".to_string()
-            };
-            
+            let mut prefix = String::new();
             if *is_mutable {
-                format!("&{}mut {}", lifetime_str, ref_type_str)
+                prefix.push_str("&mut ");
             } else {
-                format!("&{}{}", lifetime_str, ref_type_str)
+                prefix.push_str("&");
             }
+            
+            if let Some(lt) = lifetime {
+                prefix.push_str(&format!("'{} ", lt));
+            }
+            
+            format!("{}{}", prefix, ref_type_str)
         },
         
-        Type::Pointer { pointed_type, is_mutable } => {
+        Type::Pointer { pointed_type, is_mutable, provenance } => {
             let ptr_type_str = if let Some(ptr_type) = type_registry.get_type(*pointed_type) {
                 format_type(ptr_type, type_registry)
             } else {
-                format!("Unknown<{}>", pointed_type)
+                format!("TypeId({})", pointed_type.value())
             };
             
             if *is_mutable {
@@ -1302,56 +1610,238 @@ pub fn format_type(ty: &Type, type_registry: &super::TypeRegistry) -> String {
             }
         },
         
-        Type::Tuple(types) => {
-            let type_strs: Vec<String> = types
+        Type::Tuple(elements) => {
+            if elements.is_empty() {
+                return "()".to_string();
+            }
+            
+            let element_strs: Vec<String> = elements
                 .iter()
-                .map(|type_id| {
-                    if let Some(tuple_type) = type_registry.get_type(*type_id) {
-                        format_type(tuple_type, type_registry)
+                .map(|elem_id| {
+                    if let Some(elem_type) = type_registry.get_type(*elem_id) {
+                        format_type(elem_type, type_registry)
                     } else {
-                        format!("Unknown<{}>", type_id)
+                        format!("TypeId({})", elem_id.value())
                     }
                 })
                 .collect();
-            
-            if types.len() == 1 {
-                // 1要素のタプルは特殊な構文
-                format!("({},)", type_strs[0])
-            } else {
-                format!("({})", type_strs.join(", "))
-            }
+                
+            format!("({})", element_strs.join(", "))
         },
         
-        Type::TypeParameter { name, .. } => name.clone(),
+        Type::TypeParameter { name, index, bounds, variance, kind } => {
+            let bounds_str = if bounds.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", bounds.len())
+            };
+            
+            format!("{}{}", name, bounds_str)
+        },
         
-        Type::TypeVariable { id, .. } => format!("?T{}", id),
+        Type::TypeVariable { id, constraints, kind } => {
+            format!("?{}", id)
+        },
         
-        Type::TypeAlias { name, .. } => name.clone(),
+        Type::TypeAlias { name, target, params } => name.to_string(),
         
-        Type::TraitObject { traits, is_dyn } => {
+        Type::TraitObject { traits, is_dyn, lifetime_bounds } => {
             let trait_strs: Vec<String> = traits
                 .iter()
                 .map(|trait_bound| {
                     if let Some(trait_type) = type_registry.get_type(trait_bound.trait_id) {
                         format_type(trait_type, type_registry)
                     } else {
-                        format!("Unknown<{}>", trait_bound.trait_id)
+                        format!("TypeId({})", trait_bound.trait_id.value())
                     }
                 })
                 .collect();
             
-            if *is_dyn {
-                format!("dyn {}", trait_strs.join(" + "))
+            let lifetime_str = if !lifetime_bounds.is_empty() {
+                format!(" + '{}", lifetime_bounds[0])
             } else {
-                format!("impl {}", trait_strs.join(" + "))
+                String::new()
+            };
+                
+            if *is_dyn {
+                format!("dyn {}{}", trait_strs.join(" + "), lifetime_str)
+            } else {
+                format!("impl {}{}", trait_strs.join(" + "), lifetime_str)
             }
         },
         
-        Type::Error => "{{error}}".to_string(),
+        Type::Intersection(types) => {
+            let type_strs: Vec<String> = types
+                .iter()
+                .map(|type_id| {
+                    if let Some(inner_type) = type_registry.get_type(*type_id) {
+                        format_type(inner_type, type_registry)
+                    } else {
+                        format!("TypeId({})", type_id.value())
+                    }
+                })
+                .collect();
+                
+            format!("{}", type_strs.join(" & "))
+        },
+        
+        Type::Union(types) => {
+            let type_strs: Vec<String> = types
+                .iter()
+                .map(|type_id| {
+                    if let Some(inner_type) = type_registry.get_type(*type_id) {
+                        format_type(inner_type, type_registry)
+                    } else {
+                        format!("TypeId({})", type_id.value())
+                    }
+                })
+                .collect();
+                
+            format!("{}", type_strs.join(" | "))
+        },
+        
+        Type::Existential { param_name, param_kind, bounds, body } => {
+            format!("exists {}: {}", param_name, body.value())
+        },
+        
+        Type::Universal { param_name, param_kind, bounds, body } => {
+            format!("forall {}: {}", param_name, body.value())
+        },
+        
+        Type::DependentFunction { param_name, param_type, return_type } => {
+            format!("({}: {}) -> {}", param_name, param_type.value(), return_type.value())
+        },
+        
+        Type::DependentPair { param_name, param_type, result_type } => {
+            format!("({}: {}) × {}", param_name, param_type.value(), result_type.value())
+        },
+        
+        Type::Linear(inner) => {
+            let inner_str = if let Some(inner_type) = type_registry.get_type(**inner) {
+                format_type(inner_type, type_registry)
+            } else {
+                format!("TypeId({})", inner.value())
+            };
+            
+            format!("linear {}", inner_str)
+        },
+        
+        Type::Refinement { base_type, predicate } => {
+            let base_str = if let Some(base) = type_registry.get_type(*base_type) {
+                format_type(base, type_registry)
+            } else {
+                format!("TypeId({})", base_type.value())
+            };
+            
+            format!("{} where ...", base_str)
+        },
+        
+        Type::TypeLevelLiteral(lit) => format!("{:?}", lit),
+        
+        Type::TypeLevelOperation { op, operands } => format!("{:?}(...)", op),
+        
+        Type::TypeLevelApplication { func, args } => format!("{}(...)", func.value()),
+        
+        Type::TypeState { base_type, state, transitions } => {
+            let base_str = if let Some(base) = type_registry.get_type(*base_type) {
+                format_type(base, type_registry)
+            } else {
+                format!("TypeId({})", base_type.value())
+            };
+            
+            format!("{} @ {}", base_str, state)
+        },
+        
+        Type::Quantum { base_type, qubit_count } => {
+            let base_str = if let Some(base) = type_registry.get_type(*base_type) {
+                format_type(base, type_registry)
+            } else {
+                format!("TypeId({})", base_type.value())
+            };
+            
+            if let Some(count) = qubit_count {
+                format!("quantum<{}>[{}]", base_str, count)
+            } else {
+                format!("quantum<{}>", base_str)
+            }
+        },
+        
+        Type::Effectful { base_type, effects } => {
+            let base_str = if let Some(base) = type_registry.get_type(*base_type) {
+                format_type(base, type_registry)
+            } else {
+                format!("TypeId({})", base_type.value())
+            };
+            
+            format!("{} with effects", base_str)
+        },
+        
+        Type::Capability { resource, operations } => {
+            format!("cap {}[{}]", resource, operations.len())
+        },
+        
+        Type::Row { fields, rest } => {
+            let fields_str: Vec<String> = fields
+                .iter()
+                .map(|(name, ty)| {
+                    let ty_str = if let Some(field_type) = type_registry.get_type(*ty) {
+                        format_type(field_type, type_registry)
+                    } else {
+                        format!("TypeId({})", ty.value())
+                    };
+                    
+                    format!("{}: {}", name, ty_str)
+                })
+                .collect();
+                
+            let rest_str = if let Some(rest_type) = rest {
+                let rest_ty_str = if let Some(r) = type_registry.get_type(**rest_type) {
+                    format_type(r, type_registry)
+                } else {
+                    format!("TypeId({})", rest_type.value())
+                };
+                
+                format!(" | {}", rest_ty_str)
+            } else {
+                String::new()
+            };
+                
+            format!("{{{}{}}}", fields_str.join(", "), rest_str)
+        },
+        
+        Type::HigherKinded { constructor, params } => {
+            format!("{}<?...>", constructor.value())
+        },
+        
+        Type::TypeFamily { name, params, equations } => {
+            format!("type family {}[{}]", name, params.len())
+        },
+        
+        Type::TypeClass { name, params, methods, superclasses } => {
+            format!("class {}[{}]", name, params.len())
+        },
+        
+        Type::TypeOperator { name, fixity, precedence, implementation } => {
+            format!("operator {}", name)
+        },
+        
+        Type::Gradual { base_type, precision } => {
+            if let Some(ty) = base_type {
+                if let Some(base) = type_registry.get_type(*ty) {
+                    format_type(base, type_registry)
+                } else {
+                    format!("gradual<{}>", format_type(base, type_registry))
+                }
+            } else {
+                "?".to_string()
+            }
+        },
+        
+        Type::Error => "!error!".to_string(),
     }
 }
 
-/// 型にアノテーションを適用
+/// 型に対して型注釈を適用する
 pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> Type {
     match annotation {
         TypeAnnotation::Mutable => {
@@ -1359,6 +1849,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
                 referenced_type: base_type,
                 is_mutable: true,
                 lifetime: None,
+                region: None,
             }
         },
         
@@ -1367,6 +1858,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
                 referenced_type: base_type,
                 is_mutable: false,
                 lifetime: None,
+                region: None,
             }
         },
         
@@ -1375,6 +1867,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
                 referenced_type: base_type,
                 is_mutable: true,
                 lifetime: None,
+                region: None,
             }
         },
         
@@ -1382,6 +1875,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
             Type::Pointer {
                 pointed_type: base_type,
                 is_mutable: false,
+                provenance: PointerProvenance::Safe,
             }
         },
         
@@ -1389,6 +1883,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
             Type::Pointer {
                 pointed_type: base_type,
                 is_mutable: true,
+                provenance: PointerProvenance::Safe,
             }
         },
         
@@ -1396,6 +1891,7 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
             Type::Array {
                 element_type: base_type,
                 size: Some(*size),
+                is_fixed: true,
             }
         },
         
@@ -1403,46 +1899,20 @@ pub fn apply_type_annotation(base_type: TypeId, annotation: &TypeAnnotation) -> 
             Type::Array {
                 element_type: base_type,
                 size: None,
+                is_fixed: false,
             }
         },
         
         TypeAnnotation::Optional => {
             // オプショナル型は内部的には列挙型
             Type::Named {
-                name: "Option".to_string(),
-                module_path: vec!["std".to_string()],
+                name: "Option".into(),
+                module_path: vec!["std".into()],
                 params: vec![base_type],
+                kind: Kind::Type,
             }
         },
     }
-}
-
-/// 型のアノテーション
-#[derive(Debug, Clone)]
-pub enum TypeAnnotation {
-    /// 可変
-    Mutable,
-    
-    /// 参照
-    Reference,
-    
-    /// 可変参照
-    MutableReference,
-    
-    /// ポインタ
-    Pointer,
-    
-    /// 可変ポインタ
-    MutablePointer,
-    
-    /// 固定長配列
-    Array(usize),
-    
-    /// スライス
-    Slice,
-    
-    /// オプショナル型
-    Optional,
 }
 
 #[cfg(test)]

@@ -8,8 +8,9 @@ repository.workspace = true
 description = "SwiftLight言語コンパイラ"
 
 [dependencies]
-# LLVMバインディング
+# LLVM関連
 inkwell = { workspace = true }
+llvm-sys = { workspace = true }
 
 # ユーティリティ
 thiserror = { workspace = true }

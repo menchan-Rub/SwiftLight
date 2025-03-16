@@ -22,11 +22,24 @@ use std::sync::Arc;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+// 同一モジュール内の型をインポート
 use super::{Type, TypeId, TypeError, TraitBound, TypeRegistry};
 use super::types::{TypeDefinition, MethodSignature, MethodDefinition, TypeFlags, Visibility};
-use crate::frontend::source_map::SourceLocation;
-use crate::frontend::error::{Result, ErrorKind};
-use crate::frontend::ast;
+
+// 現時点では未実装のモジュールからのインポートをコメントアウト
+// 必要に応じて実装後に有効化する
+// use crate::frontend::source_map::SourceLocation;
+// use crate::frontend::error::{Result, ErrorKind};
+// use crate::frontend::ast;
+
+// 一時的な型定義（コンパイルエラー回避用）
+pub type SourceLocation = (usize, usize);
+pub type Result<T> = std::result::Result<T, String>;
+pub enum ErrorKind {
+    TypeError,
+    ParseError,
+    CompileError,
+}
 
 /// トレイト定義
 #[derive(Debug, Clone)]
@@ -134,6 +147,96 @@ pub struct MethodImplementation {
     
     /// 実装の定義位置
     pub location: SourceLocation,
+    
+    /// 条件付き実装のための条件
+    pub conditions: Vec<ImplementationCondition>,
+}
+
+/// メソッド実装のメタデータ
+#[derive(Debug, Clone, Default)]
+pub struct MethodMetadata {
+    /// デフォルト実装かどうか
+    pub is_default_implementation: bool,
+    
+    /// 最適化レベル
+    pub optimization_level: OptimizationLevel,
+    
+    /// 安全性チェック
+    pub safety_checks: SafetyChecks,
+    
+    /// プラットフォーム特有のヒント
+    pub platform_hints: Vec<String>,
+    
+    /// パフォーマンス上重要かどうか
+    pub performance_critical: bool,
+    
+    /// 実行コンテキスト
+    pub execution_context: ExecutionContext,
+}
+
+/// 実装条件
+#[derive(Debug, Clone)]
+pub enum ImplementationCondition {
+    /// トレイト境界条件
+    TraitBound(TraitBound),
+    
+    /// 型等価性条件
+    TypeEquals(TypeId, TypeId),
+    
+    /// カスタム条件
+    Custom(String),
+}
+
+/// 最適化レベル
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptimizationLevel {
+    /// デバッグ（最適化なし）
+    Debug,
+    
+    /// 通常の最適化
+    #[default]
+    Normal,
+    
+    /// 積極的な最適化
+    Aggressive,
+}
+
+/// 安全性チェック
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SafetyChecks {
+    /// すべてのチェックを実行
+    #[default]
+    Full,
+    
+    /// 基本的なチェックのみ
+    Basic,
+    
+    /// チェックなし（unsafe）
+    None,
+}
+
+/// 実行コンテキスト
+#[derive(Debug, Clone, Default)]
+pub enum ExecutionContext {
+    /// 通常のコンテキスト
+    #[default]
+    Normal,
+    
+    /// 非同期コンテキスト
+    Async,
+    
+    /// 並列コンテキスト
+    Parallel,
+    
+    /// システムレベルコンテキスト
+    System,
+}
+
+impl MethodMetadata {
+    /// 新しいデフォルトのメタデータを作成
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// 関連定数の定義
@@ -861,14 +964,7 @@ impl TraitImplementationBuilder {
                         signature: substituted_signature,
                         body: final_body,
                         location: self.location.clone(),
-                        metadata: MethodMetadata {
-                            is_default_implementation: true,
-                            optimization_level: self.metadata.optimization_level,
-                            safety_checks: self.metadata.safety_checks,
-                            platform_hints: self.metadata.platform_hints.clone(),
-                            performance_critical: false,
-                            execution_context: self.metadata.execution_context.clone(),
-                        }
+                        conditions: Vec::new(),
                     };
                     
                     // 条件付き実装の評価
@@ -926,14 +1022,7 @@ impl TraitImplementationBuilder {
                 signature: substituted_signature,
                 body: substituted_body,
                 location: self.location.clone(),
-                metadata: MethodMetadata {
-                    is_default_implementation: true,
-                    optimization_level: self.metadata.optimization_level,
-                    safety_checks: self.metadata.safety_checks,
-                    platform_hints: self.metadata.platform_hints.clone(),
-                    performance_critical: false,
-                    execution_context: self.metadata.execution_context.clone(),
-                }
+                conditions: Vec::new(),
             };
             
             self.methods.insert(method_name.to_string(), method_impl);
@@ -1317,13 +1406,11 @@ impl TraitImplementationBuilder {
             
             // ヘルパーメソッドを追加
             self.methods.insert(helper_name.clone(), MethodImplementation {
+                name: helper_name.clone(),
                 signature: helper_sig,
                 body: helper_body,
-                visibility: Visibility::Private,
-                is_inline: true,
-                conditions: vec![],
                 location: self.location.clone(),
-                metadata: MethodMetadata::new(),
+                conditions: Vec::new(),
             });
             
             // 元のメソッドを更新してヘルパーを使用するように
@@ -1616,6 +1703,7 @@ mod tests {
             },
             body: None,
             location: location.clone(),
+            conditions: Vec::new(),
         };
         
         let builder = builder.add_method(method_impl);

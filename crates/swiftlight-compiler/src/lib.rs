@@ -248,7 +248,7 @@ pub fn compile<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
     options: driver::CompileOptions,
-) -> Result<(), Box<dyn Error>> {
+) -> std::result::Result<(), Box<dyn Error>> {
     // プロファイリング開始
     let profiler = profiling::Profiler::start_session("compile");
     let _compile_span = profiler.span("compile_full");
@@ -445,7 +445,7 @@ pub fn compile_source<P: AsRef<Path>>(
     file_name: &str,
     output_path: P,
     options: driver::CompileOptions,
-) -> Result<(), Box<dyn Error>> {
+) -> std::result::Result<(), Box<dyn Error>> {
     // プロファイリング開始
     let profiler = profiling::Profiler::start_session("compile_source");
     let _compile_span = profiler.span("compile_source");

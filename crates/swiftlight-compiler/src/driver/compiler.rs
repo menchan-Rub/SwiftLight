@@ -3,41 +3,75 @@
 //! コンパイルプロセス全体を実行するドライバークラスを提供します。
 //! ソースコードの解析からコード生成までのパイプラインを管理し、
 //! 並列処理やインクリメンタルコンパイルをサポートします。
+//! 高度な最適化、メモリ効率、ビルド速度を重視した設計となっています。
 
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Instant, Duration};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::io::{self, Write};
 use rayon::prelude::*;
+use parking_lot::{ReentrantMutex, Condvar};
+use crossbeam_channel::{bounded, Sender, Receiver};
+use dashmap::DashMap;
+use memmap2::MmapOptions;
 
 use crate::frontend::{
     lexer::Lexer,
     parser::Parser,
     semantic::SemanticAnalyzer,
-    ast::Program,
-    error::{CompilerError, ErrorKind, Result, SourceLocation, DiagnosticReporter},
-    symbol_table::SymbolTable,
+    ast::{Program, Node, NodeId, NodeKind},
+    error::{CompilerError, ErrorKind, Result, SourceLocation, DiagnosticReporter, Severity},
+    symbol_table::{SymbolTable, Symbol, SymbolKind, Visibility},
     type_checker::TypeChecker,
-    name_resolution::NameResolver
+    name_resolution::NameResolver,
+    dependency_analyzer::DependencyAnalyzer,
+    macro_expander::MacroExpander,
+    constant_evaluator::ConstantEvaluator
 };
 use crate::middleend::{
     ir,
-    optimization::{self, OptimizationLevel, PassManager},
+    optimization::{self, OptimizationLevel, PassManager, Pass, PassContext},
     ir_validator::IRValidator,
-    ir_generator::IRGenerator
+    ir_generator::IRGenerator,
+    ir_serializer::IRSerializer,
+    ir_deserializer::IRDeserializer,
+    dataflow_analyzer::DataFlowAnalyzer,
+    alias_analyzer::AliasAnalyzer,
+    memory_layout_optimizer::MemoryLayoutOptimizer,
+    parallel_region_analyzer::ParallelRegionAnalyzer
 };
-use crate::backend::{self, Target, Backend, CodegenOptions};
+use crate::backend::{
+    self, Target, Backend, CodegenOptions, TargetFeature, 
+    register_allocator::RegisterAllocator,
+    instruction_scheduler::InstructionScheduler,
+    code_emitter::CodeEmitter,
+    binary_generator::BinaryGenerator,
+    debug_info_generator::DebugInfoGenerator,
+    platform_specific::PlatformSpecificGenerator
+};
 use crate::driver::{
     config::CompilerConfig,
     options::CompileOptions,
-    dependency::DependencyGraph,
-    cache::CompilationCache
+    dependency::{DependencyGraph, DependencyNode, DependencyType},
+    cache::{CompilationCache, CacheEntry, CacheMetadata, CacheStrategy},
+    incremental::{IncrementalCompilationManager, ChangeDetector, ChangeImpactAnalyzer},
+    module_manager::ModuleManager,
+    plugin_manager::PluginManager,
+    build_plan::BuildPlan
 };
 use crate::utils::{
-    profiler::Profiler,
-    file_system::FileSystem,
-    parallel::WorkQueue
+    profiler::{Profiler, ProfilingEvent, ProfilingScope},
+    file_system::{FileSystem, VirtualFileSystem, FileWatcher, FileChangeEvent},
+    parallel::{WorkQueue, Task, TaskPriority, ThreadPool},
+    memory_tracker::{MemoryTracker, MemoryUsageSnapshot},
+    hash::{HashAlgorithm, ContentHasher},
+    logging::{Logger, LogLevel, LogMessage},
+    error_formatter::{ErrorFormatter, FormattingOptions},
+    string_interner::StringInterner,
+    arena::{Arena, TypedArena},
+    config_parser::ConfigParser
 };
 
 /// コンパイル時の詳細な統計情報
@@ -53,14 +87,36 @@ pub struct CompileStats {
     pub type_checking_time: Duration,
     /// 意味解析にかかった時間（名前解決と型チェックを含む）
     pub semantic_time: Duration,
+    /// マクロ展開にかかった時間
+    pub macro_expansion_time: Duration,
+    /// 定数評価にかかった時間
+    pub constant_evaluation_time: Duration,
+    /// 依存関係分析にかかった時間
+    pub dependency_analysis_time: Duration,
     /// IR生成にかかった時間
     pub ir_gen_time: Duration,
     /// IR検証にかかった時間
     pub ir_validation_time: Duration,
+    /// データフロー分析にかかった時間
+    pub dataflow_analysis_time: Duration,
+    /// エイリアス分析にかかった時間
+    pub alias_analysis_time: Duration,
+    /// メモリレイアウト最適化にかかった時間
+    pub memory_layout_time: Duration,
+    /// 並列領域分析にかかった時間
+    pub parallel_region_time: Duration,
     /// 最適化にかかった時間
     pub optimization_time: Duration,
     /// コード生成にかかった時間
     pub codegen_time: Duration,
+    /// レジスタ割り当てにかかった時間
+    pub register_allocation_time: Duration,
+    /// 命令スケジューリングにかかった時間
+    pub instruction_scheduling_time: Duration,
+    /// バイナリ生成にかかった時間
+    pub binary_generation_time: Duration,
+    /// デバッグ情報生成にかかった時間
+    pub debug_info_time: Duration,
     /// リンク時間
     pub linking_time: Duration,
     /// 合計コンパイル時間
@@ -75,15 +131,69 @@ pub struct CompileStats {
     pub warning_count: usize,
     /// キャッシュヒット数
     pub cache_hits: usize,
+    /// キャッシュミス数
+    pub cache_misses: usize,
+    /// インクリメンタルビルドでスキップされたファイル数
+    pub skipped_files: usize,
     /// メモリ使用量（ピーク時、バイト単位）
     pub peak_memory_usage: usize,
+    /// 現在のメモリ使用量（バイト単位）
+    pub current_memory_usage: usize,
     /// 各最適化パスの実行時間
     pub optimization_passes: HashMap<String, Duration>,
     /// 並列処理で使用したスレッド数
     pub thread_count: usize,
+    /// 並列タスクの総数
+    pub total_tasks: usize,
+    /// 並列タスクの最大同時実行数
+    pub max_concurrent_tasks: usize,
+    /// I/O待ち時間
+    pub io_wait_time: Duration,
+    /// CPU使用率（0.0〜1.0）
+    pub cpu_usage: f64,
+    /// 各フェーズのメモリ使用量
+    pub phase_memory_usage: HashMap<String, usize>,
+    /// 各モジュールのコンパイル時間
+    pub module_compile_times: HashMap<String, Duration>,
+    /// 依存関係グラフの深さ
+    pub dependency_graph_depth: usize,
+    /// 依存関係グラフのノード数
+    pub dependency_graph_nodes: usize,
+    /// 依存関係グラフのエッジ数
+    pub dependency_graph_edges: usize,
+    /// 型チェックで検出された型の数
+    pub type_count: usize,
+    /// シンボルテーブルのエントリ数
+    pub symbol_count: usize,
+    /// 生成されたIR命令の数
+    pub ir_instruction_count: usize,
+    /// 生成されたアセンブリ命令の数
+    pub assembly_instruction_count: usize,
+    /// 生成されたバイナリのサイズ（バイト単位）
+    pub binary_size: usize,
+    /// 並列コンパイルの効率（0.0〜1.0）
+    pub parallel_efficiency: f64,
+    /// コンパイル速度（行/秒）
+    pub compilation_speed: f64,
+    /// 最適化による削減率（0.0〜1.0）
+    pub optimization_reduction_rate: f64,
+    /// キャッシュ使用量（バイト単位）
+    pub cache_size: usize,
+    /// プラグインの実行時間
+    pub plugin_execution_time: Duration,
+    /// 増分コンパイルの分析時間
+    pub incremental_analysis_time: Duration,
 }
 
 impl CompileStats {
+    /// 新しい統計情報を作成
+    pub fn new(thread_count: usize) -> Self {
+        Self {
+            thread_count,
+            ..CompileStats::default()
+        }
+    }
+
     /// 別の統計情報を合併する
     pub fn merge(&mut self, other: &CompileStats) {
         self.lexing_time += other.lexing_time;
@@ -91,22 +201,111 @@ impl CompileStats {
         self.name_resolution_time += other.name_resolution_time;
         self.type_checking_time += other.type_checking_time;
         self.semantic_time += other.semantic_time;
+        self.macro_expansion_time += other.macro_expansion_time;
+        self.constant_evaluation_time += other.constant_evaluation_time;
+        self.dependency_analysis_time += other.dependency_analysis_time;
         self.ir_gen_time += other.ir_gen_time;
         self.ir_validation_time += other.ir_validation_time;
+        self.dataflow_analysis_time += other.dataflow_analysis_time;
+        self.alias_analysis_time += other.alias_analysis_time;
+        self.memory_layout_time += other.memory_layout_time;
+        self.parallel_region_time += other.parallel_region_time;
         self.optimization_time += other.optimization_time;
         self.codegen_time += other.codegen_time;
+        self.register_allocation_time += other.register_allocation_time;
+        self.instruction_scheduling_time += other.instruction_scheduling_time;
+        self.binary_generation_time += other.binary_generation_time;
+        self.debug_info_time += other.debug_info_time;
         self.linking_time += other.linking_time;
         self.file_count += other.file_count;
         self.total_lines += other.total_lines;
         self.error_count += other.error_count;
         self.warning_count += other.warning_count;
         self.cache_hits += other.cache_hits;
+        self.cache_misses += other.cache_misses;
+        self.skipped_files += other.skipped_files;
         self.peak_memory_usage = self.peak_memory_usage.max(other.peak_memory_usage);
+        self.total_tasks += other.total_tasks;
+        self.max_concurrent_tasks = self.max_concurrent_tasks.max(other.max_concurrent_tasks);
+        self.io_wait_time += other.io_wait_time;
+        self.type_count += other.type_count;
+        self.symbol_count += other.symbol_count;
+        self.ir_instruction_count += other.ir_instruction_count;
+        self.assembly_instruction_count += other.assembly_instruction_count;
+        self.binary_size += other.binary_size;
         
         // 最適化パスの時間を合併
         for (pass_name, duration) in &other.optimization_passes {
             *self.optimization_passes.entry(pass_name.clone()).or_insert(Duration::default()) += *duration;
         }
+        
+        // モジュールコンパイル時間を合併
+        for (module_name, duration) in &other.module_compile_times {
+            *self.module_compile_times.entry(module_name.clone()).or_insert(Duration::default()) += *duration;
+        }
+        
+        // フェーズメモリ使用量を合併
+        for (phase_name, usage) in &other.phase_memory_usage {
+            let entry = self.phase_memory_usage.entry(phase_name.clone()).or_insert(0);
+            *entry = (*entry).max(*usage);
+        }
+    }
+    
+    /// 統計情報を計算する
+    pub fn calculate_derived_stats(&mut self) {
+        if !self.total_time.is_zero() {
+            // コンパイル速度（行/秒）
+            self.compilation_speed = self.total_lines as f64 / self.total_time.as_secs_f64();
+            
+            // CPU使用率
+            let total_thread_time = self.lexing_time + self.parsing_time + self.semantic_time + 
+                                   self.ir_gen_time + self.optimization_time + self.codegen_time;
+            self.cpu_usage = (total_thread_time.as_secs_f64() / 
+                             (self.total_time.as_secs_f64() * self.thread_count as f64))
+                             .min(1.0);
+            
+            // 並列効率
+            if self.thread_count > 1 {
+                let ideal_time = total_thread_time.as_secs_f64() / self.thread_count as f64;
+                self.parallel_efficiency = (ideal_time / self.total_time.as_secs_f64()).min(1.0);
+            } else {
+                self.parallel_efficiency = 1.0;
+            }
+        }
+        
+        // 最適化による削減率
+        if self.ir_instruction_count > 0 && self.assembly_instruction_count > 0 {
+            let reduction = self.ir_instruction_count.saturating_sub(self.assembly_instruction_count);
+            self.optimization_reduction_rate = reduction as f64 / self.ir_instruction_count as f64;
+        }
+    }
+    
+    /// 統計情報をJSONフォーマットで出力
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+    
+    /// 統計情報をCSVフォーマットで出力
+    pub fn to_csv(&self) -> String {
+        let mut csv = String::new();
+        csv.push_str("メトリック,値\n");
+        csv.push_str(&format!("ファイル数,{}\n", self.file_count));
+        csv.push_str(&format!("合計行数,{}\n", self.total_lines));
+        csv.push_str(&format!("字句解析時間,{:?}\n", self.lexing_time));
+        csv.push_str(&format!("構文解析時間,{:?}\n", self.parsing_time));
+        csv.push_str(&format!("意味解析時間,{:?}\n", self.semantic_time));
+        csv.push_str(&format!("IR生成時間,{:?}\n", self.ir_gen_time));
+        csv.push_str(&format!("最適化時間,{:?}\n", self.optimization_time));
+        csv.push_str(&format!("コード生成時間,{:?}\n", self.codegen_time));
+        csv.push_str(&format!("合計時間,{:?}\n", self.total_time));
+        csv.push_str(&format!("キャッシュヒット数,{}\n", self.cache_hits));
+        csv.push_str(&format!("キャッシュミス数,{}\n", self.cache_misses));
+        csv.push_str(&format!("スキップされたファイル数,{}\n", self.skipped_files));
+        csv.push_str(&format!("ピークメモリ使用量,{} バイト\n", self.peak_memory_usage));
+        csv.push_str(&format!("コンパイル速度,{:.2} 行/秒\n", self.compilation_speed));
+        csv.push_str(&format!("CPU使用率,{:.2}%\n", self.cpu_usage * 100.0));
+        csv.push_str(&format!("並列効率,{:.2}%\n", self.parallel_efficiency * 100.0));
+        csv
     }
 }
 
@@ -121,6 +320,129 @@ pub struct CompileResult {
     pub output_files: Vec<PathBuf>,
     /// エラーと警告のリスト
     pub diagnostics: Vec<CompilerError>,
+    /// 生成されたIRモジュール
+    pub ir_modules: HashMap<String, Arc<ir::Module>>,
+    /// 生成されたバイナリデータ
+    pub binary_data: Option<Vec<u8>>,
+    /// デバッグ情報
+    pub debug_info: Option<Vec<u8>>,
+    /// 依存関係グラフ
+    pub dependency_graph: Option<DependencyGraph>,
+    /// ビルド成果物のハッシュ
+    pub output_hash: Option<String>,
+    /// コンパイル時に生成された追加情報
+    pub metadata: HashMap<String, String>,
+}
+
+impl CompileResult {
+    /// 新しいコンパイル結果を作成
+    pub fn new(success: bool, stats: CompileStats) -> Self {
+        Self {
+            success,
+            stats,
+            output_files: Vec::new(),
+            diagnostics: Vec::new(),
+            ir_modules: HashMap::new(),
+            binary_data: None,
+            debug_info: None,
+            dependency_graph: None,
+            output_hash: None,
+            metadata: HashMap::new(),
+        }
+    }
+    
+    /// 出力ファイルを追加
+    pub fn add_output_file(&mut self, path: PathBuf) {
+        self.output_files.push(path);
+    }
+    
+    /// 診断情報を追加
+    pub fn add_diagnostic(&mut self, diagnostic: CompilerError) {
+        match diagnostic.kind {
+            ErrorKind::Error | ErrorKind::Fatal => self.stats.error_count += 1,
+            ErrorKind::Warning => self.stats.warning_count += 1,
+            _ => {}
+        }
+        self.diagnostics.push(diagnostic);
+    }
+    
+    /// IRモジュールを追加
+    pub fn add_ir_module(&mut self, name: String, module: Arc<ir::Module>) {
+        self.ir_modules.insert(name, module);
+    }
+    
+    /// バイナリデータを設定
+    pub fn set_binary_data(&mut self, data: Vec<u8>) {
+        self.binary_data = Some(data);
+    }
+    
+    /// デバッグ情報を設定
+    pub fn set_debug_info(&mut self, data: Vec<u8>) {
+        self.debug_info = Some(data);
+    }
+    
+    /// 依存関係グラフを設定
+    pub fn set_dependency_graph(&mut self, graph: DependencyGraph) {
+        self.dependency_graph = Some(graph);
+    }
+    
+    /// 出力ハッシュを設定
+    pub fn set_output_hash(&mut self, hash: String) {
+        self.output_hash = Some(hash);
+    }
+    
+    /// メタデータを追加
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+    
+    /// エラーがあるかどうかを確認
+    pub fn has_errors(&self) -> bool {
+        self.stats.error_count > 0
+    }
+    
+    /// 警告があるかどうかを確認
+    pub fn has_warnings(&self) -> bool {
+        self.stats.warning_count > 0
+    }
+    
+    /// 結果を標準出力に表示
+    pub fn print_summary(&self, verbose: bool) {
+        if self.success {
+            println!("コンパイル成功: {} ファイル, {} 行, {:?}", 
+                     self.stats.file_count, self.stats.total_lines, self.stats.total_time);
+        } else {
+            println!("コンパイル失敗: {} エラー, {} 警告", 
+                     self.stats.error_count, self.stats.warning_count);
+        }
+        
+        if verbose {
+            println!("出力ファイル:");
+            for file in &self.output_files {
+                println!("  {}", file.display());
+            }
+            
+            if let Some(hash) = &self.output_hash {
+                println!("出力ハッシュ: {}", hash);
+            }
+            
+            println!("統計情報:");
+            println!("  字句解析時間: {:?}", self.stats.lexing_time);
+            println!("  構文解析時間: {:?}", self.stats.parsing_time);
+            println!("  意味解析時間: {:?}", self.stats.semantic_time);
+            println!("  IR生成時間: {:?}", self.stats.ir_gen_time);
+            println!("  最適化時間: {:?}", self.stats.optimization_time);
+            println!("  コード生成時間: {:?}", self.stats.codegen_time);
+            println!("  合計時間: {:?}", self.stats.total_time);
+            println!("  キャッシュヒット: {}", self.stats.cache_hits);
+            println!("  キャッシュミス: {}", self.stats.cache_misses);
+            println!("  スキップされたファイル: {}", self.stats.skipped_files);
+            println!("  ピークメモリ使用量: {} MB", self.stats.peak_memory_usage / (1024 * 1024));
+            println!("  コンパイル速度: {:.2} 行/秒", self.stats.compilation_speed);
+            println!("  CPU使用率: {:.2}%", self.stats.cpu_usage * 100.0);
+            println!("  並列効率: {:.2}%", self.stats.parallel_efficiency * 100.0);
+        }
+    }
 }
 
 /// コンパイラドライバー
@@ -134,7 +456,7 @@ pub struct Driver {
     /// 現在処理中のファイル
     current_file: Option<PathBuf>,
     /// コンパイル済みモジュール
-    compiled_modules: HashMap<String, Arc<ir::Module>>,
+    compiled_modules: DashMap<String, Arc<ir::Module>>,
     /// 依存関係グラフ
     dependency_graph: DependencyGraph,
     /// コンパイルキャッシュ
@@ -148,7 +470,47 @@ pub struct Driver {
     /// 並列処理ワークキュー
     work_queue: WorkQueue,
     /// グローバルシンボルテーブル
-    global_symbols: Arc<Mutex<SymbolTable>>,
+    global_symbols: Arc<RwLock<SymbolTable>>,
+    /// モジュールマネージャー
+    module_manager: ModuleManager,
+    /// プラグインマネージャー
+    plugin_manager: PluginManager,
+    /// インクリメンタルコンパイル管理
+    incremental_manager: IncrementalCompilationManager,
+    /// メモリトラッカー
+    memory_tracker: MemoryTracker,
+    /// 文字列インターナー
+    string_interner: StringInterner,
+    /// ビルドプラン
+    build_plan: BuildPlan,
+    /// ロガー
+    logger: Logger,
+    /// 型アリーナ
+    type_arena: TypedArena<ir::Type>,
+    /// 命令アリーナ
+    instruction_arena: TypedArena<ir::Instruction>,
+    /// ファイル変更監視
+    file_watcher: Option<FileWatcher>,
+    /// 変更検出器
+    change_detector: ChangeDetector,
+    /// 変更影響分析器
+    change_impact_analyzer: ChangeImpactAnalyzer,
+    /// コンパイル中のモジュール
+    modules_in_progress: DashMap<String, ()>,
+    /// コンパイル待機キュー
+    waiting_modules: Mutex<VecDeque<String>>,
+    /// コンパイル条件変数
+    compile_condvar: Condvar,
+    /// スレッドプール
+    thread_pool: ThreadPool,
+    /// 仮想ファイルシステム
+    virtual_fs: VirtualFileSystem,
+    /// エラーフォーマッタ
+    error_formatter: ErrorFormatter,
+    /// コンテンツハッシャー
+    content_hasher: ContentHasher,
+    /// コンフィグパーサー
+    config_parser: ConfigParser,
 }
 
 impl Driver {
@@ -157,6 +519,109 @@ impl Driver {
         let config = CompilerConfig::from_options(&options);
         let thread_count = options.thread_count.unwrap_or_else(num_cpus::get);
         
+        // メモリトラッカーを初期化
+        let memory_tracker = MemoryTracker::new(options.memory_limit);
+        
+        // プロファイラーを初期化
+        let profiler = Profiler::new(options.enable_profiling);
+        
+        // ロガーを初期化
+        let log_level = if options.verbose {
+            LogLevel::Debug
+        } else if options.quiet {
+            LogLevel::Error
+        } else {
+            LogLevel::Info
+        };
+        let logger = Logger::new(log_level, options.log_file.clone());
+        
+        // ファイルシステムを初期化
+        let file_system = FileSystem::new();
+        
+        // 仮想ファイルシステムを初期化
+        let virtual_fs = VirtualFileSystem::new();
+        
+        // 文字列インターナーを初期化
+        let string_interner = StringInterner::new();
+        
+        // エラーフォーマッタを初期化
+        let formatting_options = FormattingOptions {
+            color_output: options.color_output,
+            error_format: options.error_format.clone(),
+            show_line_numbers: true,
+            show_source_code: true,
+            max_context_lines: 3,
+        };
+        let error_formatter = ErrorFormatter::new(formatting_options);
+        
+        // 診断レポーターを初期化
+        let diagnostic_reporter = DiagnosticReporter::new(options.error_format.clone(), options.color_output);
+        
+        // コンパイルキャッシュを初期化
+        let cache_strategy = if options.incremental {
+            CacheStrategy::Incremental
+        } else if options.use_cache {
+            CacheStrategy::Full
+        } else {
+            CacheStrategy::Disabled
+        };
+        let compilation_cache = CompilationCache::new_with_strategy(
+            options.cache_dir.clone(),
+            cache_strategy,
+            options.cache_size_limit,
+        );
+        
+        // コンテンツハッシャーを初期化
+        let hash_algorithm = match options.hash_algorithm.as_deref() {
+            Some("sha256") => HashAlgorithm::SHA256,
+            Some("sha1") => HashAlgorithm::SHA1,
+            Some("xxhash") => HashAlgorithm::XXHash,
+            _ => HashAlgorithm::XXHash, // デフォルトは高速なXXHash
+        };
+        let content_hasher = ContentHasher::new(hash_algorithm);
+        
+        // 依存関係グラフを初期化
+        let dependency_graph = DependencyGraph::new();
+        
+        // モジュールマネージャーを初期化
+        let module_manager = ModuleManager::new();
+        
+        // プラグインマネージャーを初期化
+        let plugin_manager = PluginManager::new(options.plugin_paths.clone());
+        
+        // インクリメンタルコンパイル管理を初期化
+        let incremental_manager = IncrementalCompilationManager::new(
+            options.incremental_dir.clone(),
+            options.incremental,
+        );
+        
+        // 変更検出器を初期化
+        let change_detector = ChangeDetector::new();
+        
+        // 変更影響分析器を初期化
+        let change_impact_analyzer = ChangeImpactAnalyzer::new();
+        
+        // ビルドプランを初期化
+        let build_plan = BuildPlan::new();
+        
+        // ファイル変更監視を初期化（ウォッチモードの場合）
+        let file_watcher = if options.watch_mode {
+            Some(FileWatcher::new())
+        } else {
+            None
+        };
+        
+        // スレッドプールを初期化
+        let thread_pool = ThreadPool::new(thread_count);
+        
+        // コンフィグパーサーを初期化
+        let config_parser = ConfigParser::new();
+        
+        // 型アリーナとインストラクションアリーナを初期化
+        let type_arena = TypedArena::new();
+        let instruction_arena = TypedArena::new();
+        
+        // ワークキューを初期化
         Self {
             config,
             options: options.clone(),
@@ -166,13 +631,40 @@ impl Driver {
             },
             current_file: None,
             compiled_modules: HashMap::new(),
-            dependency_graph: DependencyGraph::new(),
+            dependency_graph,
             compilation_cache: CompilationCache::new(options.cache_dir.clone()),
-            diagnostic_reporter: DiagnosticReporter::new(options.error_format, options.color_output),
+            diagnostic_reporter: DiagnosticReporter::new(options.error_format, options.color_output, options.max_errors),
             profiler: Profiler::new(options.enable_profiling),
             file_system: FileSystem::new(),
             work_queue: WorkQueue::new(thread_count),
             global_symbols: Arc::new(Mutex::new(SymbolTable::new_global())),
+            module_manager: ModuleManager::new(),
+            plugin_manager: PluginManager::new(options.plugin_paths.clone()),
+            incremental_manager: IncrementalCompilationManager::new(
+                options.incremental_dir.clone(),
+                options.incremental,
+            ),
+            change_detector: ChangeDetector::new(),
+            change_impact_analyzer: ChangeImpactAnalyzer::new(),
+            build_plan: BuildPlan::new(),
+            file_watcher: if options.watch_mode {
+                Some(FileWatcher::new())
+            } else {
+                None
+            },
+            thread_pool: ThreadPool::new(thread_count),
+            string_interner: StringInterner::new(),
+            config_parser: ConfigParser::new(),
+            type_arena: TypedArena::new(),
+            instruction_arena: TypedArena::new(),
+            waiting_modules: Mutex::new(VecDeque::new()),
+            compile_condvar: Condvar::new(),
+            virtual_fs: VirtualFileSystem::new(),
+            error_formatter: ErrorFormatter::new(formatting_options),
+            content_hasher: ContentHasher::new(hash_algorithm),
+            modules_in_progress: DashMap::new(),
+            memory_tracker,
+            logger,
         }
     }
     
@@ -233,7 +725,7 @@ impl Driver {
         };
         
         // 適切なバックエンドを選択
-        let backend = backend::create_backend(self.options.target);
+        let backend = backend::create_backend(self.options.target, &self.options.target_features);
         
         // コード生成を実行
         self.profiler.start("codegen");
@@ -242,7 +734,7 @@ impl Driver {
             debug_info: self.options.debug_info,
             target_features: self.options.target_features.clone(),
         };
-        let code = backend.generate_code(&ir_module, &codegen_options)?;
+        let code = backend.generate_code(&ir_module)?;
         self.stats.codegen_time = self.profiler.stop("codegen");
         
         // 出力ファイルに書き込み
@@ -269,6 +761,12 @@ impl Driver {
             stats: self.stats.clone(),
             output_files: vec![output_path.to_path_buf()],
             diagnostics: self.diagnostic_reporter.get_diagnostics(),
+            ir_modules: HashMap::new(),
+            binary_data: None,
+            debug_info: None,
+            dependency_graph: None,
+            output_hash: None,
+            metadata: HashMap::new(),
         };
         
         Ok(result)
@@ -389,7 +887,7 @@ impl Driver {
             debug_info: self.options.debug_info,
             target_features: self.options.target_features.clone(),
         };
-        let code = backend.generate_code(&linked_module, &codegen_options)?;
+        let code = backend.generate_code(&linked_module)?;
         self.stats.codegen_time = self.profiler.stop("codegen");
         
         // 出力ファイルに書き込み
@@ -414,6 +912,12 @@ impl Driver {
             stats: self.stats.clone(),
             output_files: vec![output_path.to_path_buf()],
             diagnostics: self.diagnostic_reporter.get_diagnostics(),
+            ir_modules: HashMap::new(),
+            binary_data: None,
+            debug_info: None,
+            dependency_graph: None,
+            output_hash: None,
+            metadata: HashMap::new(),
         };
         
         Ok(result)
@@ -684,7 +1188,26 @@ impl Driver {
                                     let type_name = &module.types[type_id].name;
                                     *type_id = *type_map.get(type_name).unwrap();
                                 },
-        Ok(modules[0].clone())
+                                _ => {} // 他の命令タイプはそのまま
+                            }
+                            
+                            // 変換した命令を追加
+                            new_block.instructions.push(new_instr);
+                        }
+                        
+                        // 新しいブロックを追加
+                        new_func.basic_blocks.insert(*block_id, new_block);
+                    }
+                    
+                    // 関数をリンク済みモジュールに追加
+                    linked_module.functions.insert(func.name.clone(), new_func);
+                }
+            }
+        }
+        
+        // 最初のモジュールのクローンを返す
+        let first_module = modules.values().next().unwrap();
+        Ok((*first_module).clone())
     }
     
     /// コンパイル統計情報を表示

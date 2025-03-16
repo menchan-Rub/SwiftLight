@@ -674,6 +674,81 @@ pub fn analyze_dominators(function: &Function) -> Result<HashMap<String, HashSet
         None => return Err(CompilerError::code_generation_error(
             "支配木解析: エントリーブロックがありません".to_string(),
             None,
+        )),
+    };
+    
+    // 初期化: エントリーブロックは自分自身だけに支配されます
+    let mut entry_dominators = HashSet::new();
+    entry_dominators.insert(entry_block.clone());
+    dominators.insert(entry_block.clone(), entry_dominators);
+    
+    // 他のすべてのノードはすべてのノードによって支配されます（初期値）
+    for block in &all_blocks {
+        if block != &entry_block {
+            let mut dom_set = HashSet::new();
+            for b in &all_blocks {
+                dom_set.insert(b.clone());
+            }
+            dominators.insert(block.clone(), dom_set);
+        }
+    }
+    
+    // 反復的にドミネータを計算
+    let mut changed = true;
+    while changed {
+        changed = false;
+        
+        for block in &all_blocks {
+            if block == &entry_block {
+                continue;
+            }
+            
+            // 先行ブロックの支配集合の交差を取得
+            let preds = match cfg_analysis.get_predecessors(block) {
+                Some(p) => p,
+                None => continue, // 先行ブロックがない場合はスキップ
+            };
+            
+            if preds.is_empty() {
+                continue; // 到達不可能なブロック
+            }
+            
+            let mut new_dom_set = HashSet::new();
+            let mut first = true;
+            
+            for pred in preds {
+                let pred_doms = match dominators.get(pred) {
+                    Some(d) => d,
+                    None => continue, // エラー - 先行ブロックの支配集合がありません
+                };
+                
+                if first {
+                    // 最初の先行ブロックの場合は、その支配集合をコピー
+                    new_dom_set = pred_doms.clone();
+                    first = false;
+                } else {
+                    // 他の先行ブロックとの交差を取る
+                    new_dom_set = new_dom_set.intersection(pred_doms)
+                        .cloned()
+                        .collect();
+                }
+            }
+            
+            // 現在のブロック自体も追加
+            new_dom_set.insert(block.clone());
+            
+            // 変更があったかチェック
+            let old_dom_set = dominators.get(block).unwrap();
+            if &new_dom_set != old_dom_set {
+                dominators.insert(block.clone(), new_dom_set);
+                changed = true;
+            }
+        }
+    }
+    
+    Ok(dominators)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

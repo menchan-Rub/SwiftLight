@@ -25,9 +25,10 @@
 use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
-use parking_lot::{RwLock, Mutex};
-use smallvec::{smallvec, SmallVec};
-use dashmap::DashMap;
+// 未使用または未定義のクレートをコメントアウト
+// use parking_lot::{RwLock, Mutex};
+// use smallvec::{smallvec, SmallVec};
+// use dashmap::DashMap;
 use thiserror::Error;
 use std::rc::Rc;
 use std::cell::{RefCell, Cell};
@@ -36,21 +37,26 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 use std::hash::{Hash, Hasher};
-use indexmap::{IndexMap, IndexSet};
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::algo::{toposort, is_cyclic_directed};
-use rustc_hash::FxHashMap;
-use once_cell::sync::Lazy;
+// use indexmap::{IndexMap, IndexSet};
+// use petgraph::graph::{DiGraph, NodeIndex};
+// use petgraph::algo::{toposort, is_cyclic_directed};
+// use rustc_hash::FxHashMap;
+// use once_cell::sync::Lazy;
 
 use crate::frontend::ast;
 use crate::frontend::error::{Result, ErrorKind};
-use crate::frontend::source_map::{SourceLocation, SourceSpan};
-use crate::utils::interner::{Symbol, Interner};
-use crate::utils::arena::{Arena, ArenaId};
-use crate::utils::diagnostics::{Diagnostic, DiagnosticBuilder, Level};
+use crate::frontend::source_map::SourceLocation;
+// 未定義のものをコメントアウト
+// use crate::utils::interner::{Symbol, Interner};
+// use crate::utils::arena::{Arena, ArenaId};
+// use crate::utils::diagnostics::{Diagnostic, DiagnosticBuilder, Level};
 
+// 実際に存在するモジュールのみを宣言
 pub mod types;
 pub mod traits;
+
+// 現時点で実装されていないモジュールをコメントアウト
+/*
 pub mod inference;
 pub mod ownership;
 pub mod generics;
@@ -91,6 +97,55 @@ pub mod alias_analysis;
 pub mod escape_analysis;
 pub mod effect_inference;
 pub mod effect_polymorphism;
+*/
+
+// 一時的に必要な型を定義
+/// 仮のSymbol型（後で正式に実装）
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Symbol(String);
+
+impl Symbol {
+    pub fn new<S: Into<String>>(s: S) -> Self {
+        Symbol(s.into())
+    }
+}
+
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for Symbol {
+    fn from(s: &str) -> Self {
+        Symbol(s.to_string())
+    }
+}
+
+impl From<String> for Symbol {
+    fn from(s: String) -> Self {
+        Symbol(s)
+    }
+}
+
+// SourceSpan型の仮実装
+#[derive(Debug, Clone, Copy)]
+pub struct SourceSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+// RegionId型の仮実装
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionId(u32);
+
+// RefinementPredicate型の仮実装
+#[derive(Debug, Clone)]
+pub enum RefinementPredicate {
+    // 簡易的な実装
+    BoolLiteral(bool),
+    Placeholder,
+}
 
 // タイプIDは型システム内で一意の型を識別するために使用
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -641,8 +696,36 @@ pub enum Variance {
     Bivariant,
 }
 
-/// ポインタの出所（Provenance）
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// 型のアノテーション
+#[derive(Debug, Clone)]
+pub enum TypeAnnotation {
+    /// 可変
+    Mutable,
+    
+    /// 参照
+    Reference,
+    
+    /// 可変参照
+    MutableReference,
+    
+    /// ポインタ
+    Pointer,
+    
+    /// 可変ポインタ
+    MutablePointer,
+    
+    /// 固定長配列
+    Array(usize),
+    
+    /// スライス
+    Slice,
+    
+    /// オプショナル型
+    Optional,
+}
+
+/// ポインタの出所
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerProvenance {
     /// 安全なポインタ（Rustの参照に相当）
     Safe,
@@ -686,12 +769,10 @@ pub enum ClosureKind {
 }
 
 /// 効果セット
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct EffectSet {
     /// 効果のセット
     pub effects: HashSet<Effect>,
-    /// 効果変数（効果多相性のため）
-    pub variables: HashSet<usize>,
 }
 
 /// 効果
@@ -699,22 +780,8 @@ pub struct EffectSet {
 pub enum Effect {
     /// IO効果
     IO,
-    /// 例外効果
-    Exception(Option<TypeId>),
-    /// 状態効果
-    State(TypeId),
-    /// 非決定性効果
-    NonDeterminism,
-    /// 継続効果
-    Continuation,
-    /// 非局所的リターン効果
-    NonLocalReturn,
-    /// 並行効果
-    Concurrency,
     /// メモリ効果
     Memory(MemoryEffect),
-    /// カスタム効果
-    Custom(Symbol, Vec<TypeId>),
 }
 
 /// メモリ効果
@@ -728,74 +795,6 @@ pub enum MemoryEffect {
     Allocate,
     /// 解放効果
     Deallocate,
-}
-
-/// 領域ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RegionId(u32);
-
-/// 精製述語
-#[derive(Debug, Clone)]
-pub enum RefinementPredicate {
-    /// 変数参照
-    Var(Symbol),
-    /// リテラル
-    Literal(RefinementLiteral),
-    /// 二項演算
-    BinaryOp {
-        op: RefinementBinaryOp,
-        left: Box<RefinementPredicate>,
-        right: Box<RefinementPredicate>,
-    },
-    /// 単項演算
-    UnaryOp {
-        op: RefinementUnaryOp,
-        operand: Box<RefinementPredicate>,
-    },
-    /// 関数適用
-    Application {
-        func: Symbol,
-        args: Vec<RefinementPredicate>,
-    },
-    /// 量化子
-    Quantifier {
-        quantifier: Quantifier,
-        var: Symbol,
-        domain: Box<RefinementPredicate>,
-        body: Box<RefinementPredicate>,
-    },
-}
-
-/// 精製リテラル
-#[derive(Debug, Clone)]
-pub enum RefinementLiteral {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-}
-
-/// 精製二項演算子
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefinementBinaryOp {
-    Add, Sub, Mul, Div, Mod,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or, Implies,
-}
-
-/// 精製単項演算子
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefinementUnaryOp {
-    Not, Neg,
-}
-
-/// 量化子
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quantifier {
-    /// 全称量化子（∀）
-    Forall,
-    /// 存在量化子（∃）
-    Exists,
 }
 
 /// 型レベルリテラル値
@@ -903,6 +902,9 @@ pub enum GradualPrecision {
     /// 部分的に静的
     Partial(f32),
     /// 完全に静的
+    Static,
+}
+
 /// 型レジストリ - 全ての型情報を管理する中央コンポーネント
 pub struct TypeRegistry {
     // 次に割り当てられる型ID
@@ -1110,11 +1112,6 @@ impl TypeRegistry {
 // 型システムのパブリックAPIをreexport
 pub use self::types::*;
 pub use self::traits::*;
-pub use self::inference::*;
-pub use self::ownership::*;
-pub use self::generics::*;
-pub use self::validation::*;
-pub use self::subtyping::*;
 
 #[cfg(test)]
 mod tests {

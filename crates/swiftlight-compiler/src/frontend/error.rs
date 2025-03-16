@@ -309,6 +309,9 @@ pub struct CompilerError {
     pub id: String,
 }
 
+/// Errorは単にCompilerErrorの型エイリアス
+pub type Error = CompilerError;
+
 /// エラーカテゴリ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCategory {

@@ -12,6 +12,7 @@ description = "SwiftLight言語の標準ライブラリ"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
+libloading = "0.8"
 
 # シリアライゼーション
 serde = { workspace = true }

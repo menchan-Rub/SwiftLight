@@ -395,8 +395,9 @@ impl Window {
         }
         
         // 次にウィンドウ自身のハンドラを呼び出す
-        if let Some(handlers) = self.event_handlers.get(&event.event_type) {
-            for handler in handlers {
+        let handlers = self.event_handlers.get(&event.event_type);
+        if let Some(handlers) = handlers {
+            for handler in handlers.iter() {
                 if handler(event) {
                     return true;
                 }
@@ -414,8 +415,10 @@ impl Window {
         ctx.draw_rect(self.bounds, self.background_color);
         
         // 各コンポーネントを描画
-        for component in &self.components {
-            component.draw(&mut ctx);
+        for i in 0..self.components.len() {
+            if let Some(component) = self.components.get(i) {
+                component.draw(&mut ctx);
+            }
         }
     }
 }
@@ -491,8 +494,9 @@ impl Component for Button {
         match event.event_type {
             EventType::MouseDown => {
                 if self.bounds.contains(event.x, event.y) {
-                    if let Some(handlers) = self.event_handlers.get(&EventType::MouseDown) {
-                        for handler in handlers {
+                    let handlers = self.event_handlers.get(&EventType::MouseDown);
+                    if let Some(handlers) = handlers {
+                        for handler in handlers.iter() {
                             if handler(event) {
                                 return true;
                             }
@@ -631,8 +635,9 @@ impl Component for TextField {
             _ => {}
         }
         
-        if let Some(handlers) = self.event_handlers.get(&event.event_type) {
-            for handler in handlers {
+        let handlers = self.event_handlers.get(&event.event_type);
+        if let Some(handlers) = handlers {
+            for handler in handlers.iter() {
                 if handler(event) {
                     return true;
                 }
@@ -693,8 +698,9 @@ impl Component for Label {
     }
     
     fn handle_event(&mut self, event: &Event) -> bool {
-        if let Some(handlers) = self.event_handlers.get(&event.event_type) {
-            for handler in handlers {
+        let handlers = self.event_handlers.get(&event.event_type);
+        if let Some(handlers) = handlers {
+            for handler in handlers.iter() {
                 if handler(event) {
                     return true;
                 }
@@ -707,5 +713,46 @@ impl Component for Label {
     fn add_event_handler(&mut self, event_type: EventType, handler: EventHandler) {
         let handlers = self.event_handlers.entry(event_type).or_insert_with(Vec::new);
         handlers.push(handler);
+    }
+}
+
+/// レイアウト
+pub struct Layout {
+    components: Vec<Box<dyn Component>>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    background_color: Option<Color>,
+    border_color: Option<Color>,
+}
+
+impl Layout {
+    /// 新しいレイアウトを作成
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            components: Vec::new(),
+            x,
+            y,
+            width,
+            height,
+            background_color: None,
+            border_color: None,
+        }
+    }
+    
+    /// コンポーネントを追加
+    pub fn add_component<C: Component + 'static>(&mut self, component: C) {
+        self.components.push(Box::new(component));
+    }
+    
+    /// 背景色を設定
+    pub fn set_background_color(&mut self, color: Color) {
+        self.background_color = Some(color);
+    }
+    
+    /// 境界線の色を設定
+    pub fn set_border_color(&mut self, color: Color) {
+        self.border_color = Some(color);
     }
 } 

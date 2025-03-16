@@ -2,9 +2,14 @@
 //
 // このモジュールはコンパイラの中間表現(IR)に関する構造体と列挙型を定義します。
 // LLVM IRへの変換前の抽象表現として機能します。
+// 高度な最適化、型検証、並行処理モデルをサポートするための豊富な表現力を持ちます。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
+use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 
 /// IR型システム
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,8 +30,14 @@ pub enum Type {
     String,
     /// ポインタ型
     Pointer(Box<Type>),
+    /// 参照型（所有権システム用）
+    Reference(Box<Type>, bool), // 第2引数はmutableかどうか
     /// 配列型
     Array(Box<Type>, usize),
+    /// 可変長配列型
+    Vector(Box<Type>),
+    /// スライス型
+    Slice(Box<Type>),
     /// 構造体型
     Struct(String, Vec<Type>),
     /// 関数型
@@ -41,8 +52,43 @@ pub enum Type {
     Meta(Box<Type>),
     /// オプショナル型
     Optional(Box<Type>),
+    /// 結果型（成功または失敗）
+    Result(Box<Type>, Box<Type>),
+    /// タプル型
+    Tuple(Vec<Type>),
+    /// トレイト型
+    Trait(String),
+    /// 存在型（トレイト境界付き）
+    Existential(String, Vec<String>),
+    /// 依存型（値に依存する型）
+    Dependent(String, Box<Expression>),
+    /// 型変数（型推論用）
+    TypeVar(String),
+    /// 制約付き型（型制約を持つ型）
+    Constrained(Box<Type>, Vec<TypeConstraint>),
+    /// 再帰型
+    Recursive(String, Box<Type>),
     /// 未知の型
     Unknown,
+    /// エラー型（型チェック失敗時）
+    Error,
+}
+
+/// 型制約
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeConstraint {
+    /// トレイト境界
+    TraitBound(String),
+    /// 型等価性制約
+    Equals(Box<Type>),
+    /// サブタイプ制約
+    SubType(Box<Type>),
+    /// スーパータイプ制約
+    SuperType(Box<Type>),
+    /// 値制約（依存型用）
+    ValueConstraint(Box<Expression>),
+    /// 構造的制約（フィールドやメソッドの存在）
+    Structural(Vec<String>),
 }
 
 impl Type {
@@ -54,24 +100,139 @@ impl Type {
             Type::Float => 4,
             Type::Double => 8,
             Type::Boolean => 1,
-            Type::Char => 1,
-            Type::String => 8, // ポインタサイズ
+            Type::Char => 4, // Unicode対応
+            Type::String => 16, // ポインタ + 長さ + キャパシティ
             Type::Pointer(_) => 8, // 64ビットアーキテクチャを仮定
+            Type::Reference(_, _) => 8, // 参照も64ビット
             Type::Array(elem_type, count) => elem_type.size() * count,
-            Type::Struct(_, fields) => {
-                // 単純な合計（アラインメントは無視）
-                fields.iter().map(|field| field.size()).sum()
+            Type::Vector(elem_type) => 24, // ポインタ + 長さ + キャパシティ
+            Type::Slice(elem_type) => 16, // ポインタ + 長さ
+            Type::Struct(name, fields) => {
+                // アラインメントを考慮した計算
+                let mut total_size = 0;
+                let mut max_align = 1;
+                
+                for field in fields {
+                    let field_size = field.size();
+                    let field_align = field.alignment();
+                    
+                    // アラインメント境界に合わせる
+                    total_size = (total_size + field_align - 1) / field_align * field_align;
+                    total_size += field_size;
+                    max_align = max_align.max(field_align);
+                }
+                
+                // 構造体全体のアラインメントに合わせる
+                (total_size + max_align - 1) / max_align * max_align
             }
-            Type::Function(_, _) => 8, // 関数ポインタ
+            Type::Function(_, _) => 16, // 関数ポインタ + 環境ポインタ
             Type::Union(types) => {
-                // ユニオンは最大のメンバーサイズ
-                types.iter().map(|t| t.size()).max().unwrap_or(0)
+                // ユニオンは最大のメンバーサイズ + タグ
+                let max_size = types.iter().map(|t| t.size()).max().unwrap_or(0);
+                let max_align = types.iter().map(|t| t.alignment()).max().unwrap_or(1);
+                let tag_size = 4; // 識別子用の整数
+                
+                // アラインメントを考慮
+                let total_size = max_size + tag_size;
+                (total_size + max_align - 1) / max_align * max_align
             }
-            Type::Intersection(_) => 8, // インターフェースとして扱う
+            Type::Intersection(_) => 16, // インターフェースとして扱う（vtable + データポインタ）
             Type::Generic(_, _) => 8,   // 具体化されていないのでポインタサイズ
             Type::Meta(_) => 8,         // 型情報のポインタ
-            Type::Optional(inner) => inner.size() + 1, // 内部型 + フラグ
+            Type::Optional(inner) => {
+                // None値の表現のために追加の1バイトが必要
+                let inner_size = inner.size();
+                let inner_align = inner.alignment();
+                
+                // アラインメントを考慮
+                let total_size = inner_size + 1;
+                (total_size + inner_align - 1) / inner_align * inner_align
+            }
+            Type::Result(ok_type, err_type) => {
+                // 結果型は成功型と失敗型の和集合 + タグ
+                let ok_size = ok_type.size();
+                let err_size = err_type.size();
+                let max_size = ok_size.max(err_size);
+                let max_align = ok_type.alignment().max(err_type.alignment());
+                let tag_size = 1; // 成功/失敗フラグ
+                
+                // アラインメントを考慮
+                let total_size = max_size + tag_size;
+                (total_size + max_align - 1) / max_align * max_align
+            }
+            Type::Tuple(types) => {
+                // タプルはフィールドの合計 + アラインメント
+                let mut total_size = 0;
+                let mut max_align = 1;
+                
+                for typ in types {
+                    let field_size = typ.size();
+                    let field_align = typ.alignment();
+                    
+                    // アラインメント境界に合わせる
+                    total_size = (total_size + field_align - 1) / field_align * field_align;
+                    total_size += field_size;
+                    max_align = max_align.max(field_align);
+                }
+                
+                // 構造体全体のアラインメントに合わせる
+                (total_size + max_align - 1) / max_align * max_align
+            }
+            Type::Trait(_) => 16, // トレイトオブジェクト（vtable + データポインタ）
+            Type::Existential(_, _) => 16, // 存在型もトレイトオブジェクトと同様
+            Type::Dependent(_, _) => 8, // 依存型は実行時には通常の値
+            Type::TypeVar(_) => 0, // 型変数はコンパイル時のみ
+            Type::Constrained(inner, _) => inner.size(), // 制約は実行時サイズに影響しない
+            Type::Recursive(_, inner) => inner.size(), // 再帰型は内部型と同じサイズ
             Type::Unknown => 0,
+            Type::Error => 0,
+        }
+    }
+    
+    /// 型のアラインメントを計算
+    pub fn alignment(&self) -> usize {
+        match self {
+            Type::Void => 1,
+            Type::Integer(bits) => {
+                let bytes = (bits + 7) / 8;
+                if bytes > 8 { 8 } else { bytes }
+            },
+            Type::Float => 4,
+            Type::Double => 8,
+            Type::Boolean => 1,
+            Type::Char => 4,
+            Type::String => 8,
+            Type::Pointer(_) => 8,
+            Type::Reference(_, _) => 8,
+            Type::Array(elem_type, _) => elem_type.alignment(),
+            Type::Vector(elem_type) => 8.max(elem_type.alignment()),
+            Type::Slice(elem_type) => 8,
+            Type::Struct(_, fields) => {
+                // 構造体のアラインメントは最大のフィールドアラインメント
+                fields.iter().map(|f| f.alignment()).max().unwrap_or(1)
+            },
+            Type::Function(_, _) => 8,
+            Type::Union(types) => {
+                // ユニオンのアラインメントは最大のメンバーアラインメント
+                types.iter().map(|t| t.alignment()).max().unwrap_or(1)
+            },
+            Type::Intersection(_) => 8,
+            Type::Generic(_, _) => 8,
+            Type::Meta(_) => 8,
+            Type::Optional(inner) => inner.alignment(),
+            Type::Result(ok_type, err_type) => ok_type.alignment().max(err_type.alignment()),
+            Type::Tuple(types) => {
+                // タプルのアラインメントは最大のフィールドアラインメント
+                types.iter().map(|t| t.alignment()).max().unwrap_or(1)
+            },
+            Type::Trait(_) => 8,
+            Type::Existential(_, _) => 8,
+            Type::Dependent(_, _) => 8,
+            Type::TypeVar(_) => 1,
+            Type::Constrained(inner, _) => inner.alignment(),
+            Type::Recursive(_, inner) => inner.alignment(),
+            Type::Unknown => 1,
+            Type::Error => 1,
         }
     }
     
@@ -81,11 +242,20 @@ impl Type {
             Type::Void | Type::Integer(_) | Type::Float | Type::Double |
             Type::Boolean | Type::Char => true,
             Type::Pointer(_) | Type::String | Type::Function(_, _) => false,
-            Type::Array(_, _) | Type::Struct(_, _) => false, // SwiftLightでは参照型
+            Type::Reference(_, _) => false,
+            Type::Array(_, _) | Type::Vector(_) | Type::Slice(_) => false, // SwiftLightでは参照型
+            Type::Struct(_, _) => false, // デフォルトでは参照型として扱う
             Type::Union(_) | Type::Intersection(_) => false,
             Type::Generic(_, _) | Type::Meta(_) => false,
             Type::Optional(inner) => inner.is_value_type(),
-            Type::Unknown => false,
+            Type::Result(ok, err) => ok.is_value_type() && err.is_value_type(),
+            Type::Tuple(types) => types.iter().all(|t| t.is_value_type()),
+            Type::Trait(_) | Type::Existential(_, _) => false,
+            Type::Dependent(_, _) => false, // 依存型は通常参照型
+            Type::TypeVar(_) => false, // 型変数は未確定なので参照型と仮定
+            Type::Constrained(inner, _) => inner.is_value_type(),
+            Type::Recursive(_, _) => false, // 再帰型は通常参照型
+            Type::Unknown | Type::Error => false,
         }
     }
     
@@ -108,6 +278,359 @@ impl Type {
     pub fn is_floating_point(&self) -> bool {
         matches!(self, Type::Float | Type::Double)
     }
+    
+    /// 型が参照型かどうか
+    pub fn is_reference_type(&self) -> bool {
+        matches!(self, Type::Reference(_, _))
+    }
+    
+    /// 型が可変参照かどうか
+    pub fn is_mutable_reference(&self) -> bool {
+        if let Type::Reference(_, is_mut) = self {
+            *is_mut
+        } else {
+            false
+        }
+    }
+    
+    /// 型がトレイト型かどうか
+    pub fn is_trait(&self) -> bool {
+        matches!(self, Type::Trait(_) | Type::Existential(_, _))
+    }
+    
+    /// 型が依存型かどうか
+    pub fn is_dependent(&self) -> bool {
+        matches!(self, Type::Dependent(_, _))
+    }
+    
+    /// 型が多相型かどうか
+    pub fn is_polymorphic(&self) -> bool {
+        matches!(self, Type::Generic(_, _) | Type::TypeVar(_))
+    }
+    
+    /// 型が再帰型かどうか
+    pub fn is_recursive(&self) -> bool {
+        matches!(self, Type::Recursive(_, _))
+    }
+    
+    /// 型が具体型かどうか（型変数やジェネリックパラメータを含まない）
+    pub fn is_concrete(&self) -> bool {
+        match self {
+            Type::TypeVar(_) | Type::Generic(_, _) => false,
+            Type::Pointer(inner) | Type::Reference(inner, _) | 
+            Type::Array(inner, _) | Type::Vector(inner) | Type::Slice(inner) |
+            Type::Optional(inner) | Type::Meta(inner) => inner.is_concrete(),
+            Type::Result(ok, err) => ok.is_concrete() && err.is_concrete(),
+            Type::Struct(_, fields) | Type::Tuple(fields) => fields.iter().all(|f| f.is_concrete()),
+            Type::Union(types) | Type::Intersection(types) => types.iter().all(|t| t.is_concrete()),
+            Type::Function(params, ret) => {
+                params.iter().all(|p| p.is_concrete()) && ret.is_concrete()
+            },
+            Type::Constrained(inner, _) => inner.is_concrete(),
+            Type::Recursive(_, inner) => inner.is_concrete(),
+            Type::Dependent(_, _) => false, // 依存型は値に依存するため具体型ではない
+            _ => true,
+        }
+    }
+    
+    /// 型の自由型変数を収集
+    pub fn free_type_vars(&self) -> HashSet<String> {
+        let mut vars = HashSet::new();
+        self.collect_type_vars(&mut vars);
+        vars
+    }
+    
+    /// 型変数を収集する補助メソッド
+    fn collect_type_vars(&self, vars: &mut HashSet<String>) {
+        match self {
+            Type::TypeVar(name) => {
+                vars.insert(name.clone());
+            },
+            Type::Pointer(inner) | Type::Reference(inner, _) | 
+            Type::Array(inner, _) | Type::Vector(inner) | Type::Slice(inner) |
+            Type::Optional(inner) | Type::Meta(inner) => {
+                inner.collect_type_vars(vars);
+            },
+            Type::Result(ok, err) => {
+                ok.collect_type_vars(vars);
+                err.collect_type_vars(vars);
+            },
+            Type::Struct(_, fields) | Type::Tuple(fields) => {
+                for field in fields {
+                    field.collect_type_vars(vars);
+                }
+            },
+            Type::Union(types) | Type::Intersection(types) => {
+                for ty in types {
+                    ty.collect_type_vars(vars);
+                }
+            },
+            Type::Function(params, ret) => {
+                for param in params {
+                    param.collect_type_vars(vars);
+                }
+                ret.collect_type_vars(vars);
+            },
+            Type::Generic(_, args) => {
+                for arg in args {
+                    arg.collect_type_vars(vars);
+                }
+            },
+            Type::Constrained(inner, constraints) => {
+                inner.collect_type_vars(vars);
+                for constraint in constraints {
+                    match constraint {
+                        TypeConstraint::Equals(ty) |
+                        TypeConstraint::SubType(ty) |
+                        TypeConstraint::SuperType(ty) => {
+                            ty.collect_type_vars(vars);
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            Type::Recursive(_, inner) => {
+                inner.collect_type_vars(vars);
+            },
+            Type::Dependent(_, expr) => {
+                // 依存型の式に含まれる型変数も収集
+                expr.collect_type_vars(vars);
+            },
+            _ => {},
+        }
+    }
+    
+    /// 型の代入（型変数を具体型で置き換え）
+    pub fn substitute(&self, substitutions: &HashMap<String, Type>) -> Type {
+        match self {
+            Type::TypeVar(name) => {
+                if let Some(ty) = substitutions.get(name) {
+                    ty.clone()
+                } else {
+                    self.clone()
+                }
+            },
+            Type::Pointer(inner) => {
+                Type::Pointer(Box::new(inner.substitute(substitutions)))
+            },
+            Type::Reference(inner, is_mut) => {
+                Type::Reference(Box::new(inner.substitute(substitutions)), *is_mut)
+            },
+            Type::Array(inner, size) => {
+                Type::Array(Box::new(inner.substitute(substitutions)), *size)
+            },
+            Type::Vector(inner) => {
+                Type::Vector(Box::new(inner.substitute(substitutions)))
+            },
+            Type::Slice(inner) => {
+                Type::Slice(Box::new(inner.substitute(substitutions)))
+            },
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(inner.substitute(substitutions)))
+            },
+            Type::Meta(inner) => {
+                Type::Meta(Box::new(inner.substitute(substitutions)))
+            },
+            Type::Result(ok, err) => {
+                Type::Result(
+                    Box::new(ok.substitute(substitutions)),
+                    Box::new(err.substitute(substitutions))
+                )
+            },
+            Type::Struct(name, fields) => {
+                Type::Struct(
+                    name.clone(),
+                    fields.iter().map(|f| f.substitute(substitutions)).collect()
+                )
+            },
+            Type::Tuple(fields) => {
+                Type::Tuple(
+                    fields.iter().map(|f| f.substitute(substitutions)).collect()
+                )
+            },
+            Type::Union(types) => {
+                Type::Union(
+                    types.iter().map(|t| t.substitute(substitutions)).collect()
+                )
+            },
+            Type::Intersection(types) => {
+                Type::Intersection(
+                    types.iter().map(|t| t.substitute(substitutions)).collect()
+                )
+            },
+            Type::Function(params, ret) => {
+                Type::Function(
+                    params.iter().map(|p| p.substitute(substitutions)).collect(),
+                    Box::new(ret.substitute(substitutions))
+                )
+            },
+            Type::Generic(name, args) => {
+                Type::Generic(
+                    name.clone(),
+                    args.iter().map(|a| a.substitute(substitutions)).collect()
+                )
+            },
+            Type::Constrained(inner, constraints) => {
+                let new_constraints = constraints.iter().map(|c| match c {
+                    TypeConstraint::Equals(ty) => {
+                        TypeConstraint::Equals(Box::new(ty.substitute(substitutions)))
+                    },
+                    TypeConstraint::SubType(ty) => {
+                        TypeConstraint::SubType(Box::new(ty.substitute(substitutions)))
+                    },
+                    TypeConstraint::SuperType(ty) => {
+                        TypeConstraint::SuperType(Box::new(ty.substitute(substitutions)))
+                    },
+                    _ => c.clone(),
+                }).collect();
+                
+                Type::Constrained(
+                    Box::new(inner.substitute(substitutions)),
+                    new_constraints
+                )
+            },
+            Type::Recursive(name, inner) => {
+                // 再帰型の場合、自己参照を避けるために名前をスキップ
+                let mut local_subst = substitutions.clone();
+                local_subst.remove(name);
+                
+                Type::Recursive(
+                    name.clone(),
+                    Box::new(inner.substitute(&local_subst))
+                )
+            },
+            Type::Dependent(name, expr) => {
+                // 依存型の式も代入
+                Type::Dependent(
+                    name.clone(),
+                    Box::new(expr.substitute_types(substitutions))
+                )
+            },
+            _ => self.clone(),
+        }
+    }
+    
+    /// 型の単一化（2つの型を一致させる代入を見つける）
+    pub fn unify(&self, other: &Type) -> Result<HashMap<String, Type>, String> {
+        let mut substitutions = HashMap::new();
+        self.unify_with(other, &mut substitutions)?;
+        Ok(substitutions)
+    }
+    
+    /// 単一化の補助メソッド
+    fn unify_with(&self, other: &Type, substitutions: &mut HashMap<String, Type>) -> Result<(), String> {
+        match (self, other) {
+            // 同じ型は単一化可能
+            (a, b) if a == b => Ok(()),
+            
+            // 型変数の単一化
+            (Type::TypeVar(name), other) => {
+                if let Some(existing) = substitutions.get(name) {
+                    // すでに代入がある場合は再帰的に単一化
+                    existing.unify_with(other, substitutions)
+                } else if other.free_type_vars().contains(name) {
+                    // 出現チェック（無限型を防ぐ）
+                    Err(format!("Recursive type detected: {} occurs in {}", name, other))
+                } else {
+                    substitutions.insert(name.clone(), other.clone());
+                    Ok(())
+                }
+            },
+            (other, Type::TypeVar(name)) => {
+                // 対称性のため反転
+                if let Some(existing) = substitutions.get(name) {
+                    other.unify_with(existing, substitutions)
+                } else if other.free_type_vars().contains(name) {
+                    Err(format!("Recursive type detected: {} occurs in {}", name, other))
+                } else {
+                    substitutions.insert(name.clone(), other.clone());
+                    Ok(())
+                }
+            },
+            
+            // 複合型の単一化
+            (Type::Pointer(a), Type::Pointer(b)) => {
+                a.unify_with(b, substitutions)
+            },
+            (Type::Reference(a, a_mut), Type::Reference(b, b_mut)) => {
+                if a_mut == b_mut {
+                    a.unify_with(b, substitutions)
+                } else {
+                    Err(format!("Cannot unify mutable and immutable references"))
+                }
+            },
+            (Type::Array(a_elem, a_size), Type::Array(b_elem, b_size)) => {
+                if a_size == b_size {
+                    a_elem.unify_with(b_elem, substitutions)
+                } else {
+                    Err(format!("Cannot unify arrays of different sizes"))
+                }
+            },
+            (Type::Vector(a), Type::Vector(b)) => {
+                a.unify_with(b, substitutions)
+            },
+            (Type::Slice(a), Type::Slice(b)) => {
+                a.unify_with(b, substitutions)
+            },
+            (Type::Optional(a), Type::Optional(b)) => {
+                a.unify_with(b, substitutions)
+            },
+            (Type::Meta(a), Type::Meta(b)) => {
+                a.unify_with(b, substitutions)
+            },
+            (Type::Result(a_ok, a_err), Type::Result(b_ok, b_err)) => {
+                a_ok.unify_with(b_ok, substitutions)?;
+                a_err.unify_with(b_err, substitutions)
+            },
+            (Type::Struct(a_name, a_fields), Type::Struct(b_name, b_fields)) => {
+                if a_name != b_name || a_fields.len() != b_fields.len() {
+                    return Err(format!("Cannot unify different struct types"));
+                }
+                
+                for (a_field, b_field) in a_fields.iter().zip(b_fields.iter()) {
+                    a_field.unify_with(b_field, substitutions)?;
+                }
+                
+                Ok(())
+            },
+            (Type::Tuple(a_fields), Type::Tuple(b_fields)) => {
+                if a_fields.len() != b_fields.len() {
+                    return Err(format!("Cannot unify tuples of different lengths"));
+                }
+                
+                for (a_field, b_field) in a_fields.iter().zip(b_fields.iter()) {
+                    a_field.unify_with(b_field, substitutions)?;
+                }
+                
+                Ok(())
+            },
+            (Type::Function(a_params, a_ret), Type::Function(b_params, b_ret)) => {
+                if a_params.len() != b_params.len() {
+                    return Err(format!("Cannot unify functions with different parameter counts"));
+                }
+                
+                for (a_param, b_param) in a_params.iter().zip(b_params.iter()) {
+                    a_param.unify_with(b_param, substitutions)?;
+                }
+                
+                a_ret.unify_with(b_ret, substitutions)
+            },
+            (Type::Generic(a_name, a_args), Type::Generic(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    return Err(format!("Cannot unify different generic types"));
+                }
+                
+                for (a_arg, b_arg) in a_args.iter().zip(b_args.iter()) {
+                    a_arg.unify_with(b_arg, substitutions)?;
+                }
+                
+                Ok(())
+            },
+            
+            // その他の型の組み合わせは単一化不可能
+            _ => Err(format!("Cannot unify types: {:?} and {:?}", self, other)),
+        }
+    }
 }
 
 impl fmt::Display for Type {
@@ -121,51 +644,69 @@ impl fmt::Display for Type {
             Type::Char => write!(f, "char"),
             Type::String => write!(f, "string"),
             Type::Pointer(inner) => write!(f, "{}*", inner),
+            Type::Reference(inner, is_mut) => {
+                        if *is_mut {
+                            write!(f, "&mut {}", inner)
+                        } else {
+                            write!(f, "&{}", inner)
+                        }
+                    },
             Type::Array(elem, size) => write!(f, "[{} x {}]", size, elem),
+            Type::Vector(elem) => write!(f, "vector<{}>", elem),
+            Type::Slice(elem) => write!(f, "slice<{}>", elem),
             Type::Struct(name, _) => write!(f, "struct {}", name),
             Type::Function(params, ret) => {
-                write!(f, "fn(")?;
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                        write!(f, "fn(")?;
+                        for (i, param) in params.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", param)?;
+                        }
+                        write!(f, ") -> {}", ret)
                     }
-                    write!(f, "{}", param)?;
-                }
-                write!(f, ") -> {}", ret)
-            }
             Type::Union(types) => {
-                write!(f, "(")?;
-                for (i, ty) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
+                        write!(f, "(")?;
+                        for (i, ty) in types.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, " | ")?;
+                            }
+                            write!(f, "{}", ty)?;
+                        }
+                        write!(f, ")")
                     }
-                    write!(f, "{}", ty)?;
-                }
-                write!(f, ")")
-            }
             Type::Intersection(types) => {
-                write!(f, "(")?;
-                for (i, ty) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " & ")?;
+                        write!(f, "(")?;
+                        for (i, ty) in types.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, " & ")?;
+                            }
+                            write!(f, "{}", ty)?;
+                        }
+                        write!(f, ")")
                     }
-                    write!(f, "{}", ty)?;
-                }
-                write!(f, ")")
-            }
             Type::Generic(name, args) => {
-                write!(f, "{}<", name)?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                        write!(f, "{}<", name)?;
+                        for (i, arg) in args.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", arg)?;
+                        }
+                        write!(f, ">")
                     }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, ">")
-            }
             Type::Meta(inner) => write!(f, "type<{}>", inner),
             Type::Optional(inner) => write!(f, "{}?", inner),
             Type::Unknown => write!(f, "unknown"),
+Type::Result(_, _) => todo!(),
+            Type::Tuple(items) => todo!(),
+            Type::Trait(_) => todo!(),
+            Type::Existential(_, items) => todo!(),
+            Type::Dependent(_, _) => todo!(),
+            Type::TypeVar(_) => todo!(),
+            Type::Constrained(_, type_constraints) => todo!(),
+            Type::Recursive(_, _) => todo!(),
+            Type::Error => todo!(),
         }
     }
 }
@@ -326,10 +867,10 @@ pub enum Predicate {
     Oge,      // 順序付き以上
     Ueq,      // 順序なし等しい
     Une,      // 順序なし等しくない
-    Ult,      // 順序なし小なり
-    Ule,      // 順序なし以下
-    Ugt,      // 順序なし大なり
-    Uge,      // 順序なし以上
+    Unlt,     // 順序なし小なり
+    Unle,     // 順序なし以下
+    Ungt,     // 順序なし大なり
+    Unge,     // 順序なし以上
 }
 
 /// 命令オペランド
@@ -567,231 +1108,81 @@ impl Parameter {
     }
 }
 
-/// 関数
+/// モジュール内の関数定義
 #[derive(Debug, Clone)]
 pub struct Function {
-    /// 関数名
+    /// 関数の名前
     pub name: String,
-    /// 戻り値の型
-    pub return_type: Type,
-    /// パラメータリスト
-    pub parameters: Vec<Parameter>,
-    /// 基本ブロック
+    /// 関数の型
+    pub fn_type: Type,
+    /// 関数の引数
+    pub params: Vec<Value>,
+    /// 関数のボディを構成する基本ブロック
     pub blocks: Vec<BasicBlock>,
-    /// 可変引数関数か
-    pub is_variadic: bool,
-    /// 外部関数か
-    pub is_external: bool,
-    /// 属性
-    pub attributes: HashSet<String>,
-    /// ローカル変数の型情報
-    pub locals: HashMap<String, Type>,
-    /// 一時変数カウンタ
-    pub temp_counter: usize,
-    /// インライン関数か
-    pub is_inline: bool,
-    /// 再帰関数か
-    pub is_recursive: bool,
-    /// 純粋関数か（副作用なし）
-    pub is_pure: bool,
-}
-
-impl Function {
-    /// 新しい関数を作成
-    pub fn new(name: impl Into<String>, return_type: Type) -> Self {
-        Self {
-            name: name.into(),
-            return_type,
-            parameters: Vec::new(),
-            blocks: Vec::new(),
-            is_variadic: false,
-            is_external: false,
-            attributes: HashSet::new(),
-            locals: HashMap::new(),
-            temp_counter: 0,
-            is_inline: false,
-            is_recursive: false,
-            is_pure: false,
-        }
-    }
-    
-    /// パラメータを追加
-    pub fn add_parameter(&mut self, param: Parameter) {
-        self.parameters.push(param);
-    }
-    
-    /// 基本ブロックを追加
-    pub fn add_block(&mut self, block: BasicBlock) {
-        self.blocks.push(block);
-    }
-    
-    /// エントリーブロックの参照を取得
-    pub fn entry_block(&self) -> Option<&BasicBlock> {
-        self.blocks.first()
-    }
-    
-    /// エントリーブロックの可変参照を取得
-    pub fn entry_block_mut(&mut self) -> Option<&mut BasicBlock> {
-        self.blocks.first_mut()
-    }
-    
-    /// 関数の属性を設定
-    pub fn with_attribute(mut self, attribute: impl Into<String>) -> Self {
-        self.attributes.insert(attribute.into());
-        self
-    }
-    
-    /// 外部関数として設定
-    pub fn external(mut self) -> Self {
-        self.is_external = true;
-        self
-    }
-    
-    /// 可変引数関数として設定
-    pub fn variadic(mut self) -> Self {
-        self.is_variadic = true;
-        self
-    }
-    
-    /// インライン関数として設定
-    pub fn inline(mut self) -> Self {
-        self.is_inline = true;
-        self.attributes.insert("inline".to_string());
-        self
-    }
-    
-    /// 純粋関数として設定
-    pub fn pure(mut self) -> Self {
-        self.is_pure = true;
-        self.attributes.insert("pure".to_string());
-        self
-    }
-    
-    /// 再帰関数として設定
-    pub fn recursive(mut self) -> Self {
-        self.is_recursive = true;
-        self.attributes.insert("recursive".to_string());
-        self
-    }
-    
-    /// 新しい一時変数名を生成
-    pub fn new_temp(&mut self) -> String {
-        let temp_name = format!("t{}", self.temp_counter);
-        self.temp_counter += 1;
-        temp_name
-    }
-    
-    /// ブロックを名前で検索
-    pub fn get_block(&self, label: &str) -> Option<&BasicBlock> {
-        self.blocks.iter().find(|block| block.label == label)
-    }
-    
-    /// ブロックを名前で検索（可変参照）
-    pub fn get_block_mut(&mut self, label: &str) -> Option<&mut BasicBlock> {
-        self.blocks.iter_mut().find(|block| block.label == label)
-    }
-    
-    /// ローカル変数を追加
-    pub fn add_local(&mut self, name: impl Into<String>, typ: Type) {
-        self.locals.insert(name.into(), typ);
-    }
-    
-    /// ローカル変数の型を取得
-    pub fn get_local_type(&self, name: &str) -> Option<&Type> {
-        self.locals.get(name)
-    }
-    
-    /// 関数が空かどうかを確認
-    pub fn is_empty(&self) -> bool {
-        self.blocks.is_empty() || self.blocks.iter().all(|block| block.instructions.is_empty())
-    }
-}
-
-/// グローバル変数
-#[derive(Debug, Clone)]
-pub struct GlobalVariable {
-    /// 変数名
-    pub name: String,
-    /// 変数の型
-    pub typ: Type,
-    /// 初期値（オプション）
-    pub initializer: Option<Value>,
-    /// 定数か
-    pub is_constant: bool,
-    /// リンケージ情報
+    /// 関数の属性
+    pub attributes: Vec<String>,
+    /// 関数のリンケージタイプ
     pub linkage: Linkage,
-    /// アラインメント
-    pub alignment: Option<usize>,
-    /// スレッドローカルか
+    /// 関数の可視性
+    pub visibility: Visibility,
+    /// 関数のインライン属性
+    pub inline: InlineAttr,
+    /// 関数が実装されているか（宣言のみの場合はfalse）
+    pub is_definition: bool,
+    /// コンパイル時評価が可能か
+    pub is_constexpr: bool,
+    /// 曖昧性回避のためのシンボル名
+    pub mangled_name: Option<String>,
+    /// ソースコード上の位置
+    pub source_location: Option<SourceLocation>,
+}
+
+/// モジュール内の構造体定義
+#[derive(Debug, Clone)]
+pub struct Struct {
+    /// 構造体の名前
+    pub name: String,
+    /// 構造体のフィールド
+    pub fields: Vec<(String, Type)>,
+    /// 構造体のメソッド
+    pub methods: Vec<Function>,
+    /// 構造体が実装するトレイト
+    pub implemented_traits: Vec<String>,
+    /// パディングを自動的に挿入するか
+    pub auto_padding: bool,
+    /// 構造体のアライメント
+    pub alignment: usize,
+    /// 構造体のサイズ（バイト単位）
+    pub size: usize,
+    /// 構造体の属性
+    pub attributes: Vec<String>,
+    /// ソースコード上の位置
+    pub source_location: Option<SourceLocation>,
+}
+
+/// モジュール内のグローバル変数定義
+#[derive(Debug, Clone)]
+pub struct Global {
+    /// グローバル変数の名前
+    pub name: String,
+    /// グローバル変数の型
+    pub var_type: Type,
+    /// 初期値
+    pub initializer: Option<Value>,
+    /// グローバル変数の属性
+    pub attributes: Vec<String>,
+    /// リンケージタイプ
+    pub linkage: Linkage,
+    /// 可視性
+    pub visibility: Visibility,
+    /// 定数か否か
+    pub is_constant: bool,
+    /// スレッドローカルか否か
     pub is_thread_local: bool,
-}
-
-impl GlobalVariable {
-    /// 新しいグローバル変数を作成
-    pub fn new(name: impl Into<String>, typ: Type) -> Self {
-        Self {
-            name: name.into(),
-            typ,
-            initializer: None,
-            is_constant: false,
-            linkage: Linkage::Internal,
-            alignment: None,
-            is_thread_local: false,
-        }
-    }
-    
-    /// 初期値を設定
-    pub fn with_initializer(mut self, value: Value) -> Self {
-        self.initializer = Some(value);
-        self
-    }
-    
-    /// 定数として設定
-    pub fn constant(mut self) -> Self {
-        self.is_constant = true;
-        self
-    }
-    
-    /// リンケージを設定
-    pub fn with_linkage(mut self, linkage: Linkage) -> Self {
-        self.linkage = linkage;
-        self
-    }
-    
-    /// アラインメントを設定
-    pub fn with_alignment(mut self, alignment: usize) -> Self {
-        self.alignment = Some(alignment);
-        self
-    }
-    
-    /// スレッドローカルとして設定
-    pub fn thread_local(mut self) -> Self {
-        self.is_thread_local = true;
-        self
-    }
-}
-
-/// リンケージ種別
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Linkage {
-    /// 内部シンボル
-    Internal,
-    /// 外部シンボル
-    External,
-    /// 弱いシンボル
-    Weak,
-    /// プライベートシンボル
-    Private,
-    /// 共通シンボル
-    Common,
-    /// アピアランス
-    Appending,
-    /// リンクワンス
-    LinkOnce,
-    /// リンクワンスODR
-    LinkOnceODR,
-    /// 弱ODR
-    WeakODR,
+    /// アライメント
+    pub alignment: usize,
+    /// ソースコード上の位置
+    pub source_location: Option<SourceLocation>,
 }
 
 /// モジュール

@@ -447,11 +447,10 @@ impl RISCVOptimizer {
         let section_headers = self.parse_section_headers(obj_code, &elf_header)?;
         
         // テキストセクションを特定
-        let text_section = self.find_text_section(obj_code, &section_headers)?;
+        let text_section = self.find_text_section(obj_code, &section_headers[..])?;
         
         // 命令アライメント調整
         let mut optimized_text = self.align_instructions(&text_section)?;
-        
         // 単純な命令置換
         optimized_text = self.replace_simple_instructions(&optimized_text)?;
         
@@ -467,11 +466,11 @@ impl RISCVOptimizer {
             } else {
                 return Err(CompilerError::new(
                     ErrorKind::OptimizationError,
-                    "最適化後のコードサイズが元のセクションサイズを超えています".to_string()
+                    "最適化後のコードサイズが元のセクションサイズを超えています".to_string(),
+                    None
                 ));
             }
         }
-        
         // 統計情報の更新
         self.statistics.record_optimization_time("basic_object_code_optimization", start_time.elapsed());
         
@@ -483,7 +482,8 @@ impl RISCVOptimizer {
         if obj_code.len() < 64 {
             return Err(CompilerError::new(
                 ErrorKind::OptimizationError,
-                "オブジェクトコードが小さすぎます".to_string()
+                "オブジェクトコードが小さすぎます".to_string(),
+                None
             ));
         }
         
@@ -517,7 +517,8 @@ impl RISCVOptimizer {
             if section_offset + entry_size > obj_code.len() {
                 return Err(CompilerError::new(
                     ErrorKind::OptimizationError,
-                    "セクションヘッダーの解析中にバッファ境界を超えました".to_string()
+                    "セクションヘッダーの解析中にバッファ境界を超えました".to_string(),
+                    None
                 ));
             }
             
@@ -608,7 +609,8 @@ impl RISCVOptimizer {
                 if offset + size > obj_code.len() {
                     return Err(CompilerError::new(
                         ErrorKind::OptimizationError,
-                        "テキストセクションの範囲がオブジェクトコードの境界を超えています".to_string()
+                        "テキストセクションの範囲がオブジェクトコードの境界を超えています".to_string(),
+                        None
                     ));
                 }
                 
@@ -618,7 +620,8 @@ impl RISCVOptimizer {
         
         Err(CompilerError::new(
             ErrorKind::OptimizationError,
-            "テキストセクションが見つかりませんでした".to_string()
+            "テキストセクションが見つかりませんでした".to_string(),
+            None
         ))
     }
     
@@ -661,7 +664,8 @@ impl RISCVOptimizer {
         if bytes.len() < 2 {
             return Err(CompilerError::new(
                 ErrorKind::OptimizationError,
-                "命令のデコード中にバッファ境界を超えました".to_string()
+                "命令のデコード中にバッファ境界を超えました".to_string(),
+                None
             ));
         }
         
@@ -669,6 +673,16 @@ impl RISCVOptimizer {
         let is_compressed = (bytes[0] & 0b11) != 0b11;
         
         if is_compressed {
+            // 圧縮命令のデコード処理
+            // ここに圧縮命令のデコードロジックを実装
+            unimplemented!("圧縮命令のデコードは実装されていません");
+        } else {
+            // 標準命令のデコード処理
+            // ここに標準命令のデコードロジックを実装
+            unimplemented!("標準命令のデコードは実装されていません");
+        }
+    }
+
     /// 関数間解析を実行
     fn perform_interprocedural_analysis(&mut self, module: &Module) -> Result<()> {
         let start_time = Instant::now();
@@ -866,6 +880,33 @@ impl RISCVOptimizer {
         let mut visited = HashSet::new();
         
         // 処理待ちキュー
+        let mut queue = VecDeque::new();
+        queue.push_back(entry_block_id);
+        
+        while let Some(current_block_id) = queue.pop_front() {
+            if visited.contains(&current_block_id) {
+                continue;
+            }
+            
+            visited.insert(current_block_id);
+            
+            let block = function.blocks.get(&current_block_id).ok_or_else(|| Error::BlockNotFound(current_block_id))?;
+            
+            for inst in &block.instructions {
+                if let Instruction::Call { function: callee, .. } = inst {
+                    if !visited.contains(callee) {
+                        queue.push_back(*callee);
+                    }
+                }
+            }
+        }
+        
+        // 統計情報の更新
+        self.statistics.record_optimization_time("block_frequency_analysis", start_time.elapsed());
+        
+        Ok(())
+    }
+    
     /// ベクトル拡張命令の活用
     /// RISC-V Vベクトル拡張を使用して、ループやデータ並列処理を最適化します。
     /// この関数は以下の手順で実行されます：
@@ -926,8 +967,8 @@ impl RISCVOptimizer {
                         loop_id: loop_info.id,
                         block_id: *block_id,
                         operations,
-                        estimated_speedup: self.estimate_vectorization_speedup(&operations),
-                        vector_length: self.determine_optimal_vector_length(&operations),
+                        estimated_speedup: self.estimate_vectorization_speedup(operations.as_slice()),
+                        vector_length: self.determine_optimal_vector_length(operations.as_slice()),
                     });
                 }
             }
@@ -939,8 +980,8 @@ impl RISCVOptimizer {
                     loop_id: None,
                     block_id: *block_id,
                     operations: parallel_ops,
-                    estimated_speedup: self.estimate_vectorization_speedup(&parallel_ops),
-                    vector_length: self.determine_optimal_vector_length(&parallel_ops),
+                    estimated_speedup: self.estimate_vectorization_speedup(parallel_ops.as_slice()),
+                    vector_length: self.determine_optimal_vector_length(parallel_ops.as_slice()),
                 });
             }
         }

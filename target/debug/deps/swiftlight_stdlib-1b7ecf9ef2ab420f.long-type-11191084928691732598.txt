@@ -1,0 +1,1 @@
+&core::collections::Vec<std::boxed::Box<dyn for<'a> Fn(&'a Event) -> bool>>

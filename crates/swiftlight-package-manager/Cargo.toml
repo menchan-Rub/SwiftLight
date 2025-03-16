@@ -30,13 +30,28 @@ colored = "2.0"
 # ファイル操作
 walkdir = "2.3"
 dirs = "5.0"
+glob = "0.3"
 
 # TOML設定ファイル解析
 toml = "0.7"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 時間関係
+chrono = { version = "0.4", features = ["serde"] }
+
+# 暗号化関連
+ed25519-dalek = "1.0"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
 
 # HTTPクライアント（パッケージレジストリと通信）
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+url = "2.4"
+
+# 非同期ランタイム
+tokio = { version = "1.28", features = ["full"] }
 
 # 圧縮
 flate2 = "1.0"
@@ -44,6 +59,9 @@ tar = "0.4"
 
 # セマンティックバージョニング
 semver = "1.0"
+
+# ライブラリ読み込み
+libloading = "0.7"
 
 # 開発依存
 [dev-dependencies]

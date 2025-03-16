@@ -290,12 +290,13 @@ pub mod random {
                 state: seed,
                 a: 6364136223846793005,  // 乗数
                 c: 1442695040888963407,  // 増分
-                m: 1 << 64,             // モジュロ (2^64)
+                m: 0,                    // モジュロ (2^64を使用するが、wrapping演算で自動的に処理されるため0とする)
             }
         }
         
         fn next(&mut self) -> u64 {
-            self.state = (self.a.wrapping_mul(self.state).wrapping_add(self.c)) % self.m;
+            // wrapping_mul と wrapping_add で自動的に2^64のモジュロ演算が行われる
+            self.state = self.a.wrapping_mul(self.state).wrapping_add(self.c);
             self.state
         }
         

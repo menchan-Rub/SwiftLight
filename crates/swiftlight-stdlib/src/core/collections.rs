@@ -135,6 +135,16 @@ impl<T> Vec<T> {
     {
         self.inner.contains(element)
     }
+    
+    /// 内部ベクターへの可変参照を取得
+    pub fn inner_mut(&mut self) -> &mut std::vec::Vec<T> {
+        &mut self.inner
+    }
+    
+    /// 内部ベクターへの参照を取得
+    pub fn inner(&self) -> &std::vec::Vec<T> {
+        &self.inner
+    }
 }
 
 impl<T> Default for Vec<T> {
@@ -201,7 +211,7 @@ where
             inner: StdHashMap::with_capacity(capacity),
         }
     }
-    
+
     /// 要素を挿入
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.inner.insert(key, value)
@@ -280,6 +290,37 @@ where
 impl<K: Debug + Eq + Hash, V: Debug> Debug for HashMap<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner.fmt(f)
+    }
+}
+
+/// ハッシュマップのエントリ
+pub struct Entry<'a, K: Eq + Hash + Clone, V> {
+    key: K,
+    map: &'a mut HashMap<K, V>,
+}
+
+impl<'a, K: Eq + Hash + Clone, V> Entry<'a, K, V> {
+    /// キーが存在しない場合に指定された値を挿入し、値への可変参照を返す
+    pub fn or_insert_with<F>(self, default: F) -> &'a mut V
+    where
+        F: FnOnce() -> V,
+    {
+        let key_clone = self.key.clone();
+        
+        if !self.map.contains_key(&key_clone) {
+            let value = default();
+            self.map.insert(self.key, value);
+        } else {
+            // 存在する場合でも、キーをクローンしてゲットする必要があります
+        }
+        
+        // キーが存在することが保証されているため、unwrap()しても安全
+        self.map.get_mut(&key_clone).unwrap()
+    }
+    
+    /// キーが存在しない場合にデフォルト値を挿入し、値への可変参照を返す
+    pub fn or_insert(self, default: V) -> &'a mut V {
+        self.or_insert_with(|| default)
     }
 }
 
@@ -615,5 +656,34 @@ where
             }
         }
         result
+    }
+}
+
+impl<T> Default for BTreeSet<T>
+where
+    T: Ord,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Debug + Ord> Debug for BTreeSet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+// Clone制約が必要な機能を別のimplブロックで定義
+impl<K, V> HashMap<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    /// キーに対して新しい値を挿入または既存の値を更新するためのエントリを取得
+    pub fn entry(&mut self, key: K) -> Entry<K, V> {
+        Entry {
+            key,
+            map: self,
+        }
     }
 }

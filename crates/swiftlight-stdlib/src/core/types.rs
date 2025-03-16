@@ -93,6 +93,16 @@ pub enum ErrorKind {
     OverflowError,
     /// 未実装エラー：実装されていない機能
     NotImplementedError,
+    /// 環境変数関連エラー
+    EnvError,
+    /// プロセス関連エラー
+    ProcessError,
+    /// 時間関連エラー
+    TimeError,
+    /// FFI関連エラー
+    FFIError,
+    /// 引数無効エラー
+    InvalidArgument,
     /// その他のエラー
     Other,
 }

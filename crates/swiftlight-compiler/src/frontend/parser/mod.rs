@@ -1623,3 +1623,4 @@ impl<'a> Parser<'a> {
             span,
         })
     }
+}

@@ -60,8 +60,12 @@ pub mod env {
 
     /// 全ての環境変数を取得
     pub fn vars() -> HashMap<String, String> {
-        let vars = StdEnv::vars().collect::<std::collections::HashMap<String, String>>();
-        HashMap::from(vars)
+        let std_vars = StdEnv::vars().collect::<std::collections::HashMap<String, String>>();
+        let mut result = HashMap::new();
+        for (key, value) in std_vars {
+            result.insert(key, value);
+        }
+        result
     }
 
     /// カレントディレクトリを取得
@@ -207,26 +211,6 @@ pub mod fs {
                 format!("ファイルの読み込みに失敗しました: {}", e)
             )
         })
-    }
-    
-    /// ファイルをバイト配列として読み込む
-    pub fn read(path: &str) -> Result<Vec<u8>> {
-        let mut file = StdFs::File::open(path).map_err(|e| {
-            Error::new(
-                ErrorKind::IOError, 
-                format!("ファイルのオープンに失敗しました: {}", e)
-            )
-        })?;
-        
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer.inner).map_err(|e| {
-            Error::new(
-                ErrorKind::IOError, 
-                format!("ファイルの読み込みに失敗しました: {}", e)
-            )
-        })?;
-        
-        Ok(buffer)
     }
     
     /// ファイルをバイト配列として読み込む

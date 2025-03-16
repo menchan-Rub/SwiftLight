@@ -2455,9 +2455,42 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let thread_id_loaded = self.builder.build_load(thread_id, "thread_id_load");
                 self.values.insert(*result_id, thread_id_loaded);
                 
+                // スレッド管理テーブルに登録
+                let thread_registry = self.get_or_create_thread_registry();
+                
+                // スレッドレジストリに新しいエントリを追加
+                let i64_type = self.context.i64_type();
+                let i32_type = self.context.i32_type();
+                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+                
+                // スレッド状態の定数
+                let thread_state_created = i32_type.const_int(1, false); // 作成済み
+                let thread_state_running = i32_type.const_int(2, false); // 実行中
+                let thread_state_completed = i32_type.const_int(3, false); // 完了
+                let thread_state_error = i32_type.const_int(4, false); // エラー
+                
+                // スレッドエントリ構造体の作成
+                let entry_type = self.context.struct_type(&[
+                    i64_type.into(),           // thread_id
+                    i32_type.into(),           // state
+                    i64_type.into(),           // creation_time
+                    i64_type.into(),           // last_active_time
+                    i8_ptr_type.into(),        // thread_name
+                    i8_ptr_type.into(),        // thread_data
+                    i32_type.into(),           // priority
+                    i32_type.into(),           // cpu_affinity
+                    i64_type.into(),           // stack_size
+                    i32_type.into(),           // detach_state
+                ], false);
+                
+                // エントリのアロケーション
+                let entry = self.builder.build_alloca(entry_type, "thread_entry");
+                
+                // 現在時刻の取得
                 // スレッド管理テーブルに登録（将来的な拡張のため）
                 // 実際の実装では、スレッドの状態管理やリソース追跡のためのテーブルを維持する
             },
+            InstructionKind::CreateThread { entry_fn, args, result_id } => {
                 let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
                 let thread_id_type = self.context.i64_type().ptr_type(AddressSpace::Generic);
                 let thread_attr_type = i8_ptr_type;
@@ -3489,8 +3522,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         if let Some(var_ptr) = self.variables.get(&symbol_id) {
             return Ok(self.builder.build_load(*var_ptr, name).map_err(|e| {
                 CompilerError::new(
-                    ErrorKind::CodegenError,
+                    ErrorKind::CodeGen,
                     format!("LLVM load error for symbol {}: {}", name, e),
+                    None
                 )
             })?);
         }
@@ -3507,6 +3541,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 CompilerError::new(
                     ErrorKind::CodegenError,
                     format!("LLVM load error for global {}: {}", name, e),
+                    None
                 )
             })?);
         }
@@ -3514,6 +3549,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         Err(CompilerError::new(
             ErrorKind::CodegenError,
             format!("Unknown symbol reference: {}", name),
+            None
         ))
     }
     
@@ -3591,6 +3627,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             _ => Err(CompilerError::new(
                 ErrorKind::CodegenError,
                 format!("Unsupported cast: {:?} to {:?}", from_type.kind, to_type.kind),
+                inst.location,
             )),
         }
     }
@@ -3609,32 +3646,39 @@ impl<'ctx> CodeGenerator<'ctx> {
                     }
                 }
                 
+                // コンパイル時評価は未実装
                 Err(CompilerError::new(
                     ErrorKind::CodegenError,
-                    "Failed to evaluate expression at compile time".to_string(),
+                    "Compile-time evaluation is not implemented yet".to_string(),
+                    inst.location,
                 ))
             },
             
-            InstructionKind::TypeGeneration { type_id, template_id, args } => {
-                // 型テンプレートから新しい型を生成
-                // 実装は複雑なため省略（実際の実装ではテンプレート引数に基づいて型を構築）
-                Ok(None)
+            InstructionKind::TypeGeneration { type_id, result_id } => {
+                // 型生成は未実装
+                Err(CompilerError::new(
+                    ErrorKind::CodegenError,
+                    "Type generation is not implemented yet".to_string(),
+                    inst.location,
+                ))
             },
             
-            InstructionKind::Reflection { target_id, info_kind } => {
-                // リフレクション情報へのアクセスを提供
-                // SwiftLightの型情報や関数情報をランタイムに利用可能にする
-                // 実装は複雑なため省略
-                Ok(None)
+            InstructionKind::Reflection { value_id, result_id } => {
+                // リフレクションは未実装
+                Err(CompilerError::new(
+                    ErrorKind::CodegenError,
+                    "Reflection is not implemented yet".to_string(),
+                    inst.location,
+                ))
             },
             
-            // その他のメタプログラミング命令
+            // その他の命令はメタプログラミングでない
             _ => Ok(None),
         }
     }
     
-    /// ブロックが終端命令を持っているかどうかを確認
-    fn block_has_terminator(&self, block: BasicBlock) -> bool {
+    /// 基本ブロックが終端命令を持っているかチェック
+    fn block_has_terminator(&self, block: BasicBlock<'ctx>) -> bool {
         // ブロックの最後の命令を取得
         if let Some(last_instr) = block.get_last_instruction() {
             // 終端命令かどうかをチェック
