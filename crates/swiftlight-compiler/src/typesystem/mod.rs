@@ -22,13 +22,9 @@
 //! - 高階型
 //! - 量子計算のための型安全性
 
-use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet, VecDeque};
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
-// 未使用または未定義のクレートをコメントアウト
-// use parking_lot::{RwLock, Mutex};
-// use smallvec::{smallvec, SmallVec};
-// use dashmap::DashMap;
 use thiserror::Error;
 use std::rc::Rc;
 use std::cell::{RefCell, Cell};
@@ -37,23 +33,17 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 use std::hash::{Hash, Hasher};
-// use indexmap::{IndexMap, IndexSet};
-// use petgraph::graph::{DiGraph, NodeIndex};
-// use petgraph::algo::{toposort, is_cyclic_directed};
-// use rustc_hash::FxHashMap;
-// use once_cell::sync::Lazy;
 
 use crate::frontend::ast;
 use crate::frontend::error::{Result, ErrorKind};
 use crate::frontend::source_map::SourceLocation;
-// 未定義のものをコメントアウト
-// use crate::utils::interner::{Symbol, Interner};
-// use crate::utils::arena::{Arena, ArenaId};
-// use crate::utils::diagnostics::{Diagnostic, DiagnosticBuilder, Level};
 
-// 実際に存在するモジュールのみを宣言
+// モジュール定義
 pub mod types;
 pub mod traits;
+
+// モジュールの再エクスポート
+pub use self::types::{Type, TypeId, TypeRegistry};
 
 // 現時点で実装されていないモジュールをコメントアウト
 /*
@@ -145,81 +135,6 @@ pub enum RefinementPredicate {
     // 簡易的な実装
     BoolLiteral(bool),
     Placeholder,
-}
-
-// タイプIDは型システム内で一意の型を識別するために使用
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeId(u32);
-
-impl TypeId {
-    /// 無効な型IDを表す定数
-    pub const INVALID: Self = TypeId(0);
-    
-    /// ブール型を表す定数
-    pub const BOOL: Self = TypeId(1);
-    
-    /// 整数型を表す定数
-    pub const INT: Self = TypeId(2);
-    
-    /// 浮動小数点型を表す定数
-    pub const FLOAT: Self = TypeId(3);
-    
-    /// 文字列型を表す定数
-    pub const STRING: Self = TypeId(4);
-    
-    /// 組み込み型を表す定数
-    pub const VOID: Self = TypeId(5);
-    
-    /// Never型（決して返らない型）を表す定数
-    pub const NEVER: Self = TypeId(6);
-    
-    /// Any型（すべての型のスーパータイプ）を表す定数
-    pub const ANY: Self = TypeId(7);
-    
-    /// Unit型（空のタプル）を表す定数
-    pub const UNIT: Self = TypeId(8);
-    
-    /// 文字型を表す定数
-    pub const CHAR: Self = TypeId(9);
-    
-    /// バイト型を表す定数
-    pub const BYTE: Self = TypeId(10);
-    
-    /// 新しい型IDを作成
-    pub fn new(id: u32) -> Self {
-        TypeId(id)
-    }
-    
-    /// 型IDの値を取得
-    pub fn value(&self) -> u32 {
-        self.0
-    }
-    
-    /// 型IDが有効かどうかを確認
-    pub fn is_valid(&self) -> bool {
-        self.0 != 0
-    }
-    
-    /// 型IDが組み込み型かどうかを確認
-    pub fn is_builtin(&self) -> bool {
-        self.0 <= 10
-    }
-    
-    /// 型IDが特殊な型かどうかを確認
-    pub fn is_special(&self) -> bool {
-        matches!(self.0, 0 | 6 | 7 | 8)
-    }
-    
-    /// 型IDがエラー回復用の型かどうかを確認
-    pub fn is_error(&self) -> bool {
-        self.0 == 0
-    }
-}
-
-impl fmt::Display for TypeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TypeId({})", self.0)
-    }
 }
 
 /// 型の種類（カインド）

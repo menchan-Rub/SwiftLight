@@ -6,14 +6,15 @@
  */
 
 use std::path::{Path, PathBuf};
-use clap::{Parser, Subcommand, Args};
-use anyhow::{Result, Context};
+use clap::{Parser, Subcommand};
+use anyhow::Result;
 use colored::Colorize;
-use log::{info, warn, error, debug};
+use log::{info, warn, debug};
 use indicatif::{ProgressBar, ProgressStyle};
+use walkdir;
+use env_logger;
 
 use swiftlight_compiler::{
-    compile,
     driver::CompileOptions,
     VERSION
 };

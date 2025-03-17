@@ -8,8 +8,7 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::builder::Builder;
 use inkwell::values::{
-    BasicValueEnum, FunctionValue, PointerValue, BasicValue, 
-    IntValue, FloatValue, AnyValue
+    BasicValueEnum, FunctionValue, PointerValue, BasicValue
 };
 use inkwell::types::{
     AnyTypeEnum, BasicTypeEnum, FunctionType, StructType, 
@@ -20,10 +19,9 @@ use inkwell::AddressSpace;
 
 use crate::frontend::error::{CompilerError, ErrorKind, Result};
 use crate::middleend::ir as swift_ir;
-use crate::middleend::ir::{
-    BinaryOp, UnaryOp, TypeKind, Value, ValueKind, Type,
-    Instruction, InstructionKind, Function, FunctionSignature
-};
+use crate::middleend::ir::Type;
+use crate::ast::ExpressionKind::{BinaryOp, UnaryOp};
+use crate::middleend::ir::Value;
 
 /// LLVM コード生成器
 pub struct CodeGenerator<'ctx> {

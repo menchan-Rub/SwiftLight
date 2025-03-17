@@ -8,7 +8,7 @@ use std::env;
 use anyhow::{Result, anyhow, Context};
 use toml::Value as TomlValue;
 
-use crate::error::{Result, PackageError};
+use crate::error::PackageError;
 
 /// パッケージマネージャーの設定
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,13 +3,12 @@
 //! SwiftLight中間表現からWebAssemblyバイナリを生成するためのコード生成器です。
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::frontend::error::{CompilerError, ErrorKind, Result};
 use crate::middleend::ir as swift_ir;
-use crate::middleend::ir::{
-    BinaryOp, UnaryOp, TypeKind, Value, ValueKind, Type,
-    Instruction, InstructionKind, Function, FunctionSignature
-};
+use crate::middleend::ir::{Value, Instruction, Function, Module, Type};
+use crate::frontend::ast::{BinaryOperator, UnaryOperator, ExpressionKind};
 
 /// WebAssembly 関数タイプ
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,8 +296,7 @@ impl CodeGenerator {
         if func.is_exported {
             self.exports.push(ExportEntry {
                 name: func.name.clone(),
-                kind: ExportKind::Function,
-                index: self.function_indices.get(&func_id).copied().unwrap_or(0),
+                kind: ExportKind::Function(self.function_indices.get(&func_id).copied().unwrap_or(0)),
             });
         }
         
@@ -384,7 +382,7 @@ impl CodeGenerator {
     
     /// 関数の複雑さを計算
     fn calculate_function_complexity(&self, func: &Function) -> usize {
-        let mut complexity = 0;
+        let mut complexity: usize = 0;
         
         // 基本ブロック数による複雑さ
         complexity += func.blocks.len() * 5;
@@ -409,7 +407,7 @@ impl CodeGenerator {
     /// SIMD最適化の機会を分析
     fn analyze_simd_opportunities(&mut self, func_id: usize, func: &Function) -> Result<()> {
         // ベクトル演算パターンを検出
-        let mut vector_patterns = Vec::new();
+        let mut vector_patterns: Vec<_> = Vec::new();
         
         for block_id in &func.blocks {
             if let Some(block) = func.basic_blocks.get(block_id) {
@@ -791,8 +789,13 @@ impl CodeGenerator {
         id
     }
     
+    }
     /// コンパイル時計算の最適化を適用
-    fn apply_compile_time_optimization(&mut self, func_id: usize, result: &CompileTimeResult) -> Result<()> {
+    fn apply_compile_time_optimization(
+        &mut self,
+        func_id: usize,
+        result: &CompileTimeResult,
+    ) -> Result<()> {
         // コンパイル時に計算された結果を使用して最適化
         match result {
             CompileTimeResult::Constant(value) => {
@@ -1177,12 +1180,12 @@ impl CodeGenerator {
             match condition {
                 // nullチェックやエラーチェックは通常falseに偏る
                 Value::BinaryOp { op: BinaryOp::Eq, left, right } => {
-                    if is_null_check(left, right) {
+                    if self.is_null_check(left, right) {
                         return (0.1, 0.9); // nullと等しい確率は低い
                     }
                 },
                 Value::BinaryOp { op: BinaryOp::Ne, left, right } => {
-                    if is_null_check(left, right) {
+                    if self.is_null_check(left, right) {
                         return (0.9, 0.1); // nullと等しくない確率は高い
                     }
                 },
@@ -1190,7 +1193,7 @@ impl CodeGenerator {
                 Value::BinaryOp { op: BinaryOp::Le, .. } |
                 Value::BinaryOp { op: BinaryOp::Gt, .. } |
                 Value::BinaryOp { op: BinaryOp::Ge, .. } => {
-                    if is_loop_condition(block_id, cfg) {
+                    if self.is_loop_condition(block_id, cfg) {
                         return (0.9, 0.1); // ループ条件は通常trueに偏る
                     }
                 },
@@ -1667,13 +1670,13 @@ impl CodeGenerator {
     
     /// ループ検出アルゴリズム（Tarjanのアルゴリズムを使用）
     fn detect_loops(&mut self, func_id: usize, func: &Function) -> Result<Vec<LoopInfo>> {
-        let mut loops = Vec::new();
-        let mut visited = HashSet::new();
-        let mut stack = Vec::new();
-        let mut on_stack = HashSet::new();
-        let mut disc = HashMap::new();
-        let mut low = HashMap::new();
-        let mut time = 0;
+        let mut loops: Vec<LoopInfo> = Vec::new();
+        let mut visited: HashSet<usize> = HashSet::new();
+        let mut stack: Vec<usize> = Vec::new();
+        let mut on_stack: HashSet<usize> = HashSet::new();
+        let mut disc: HashMap<usize, usize> = HashMap::new();
+        let mut low: HashMap<usize, usize> = HashMap::new();
+        let mut time: usize = 0;
         
         // 深さ優先探索によるループ検出
         fn dfs(
@@ -2086,20 +2089,19 @@ impl CodeGenerator {
         // タイプセクションの生成 (セクションID: 1)
         let mut type_section = Vec::new();
         let type_count = self.function_types.len() as u32;
-        encode_unsigned_leb128(&mut type_section, type_count);
+        self.encode_unsigned_leb128(type_count, &mut type_section);
         
         for func_type in &self.function_types {
             // 関数タイプ (0x60)
             type_section.push(0x60);
             
             // パラメータ数とタイプ
-            encode_unsigned_leb128(&mut type_section, func_type.params.len() as u32);
+            encode_unsigned_leb128(&mut type_section, &mut Vec::new(), func_type.params.len() as u32);
             for param_type in &func_type.params {
                 encode_wasm_type(&mut type_section, param_type);
             }
-            
             // 戻り値数とタイプ
-            encode_unsigned_leb128(&mut type_section, func_type.results.len() as u32);
+            encode_unsigned_leb128(&mut type_section, &mut Vec::new(), func_type.results.len() as u32);
             for result_type in &func_type.results {
                 encode_wasm_type(&mut type_section, result_type);
             }
@@ -2111,20 +2113,20 @@ impl CodeGenerator {
         // インポートセクションの生成 (セクションID: 2)
         let mut import_section = Vec::new();
         let import_count = self.imports.len() as u32;
-        encode_unsigned_leb128(&mut import_section, import_count);
+        encode_unsigned_leb128(&mut import_section, &mut Vec::new(), import_count);
         
         for import in &self.imports {
             // モジュール名
-            encode_string(&mut import_section, &import.module);
+            self.encode_string(&import.module, &mut import_section);
             
             // フィールド名
-            encode_string(&mut import_section, &import.field);
+            self.encode_string(&import.field, &mut import_section);
             
             // インポートの種類と情報
             match &import.kind {
                 ImportKind::Function(type_idx) => {
                     import_section.push(0x00); // 関数インポート
-                    encode_unsigned_leb128(&mut import_section, *type_idx as u32);
+                    encode_unsigned_leb128(&mut import_section, &mut Vec::new(), *type_idx as u32);
                 },
                 ImportKind::Table(table_type) => {
                     import_section.push(0x01); // テーブルインポート
@@ -2149,10 +2151,10 @@ impl CodeGenerator {
         // 関数セクションの生成 (セクションID: 3)
         let mut function_section = Vec::new();
         let function_count = self.functions.len() as u32;
-        encode_unsigned_leb128(&mut function_section, function_count);
+        encode_unsigned_leb128(&mut function_section, &mut Vec::new(), function_count);
         
         for func in &self.functions {
-            encode_unsigned_leb128(&mut function_section, func.type_idx as u32);
+            encode_unsigned_leb128(&mut function_section, &mut Vec::new(), func.type_idx as u32);
         }
         
         // 関数セクションをエンコード
@@ -2163,7 +2165,7 @@ impl CodeGenerator {
         // テーブルセクションの生成 (セクションID: 4)
         let mut table_section = Vec::new();
         let table_count = self.tables.len() as u32;
-        encode_unsigned_leb128(&mut table_section, table_count);
+        encode_unsigned_leb128(&mut table_section, &mut Vec::new(), table_count);
         
         for table in &self.tables {
             encode_table_type(&mut table_section, table);
@@ -2177,7 +2179,7 @@ impl CodeGenerator {
         // メモリセクションの生成 (セクションID: 5)
         let mut memory_section = Vec::new();
         let memory_count = self.memories.len() as u32;
-        encode_unsigned_leb128(&mut memory_section, memory_count);
+        encode_unsigned_leb128(&mut memory_section, &mut Vec::new(), memory_count);
         
         for memory in &self.memories {
             encode_memory_type(&mut memory_section, memory);
@@ -2191,7 +2193,7 @@ impl CodeGenerator {
         // グローバルセクションの生成 (セクションID: 6)
         let mut global_section = Vec::new();
         let global_count = self.globals.len() as u32;
-        encode_unsigned_leb128(&mut global_section, global_count);
+        encode_unsigned_leb128(&mut global_section, &mut Vec::new(), global_count);
         
         for global in &self.globals {
             // グローバル変数の型
@@ -2209,11 +2211,11 @@ impl CodeGenerator {
         // エクスポートセクションの生成 (セクションID: 7)
         let mut export_section = Vec::new();
         let export_count = self.exports.len() as u32;
-        encode_unsigned_leb128(&mut export_section, export_count);
+        encode_unsigned_leb128(&mut export_section, &mut Vec::new(), export_count);
         
         for export in &self.exports {
             // エクスポート名
-            encode_string(&mut export_section, &export.name);
+            self.encode_string(&export.name, &mut export_section);
             
             // エクスポートの種類と情報
             match export.kind {
@@ -2231,7 +2233,7 @@ impl CodeGenerator {
                 },
             }
             
-            encode_unsigned_leb128(&mut export_section, export.index as u32);
+            encode_unsigned_leb128(&mut export_section, &mut Vec::new(), export.index as u32);
         }
         
         // エクスポートセクションをエンコード
@@ -2242,29 +2244,28 @@ impl CodeGenerator {
         // スタートセクションの生成 (セクションID: 8)
         if let Some(start_func) = self.start_function {
             let mut start_section = Vec::new();
-            encode_unsigned_leb128(&mut start_section, start_func as u32);
+            encode_unsigned_leb128(&mut start_section, &mut Vec::new(), start_func as u32);
             encode_section(&mut wasm_binary, 8, &start_section);
         }
         
         // エレメントセクションの生成 (セクションID: 9)
         let mut element_section = Vec::new();
         let element_count = self.elements.len() as u32;
-        encode_unsigned_leb128(&mut element_section, element_count);
+        encode_unsigned_leb128(&mut element_section, &mut Vec::new(), element_count);
         
         for element in &self.elements {
             // テーブルインデックス
-            encode_unsigned_leb128(&mut element_section, element.table_idx as u32);
+            encode_unsigned_leb128(&mut element_section, &mut Vec::new(), element.table_idx as u32);
             
             // オフセット式
             encode_init_expr(&mut element_section, &element.offset);
             
             // 関数インデックスの配列
-            encode_unsigned_leb128(&mut element_section, element.func_indices.len() as u32);
+            encode_unsigned_leb128(&mut element_section, &mut Vec::new(), element.func_indices.len() as u32);
             for &func_idx in &element.func_indices {
-                encode_unsigned_leb128(&mut element_section, func_idx as u32);
+                encode_unsigned_leb128(&mut element_section, &mut Vec::new(), func_idx as u32);
             }
         }
-        
         // エレメントセクションをエンコード
         if !element_section.is_empty() {
             encode_section(&mut wasm_binary, 9, &element_section);
@@ -2273,13 +2274,12 @@ impl CodeGenerator {
         // コードセクションの生成 (セクションID: 10)
         let mut code_section = Vec::new();
         let code_count = self.function_bodies.len() as u32;
-        encode_unsigned_leb128(&mut code_section, code_count);
+        encode_unsigned_leb128(&mut code_section, &mut Vec::new(), code_count);
         
         for body in &self.function_bodies {
             // 関数ボディのサイズを一時的に0として記録
             let size_pos = code_section.len();
-            encode_unsigned_leb128(&mut code_section, 0);
-            
+            encode_unsigned_leb128(&mut code_section, &mut Vec::new(), 0);
             // ローカル変数の宣言
             let locals_start = code_section.len();
             let mut local_groups = Vec::new();
@@ -2302,9 +2302,9 @@ impl CodeGenerator {
                 local_groups.push((current_count, current_type.unwrap()));
             }
             
-            encode_unsigned_leb128(&mut code_section, local_groups.len() as u32);
+            encode_unsigned_leb128(&mut code_section, &mut Vec::new(), local_groups.len() as u32);
             for (count, type_) in local_groups {
-                encode_unsigned_leb128(&mut code_section, count as u32);
+                encode_unsigned_leb128(&mut code_section, &mut Vec::new(), count as u32);
                 encode_wasm_type(&mut code_section, &type_);
             }
             
@@ -2317,7 +2317,7 @@ impl CodeGenerator {
             // 関数ボディのサイズを更新
             let body_size = code_section.len() - locals_start;
             let mut size_bytes = Vec::new();
-            encode_unsigned_leb128(&mut size_bytes, body_size as u32);
+            encode_unsigned_leb128(&mut size_bytes, &mut Vec::new(), body_size as u32);
             
             // サイズを書き込む
             for (i, b) in size_bytes.iter().enumerate() {
@@ -2417,15 +2417,14 @@ impl CodeGenerator {
                 },
                 ImportKind::Memory(limits) => {
                     section.push(0x02); // メモリインポート
-                    
                     // リミット情報をエンコード
                     if let Some(max) = limits.max {
                         section.push(0x01); // 最大値あり
-                        self.encode_unsigned_leb128(limits.min, &mut section);
-                        self.encode_unsigned_leb128(max, &mut section);
+                        self.encode_unsigned_leb128(limits.min as u32, &mut section);
+                        self.encode_unsigned_leb128(max as u32, &mut section);
                     } else {
                         section.push(0x00); // 最大値なし
-                        self.encode_unsigned_leb128(limits.min, &mut section);
+                        self.encode_unsigned_leb128(limits.min as u32, &mut section);
                     }
                 },
                 ImportKind::Table(elem_type, limits) => {
@@ -2435,13 +2434,13 @@ impl CodeGenerator {
                     section.push(*elem_type);
                     
                     // リミット情報をエンコード
-                    if let Some(max) = limits.max {
+                    if let Some(max) = &limits.max {
                         section.push(0x01); // 最大値あり
-                        self.encode_unsigned_leb128(limits.min, &mut section);
-                        self.encode_unsigned_leb128(max, &mut section);
+                        self.encode_unsigned_leb128(limits.min as u32, &mut section);
+                        self.encode_unsigned_leb128(max as u32, &mut section);
                     } else {
                         section.push(0x00); // 最大値なし
-                        self.encode_unsigned_leb128(limits.min, &mut section);
+                        self.encode_unsigned_leb128(limits.min as u32, &mut section);
                     }
                 },
                 ImportKind::Global(content_type, mutability) => {
@@ -2455,13 +2454,11 @@ impl CodeGenerator {
                 },
             }
         }
-        
         // セクションをエンコード
         self.encode_section(2, &section)?;
         
         Ok(())
     }
-    
     /// 関数セクションをエンコード
     fn encode_function_section(&mut self) -> Result<()> {
         let mut section_data = Vec::new();
@@ -2779,4 +2776,19 @@ impl CodeGenerator {
         self.encode_unsigned_leb128(bytes.len() as u32, output);
         output.extend_from_slice(bytes);
     }
-}
+
+    /// 符号なしLEB128エンコード
+    fn encode_unsigned_leb128(&self, value: u32, output: &mut Vec<u8>) {
+        let mut val = value;
+        loop {
+            let mut byte = (val & 0x7f) as u8;
+            val >>= 7;
+            if val != 0 {
+                byte |= 0x80;
+            }
+            output.push(byte);
+            if val == 0 {
+                break;
+            }
+        }
+    }

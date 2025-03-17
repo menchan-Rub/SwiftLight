@@ -23,8 +23,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
-use std::rc::Rc;
-use std::cell::RefCell;
+// use std::rc::Rc; // 使用されていないためコメントアウト
+// use std::cell::RefCell; // 使用されていないためコメントアウト
 
 // 基本的な型定義のみをインポート
 use super::{TypeId, Symbol, SourceSpan, RegionId};

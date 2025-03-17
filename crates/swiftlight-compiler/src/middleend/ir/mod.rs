@@ -90,10 +90,10 @@ pub struct IRGenerator<'ctx> {
 impl<'ctx> IRGenerator<'ctx> {
     /// 新しいIRジェネレーターを作成
     pub fn new(type_info: &TypeCheckResult) -> Self {
-        let context: Context = Context::create();
-        let module_name: &str = "swiftlight_module";
-        let llvm_module: LLVMModule<'_> = context.create_module(module_name);
-        let builder: Builder<'_> = context.create_builder();
+        let context = Context::create();
+        let module_name = "swiftlight_module";
+        let llvm_module = context.create_module(module_name);
+        let builder = context.create_builder();
         
         Self {
             context: &context,
@@ -125,7 +125,7 @@ impl<'ctx> IRGenerator<'ctx> {
     
     /// 一時変数名を生成
     fn generate_temp_name(&mut self, prefix: &str) -> String {
-        let name: String = format!("{}.{}", prefix, self.temp_counter);
+        let name = format!("{}.{}", prefix, self.temp_counter);
         self.temp_counter += 1;
         name
     }
@@ -185,44 +185,44 @@ impl<'ctx> IRGenerator<'ctx> {
     /// ランタイム関数の宣言
     fn declare_runtime_functions(&mut self) -> Result<()> {
         // println関数の宣言 (void println(char*))
-        let void_type: inkwell::types::VoidType<'_> = self.context.void_type();
-        let str_type: inkwell::types::PointerType<'_> = self.context.i8_type().ptr_type(AddressSpace::Generic);
-        let println_type: FunctionType<'_> = void_type.fn_type(&[str_type.into()], false);
-        let println_fn: FunctionValue<'_> = self.llvm_module.add_function("println", println_type, None);
+        let void_type = self.context.void_type();
+        let str_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+        let println_type = void_type.fn_type(&[str_type.into()], false);
+        let println_fn = self.llvm_module.add_function("println", println_type, None);
         self.functions.insert("println".to_string(), println_fn);
         
         // メモリ操作関数の宣言
         // malloc: void* malloc(size_t)
-        let i64_type: inkwell::types::IntType<'_> = self.context.i64_type();
-        let ptr_type: inkwell::types::PointerType<'_> = self.context.i8_type().ptr_type(AddressSpace::Generic);
-        let malloc_type: FunctionType<'_> = ptr_type.fn_type(&[i64_type.into()], false);
-        let malloc_fn: FunctionValue<'_> = self.llvm_module.add_function("malloc", malloc_type, None);
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+        let malloc_type = ptr_type.fn_type(&[i64_type.into()], false);
+        let malloc_fn = self.llvm_module.add_function("malloc", malloc_type, None);
         self.functions.insert("malloc".to_string(), malloc_fn);
         
         // free: void free(void*)
-        let free_type: FunctionType<'_> = void_type.fn_type(&[ptr_type.into()], false);
-        let free_fn: FunctionValue<'_> = self.llvm_module.add_function("free", free_type, None);
+        let free_type = void_type.fn_type(&[ptr_type.into()], false);
+        let free_fn = self.llvm_module.add_function("free", free_type, None);
         self.functions.insert("free".to_string(), free_fn);
         
         // memcpy: void* memcpy(void* dest, void* src, size_t n)
-        let memcpy_type: FunctionType<'_> = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
-        let memcpy_fn: FunctionValue<'_> = self.llvm_module.add_function("memcpy", memcpy_type, None);
+        let memcpy_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
+        let memcpy_fn = self.llvm_module.add_function("memcpy", memcpy_type, None);
         self.functions.insert("memcpy".to_string(), memcpy_fn);
         
         // 基本的な数学関数の宣言
-        let f64_type: inkwell::types::FloatType<'_> = self.context.f64_type();
-        let math_fn_type: FunctionType<'_> = f64_type.fn_type(&[f64_type.into()], false);
+        let f64_type = self.context.f64_type();
+        let math_fn_type = f64_type.fn_type(&[f64_type.into()], false);
         
         // double sqrt(double)
-        let sqrt_fn: FunctionValue<'_> = self.llvm_module.add_function("sqrt", math_fn_type, None);
+        let sqrt_fn = self.llvm_module.add_function("sqrt", math_fn_type, None);
         self.functions.insert("sqrt".to_string(), sqrt_fn);
         
         // double sin(double)
-        let sin_fn: FunctionValue<'_> = self.llvm_module.add_function("sin", math_fn_type, None);
+        let sin_fn = self.llvm_module.add_function("sin", math_fn_type, None);
         self.functions.insert("sin".to_string(), sin_fn);
         
         // double cos(double)
-        let cos_fn: FunctionValue<'_> = self.llvm_module.add_function("cos", math_fn_type, None);
+        let cos_fn = self.llvm_module.add_function("cos", math_fn_type, None);
         self.functions.insert("cos".to_string(), cos_fn);
         
         // プロファイリングとインストルメンテーション関数を宣言
@@ -322,7 +322,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 }
                 
                 // 戻り値型の解決
-                let return_type: BasicTypeEnum<'ctx> = if let Some(ret_type) = &func_decl.return_type {
+                let return_type = if let Some(ret_type) = &func_decl.return_type {
                     if let Some(type_info) = self.type_info.get_node_type(ret_type.id) {
                         match self.convert_type_from_annotation(&type_info) {
                             Ok(t) => t,
@@ -641,6 +641,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     ))
                 }
             },
+            // その他の型も必要に応じて追加
             _ => Err(CompilerError::code_generation_error(
                 format!("サポートされていない型です: {:?}", type_ann.kind),
                 type_ann.location.clone()
@@ -761,7 +762,7 @@ impl<'ctx> IRGenerator<'ctx> {
             },
             StatementKind::Return(expr) => {
                 // return文の処理
-                self.generate_return_statement(Some(expr.as_ref()))?;
+                self.generate_return_statement(expr.as_ref())?;
             },
             StatementKind::Break => {
                 // break文の処理
@@ -857,7 +858,7 @@ impl<'ctx> IRGenerator<'ctx> {
             let var_type = var_ptr.get_type().get_element_type();
             
             // 変数の値をロード
-            let value = self.builder.build_load(*var_ptr, &format!("{}_load"));
+            let value = self.builder.build_load(*var_ptr, var_name);
             Ok(value)
         } else if let Some(func) = self.functions.get(var_name) {
             // 関数参照の場合
@@ -865,6 +866,7 @@ impl<'ctx> IRGenerator<'ctx> {
         } else {
             // グローバル変数や定数の場合
             if let Some(global_var) = self.llvm_module.get_global(var_name) {
+                let var_type = global_var.get_type().get_element_type();
                 let value = self.builder.build_load(global_var.as_pointer_value(), var_name);
                 Ok(value)
             } else {
@@ -875,6 +877,7 @@ impl<'ctx> IRGenerator<'ctx> {
             }
         }
     }
+    
     /// 二項演算の生成
     fn generate_binary_op(&self, op: BinaryOperator, left: &Expression, right: &Expression) 
     -> Result<BasicValueEnum<'ctx>> {
@@ -1292,6 +1295,7 @@ impl<'ctx> IRGenerator<'ctx> {
         // フィールドへのアクセスを生成
         unsafe {
             let field_ptr = self.builder.build_struct_gep(
+                struct_type,
                 object_ptr, 
                 field_index as u32, 
                 &format!("{}.{}", struct_name, member.name)
@@ -1352,6 +1356,7 @@ impl<'ctx> IRGenerator<'ctx> {
         // 要素へのアクセスを生成
         let element_ptr = unsafe {
             self.builder.build_gep(
+                array_ptr.get_type().get_element_type(),
                 array_ptr,
                 &[index_value],
                 "arrayelement"
@@ -1414,6 +1419,7 @@ impl<'ctx> IRGenerator<'ctx> {
             // 要素のポインタを取得
             let element_ptr = unsafe {
                 self.builder.build_gep(
+                    array_type,
                     array_alloca,
                     &[i32_type.const_zero(), idx],
                     &format!("array.{}", i)
@@ -1465,6 +1471,7 @@ impl<'ctx> IRGenerator<'ctx> {
             // フィールドに値を格納
             unsafe {
                 let field_ptr = self.builder.build_struct_gep(
+                    struct_type,
                     struct_alloca, 
                     field_index as u32, 
                     &format!("{}.{}", struct_name, field_name.name)
@@ -1503,6 +1510,7 @@ impl<'ctx> IRGenerator<'ctx> {
             // 要素のポインタを取得
             let element_ptr = unsafe {
                 self.builder.build_struct_gep(
+                    tuple_type,
                     tuple_alloca,
                     i as u32,
                     &format!("tuple.{}", i)
@@ -1978,8 +1986,9 @@ impl<'ctx> IRGenerator<'ctx> {
                 ExpressionKind::Literal(lit) => {
                     // リテラル値を評価
                     let lit_value = self.generate_literal(lit)?;
+                    
                     // 対象式の値をロード
-                    let expr_value = self.builder.build_load(expr_type, expr_ptr);
+                    let expr_value = self.builder.build_load(expr_ptr, "match_expr_val");
                     
                     // 対象式の値とリテラルを比較
                     let cond = match (expr_value, lit_value) {
@@ -2014,7 +2023,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 // 識別子パターン（変数バインディング）
                 ExpressionKind::Identifier(ident) => {
                     // 対象式の値をロード
-                    let expr_value = self.builder.build_load(expr_type, expr_ptr);
+                    let expr_value = self.builder.build_load(expr_ptr, "match_expr_val");
                     
                     // 現在のスコープにパターン変数をバインド
                     let var_name = &ident.name;
@@ -2029,7 +2038,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 // 構造体パターン（新規実装）
                 ExpressionKind::StructLiteral(struct_name, fields) => {
                     // 対象式の値をロード
-                    let expr_value = self.builder.build_load(expr_type, expr_ptr);
+                    let expr_value = self.builder.build_load(expr_ptr, "match_expr_val");
                     
                     // 構造体型かチェック
                     if let BasicValueEnum::StructValue(struct_val) = expr_value {
@@ -2055,7 +2064,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                     self.builder.build_struct_gep(
                                         struct_type,
                                         struct_ptr,
-                                        idx as u32
+                                        idx as u32,
+                                        &format!("{}_ptr", field_name.name)
                                     )?
                                 };
                                 
@@ -2107,7 +2117,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     let guard_expr = &elements[1];
                     
                     // 対象式の値をロード
-                    let expr_value = self.builder.build_load(expr_type, expr_ptr);
+                    let expr_value = self.builder.build_load(expr_ptr, "match_expr_val");
                     
                     // パターンマッチングの一時ブロック
                     let pattern_match_block = self.context.append_basic_block(current_fn, &format!("guard_pattern{}", i));
@@ -2986,7 +2996,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.current_block = Some(cond_block);
         
         // 現在のイテレータ値をロード
-        let current_value = self.builder.build_load(var_type, var_ptr);
+        let current_value = self.builder.build_load(var_ptr, &variable.name);
         
         // 終了条件をチェック（i < end）
         let cond = self.builder.build_int_compare(
@@ -3025,7 +3035,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.current_block = Some(inc_block);
         
         // 現在の値をロード
-        let current_value = self.builder.build_load(var_type, var_ptr);
+        let current_value = self.builder.build_load(var_ptr, &variable.name);
         
         // 値を増加
         let next_value = self.builder.build_int_add(
@@ -3176,7 +3186,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.current_exception_handler = old_exception_handler;
         
         // ステータスをチェック
-        let status = self.builder.build_load(status_type, status_alloca);
+        let status = self.builder.build_load(status_alloca, "status_check");
         let is_error = self.builder.build_int_compare(
             inkwell::IntPredicate::EQ,
             status.into_int_value(),
@@ -3192,19 +3202,21 @@ impl<'ctx> IRGenerator<'ctx> {
         self.current_block = Some(catch_dispatch_block);
         
         // エラーコードをロード
-        let error_ptr = self.builder.build_load(error_type, error_alloca);
+        let error_ptr = self.builder.build_load(error_alloca, "error_ptr");
         
         // エラータイプ情報をロード（仮にエラーポインタの先頭i32をタイプ情報とする）
         let error_type_ptr = unsafe {
             self.builder.build_struct_gep(
                 self.context.i8_type(),
                 error_ptr.into_pointer_value(),
-                0
+                0,
+                "error_type_ptr"
             )?
         };
         let error_type_id = self.builder.build_load(
             self.context.i32_type(),
-            error_type_ptr
+            error_type_ptr,
+            "error_type_id"
         );
         
         // Phi節点用の値を格納するための変数
@@ -3266,7 +3278,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.current_block = Some(end_block);
         
         // try部分からの正常値をPhi入力として追加
-        let normal_value = self.builder.build_load(result_type, result_alloca);
+        let normal_value = self.builder.build_load(result_alloca, "normal_result");
         incoming_values.push(normal_value);
         
         // try部分の正常終了ブロックを特定
@@ -3408,7 +3420,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 // 関数ポインタを介した呼び出し
                 let func_type = func_ptr.get_type().get_element_type();
                 if let AnyTypeEnum::FunctionType(ft) = func_type {
-                    self.builder.build_call(ft, func_ptr, &args)
+                    self.builder.build_call(func_ptr, &args, "bind_call")
                 } else {
                     return Err(CompilerError::code_generation_error(
                         "バインド関数が関数型ではありません",
@@ -3482,7 +3494,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.builder.build_store(new_error_ptr, error_value);
         
         // 新しいResult構造体をロード
-        let error_result = self.builder.build_load(result_struct_type, new_result_ptr);
+        let error_result = self.builder.build_load(new_result_ptr, "propagated_error");
         
         // エラーブロックから合流ブロックへ
         self.builder.build_unconditional_branch(merge_block);
@@ -3575,7 +3587,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 // 関数ポインタを介した呼び出し
                 let func_type = func_ptr.get_type().get_element_type();
                 if let AnyTypeEnum::FunctionType(ft) = func_type {
-                    self.builder.build_call(ft, func_ptr, &args)
+                    self.builder.build_call(func_ptr, &args, "map_call")
                 } else {
                     return Err(CompilerError::code_generation_error(
                         "マップ関数が関数型ではありません",
@@ -3625,7 +3637,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.builder.build_store(new_value_ptr, mapped_value);
         
         // 新しいResult構造体をロード
-        let success_result = self.builder.build_load(result_struct_type, new_result_ptr);
+        let success_result = self.builder.build_load(new_result_ptr, "mapped_success");
         
         // 成功ブロックから合流ブロックへ
         self.builder.build_unconditional_branch(merge_block);
@@ -3677,7 +3689,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.builder.build_store(new_error_error_ptr, error_value);
         
         // 新しいResult構造体をロード
-        let error_result = self.builder.build_load(result_struct_type, new_error_result_ptr);
+        let error_result = self.builder.build_load(new_error_result_ptr, "unchanged_error");
         
         // エラーブロックから合流ブロックへ
         self.builder.build_unconditional_branch(merge_block);
@@ -3896,7 +3908,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 
                 Ok(TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Function(concrete_param_types, Some(Box::new(concrete_ret_type))),
+                    kind: TypeKind::Function(concrete_param_types, Box::new(concrete_ret_type)),
                     location: type_ann.location.clone(),
                 })
             },
@@ -4010,6 +4022,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 self.context.i8_type(),
                 object_ptr,
                 ref_count_offset,
+                "ref_count_ptr"
             )?
         };
         
@@ -4017,12 +4030,14 @@ impl<'ctx> IRGenerator<'ctx> {
         let ref_count = self.builder.build_load(
             self.context.i32_type(),
             ref_count_ptr,
+            "ref_count"
         );
         
         // 参照カウントをインクリメント
         let new_ref_count = self.builder.build_int_add(
             ref_count.into_int_value(),
             self.context.i32_type().const_int(1, false),
+            "new_ref_count"
         );
         
         // 更新した参照カウントを格納
@@ -4042,6 +4057,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 self.context.i8_type(),
                 object_ptr,
                 ref_count_offset,
+                "ref_count_ptr"
             )?
         };
         
@@ -4049,12 +4065,14 @@ impl<'ctx> IRGenerator<'ctx> {
         let ref_count = self.builder.build_load(
             self.context.i32_type(),
             ref_count_ptr,
+            "ref_count"
         );
         
         // 参照カウントをデクリメント
         let new_ref_count = self.builder.build_int_sub(
             ref_count.into_int_value(),
             self.context.i32_type().const_int(1, false),
+            "new_ref_count"
         );
         
         // 更新した参照カウントを格納
@@ -4065,6 +4083,7 @@ impl<'ctx> IRGenerator<'ctx> {
             inkwell::IntPredicate::EQ,
             new_ref_count,
             self.context.i32_type().const_zero(),
+            "is_zero"
         );
         
         // 条件分岐を作成
@@ -4086,10 +4105,11 @@ impl<'ctx> IRGenerator<'ctx> {
             let void_ptr = self.builder.build_bitcast(
                 object_ptr,
                 self.context.i8_type().ptr_type(AddressSpace::Generic),
+                "void_ptr"
             );
             
             // free関数を呼び出し
-            self.builder.build_call(free_fn, &[void_ptr.into()]);
+            self.builder.build_call(free_fn, &[void_ptr.into()], "free_call");
             
             // continueブロックへ分岐
             self.builder.build_unconditional_branch(continue_block);
@@ -4114,27 +4134,35 @@ impl<'ctx> IRGenerator<'ctx> {
         // TypeInfoフィールドへのポインタを取得
         let type_info_ptr = unsafe {
             self.builder.build_struct_gep(
+                self.context.i8_type(),
                 object_ptr,
                 type_info_offset,
+                "type_info_ptr"
             )?
         };
         
         // TypeInfo構造体をロード
         let type_info = self.builder.build_load(
+            self.context.i8_type().ptr_type(AddressSpace::Generic),
             type_info_ptr,
+            "type_info"
         );
         
         // デストラクタ関数ポインタを取得（TypeInfo構造体の最初のフィールドと仮定）
         let dtor_ptr_ptr = unsafe {
             self.builder.build_struct_gep(
+                self.context.i8_type(),
                 type_info.into_pointer_value(),
                 0,
+                "dtor_ptr_ptr"
             )?
         };
         
         // デストラクタ関数ポインタをロード
         let dtor_ptr = self.builder.build_load(
+            self.context.i8_type().ptr_type(AddressSpace::Generic),
             dtor_ptr_ptr,
+            "dtor_ptr"
         );
         
         // デストラクタ関数型: void (*)(void*)
@@ -4146,13 +4174,17 @@ impl<'ctx> IRGenerator<'ctx> {
         let void_obj_ptr = self.builder.build_bitcast(
             object_ptr,
             void_ptr_type,
+            "void_obj_ptr"
         );
         
         // デストラクタを呼び出し
         self.builder.build_call(
+            dtor_type,
             dtor_ptr.into_pointer_value(),
             &[void_obj_ptr.into()],
+            "dtor_call"
         );
+        
         Ok(())
     }
     
@@ -4168,6 +4200,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 region_alloc_fn.get_type(),
                 region_alloc_fn,
                 &[size.into(), region_id_const.into()],
+                "region_alloc_call"
             );
             
             // 結果をポインタとして取得
@@ -4186,6 +4219,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     malloc_fn.get_type(),
                     malloc_fn,
                     &[size.into()],
+                    "malloc_call"
                 );
                 
                 let allocated_ptr = result.try_as_basic_value().left().ok_or_else(|| {
@@ -4217,6 +4251,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 region_free_fn.get_type(),
                 region_free_fn,
                 &[region_id_const.into()],
+                "region_free_call"
             );
             
             Ok(())
@@ -4263,6 +4298,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 unique_ptr_struct_type,
                 unique_ptr,
                 0,
+                "ptr_field"
             )?
         };
         
@@ -4270,7 +4306,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.builder.build_store(ptr_field_ptr, value_ptr);
         
         // UniquePtr構造体をロード
-        let result = self.builder.build_load(unique_ptr_struct_type, unique_ptr);
+        let result = self.builder.build_load(unique_ptr, "unique_ptr_val");
         
         Ok(result)
     }
@@ -4332,10 +4368,11 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.context.i32_type(),
                     array_ptr,
                     &[self.context.i32_type().const_int(u64::MAX, true)],
+                    "array_len_ptr"
                 )
             };
             
-            self.builder.build_load(self.context.i32_type(), len_ptr).into_int_value()
+            self.builder.build_load(len_ptr, "array_len").into_int_value()
         };
         
         // インデックスが負の場合のチェック
@@ -4343,6 +4380,7 @@ impl<'ctx> IRGenerator<'ctx> {
             inkwell::IntPredicate::SLT,
             index,
             self.context.i32_type().const_zero(),
+            "is_negative"
         );
         
         // インデックスが長さ以上の場合のチェック
@@ -4350,12 +4388,14 @@ impl<'ctx> IRGenerator<'ctx> {
             inkwell::IntPredicate::SGE,
             index,
             len,
+            "is_too_large"
         );
         
         // いずれかの条件に該当する場合は境界エラー
         let is_out_of_bounds = self.builder.build_or(
             is_negative,
             is_too_large,
+            "is_out_of_bounds"
         );
         
         // 境界チェックブロックを作成
@@ -4371,14 +4411,16 @@ impl<'ctx> IRGenerator<'ctx> {
         // エラーメッセージを作成
             let error_msg = self.builder.build_global_string_ptr(
             "インデックスが配列の境界外です", 
-        );
+            "bounds_error_msg"
+            );
             
         // ランタイムエラー関数を呼び出す
         if let Some(&panic_fn) = self.functions.get("swiftlight_panic") {
             self.builder.build_call(
-                panic_fn.get_type(), 
+                panic_fn.get_type(),
                 panic_fn, 
                 &[error_msg.as_pointer_value().into()], 
+                "panic_call"
             );
             
             // 到達しないコード
@@ -4391,6 +4433,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     exit_fn.get_type(),
                     exit_fn,
                     &[exit_code.into()],
+                    "exit_call"
                 );
                 
                 // 到達しないコード
@@ -4426,6 +4469,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 calloc_fn.get_type(),
                 calloc_fn,
                 &[count_64.into(), elem_size.into()],
+                "calloc_call"
             );
             
             // ポインタを取得して適切な型にキャスト
@@ -4449,6 +4493,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 malloc_fn.get_type(),
                 malloc_fn,
                 &[total_size.into()],
+                "malloc_call"
             );
             
             let void_ptr = result.try_as_basic_value().left().ok_or_else(|| {
@@ -4468,6 +4513,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         self.context.i8_type().const_zero().into(),
                         total_size.into()
                     ],
+                    "memset_call"
                 );
             }
             
@@ -4540,6 +4586,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     args_array_type,
                     args_array,
                     &[self.context.i32_type().const_zero(), idx],
+                    &format!("arg_ptr_{}", i)
                 )
             };
             
@@ -4655,7 +4702,8 @@ impl<'ctx> IRGenerator<'ctx> {
         let result = self.builder.build_call(
             async_await_fn.get_type(),
             *async_await_fn,
-            &[handle_value.into()]
+            &[handle_value.into()],
+            "await_result"
         );
         
         // 結果を返す
@@ -4764,7 +4812,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 end_value.into_int_value().into(),
                 step_value.into_int_value().into(),
                 function_ptr.into()
-            ]
+            ],
+            "parallel_for_call"
         );
         
         Ok(())
@@ -4777,6 +4826,7 @@ impl<'ctx> IRGenerator<'ctx> {
             AtomicOp::Load => {
                 let atomic_load = self.builder.build_atomic_load(
                     ptr,
+                    &format!("atomic_load_{:?}", ordering),
                     convert_atomic_ordering(ordering)
                 );
                 Ok(atomic_load)
@@ -4800,11 +4850,13 @@ impl<'ctx> IRGenerator<'ctx> {
                     inkwell::AtomicRMWBinOp::Add,
                     int_ptr,
                     int_val,
-                    convert_atomic_ordering(ordering)
+                    convert_atomic_ordering(ordering),
+                    false
                 );
                 
                 Ok(result.into())
             },
+            
             AtomicOp::Sub => {
                 let int_ptr = ptr.into_pointer_value();
                 let int_val = value.into_int_value();
@@ -4813,11 +4865,13 @@ impl<'ctx> IRGenerator<'ctx> {
                     inkwell::AtomicRMWBinOp::Sub,
                     int_ptr,
                     int_val,
-                    convert_atomic_ordering(ordering)
+                    convert_atomic_ordering(ordering),
+                    false
                 );
                 
                 Ok(result.into())
             },
+            
             AtomicOp::And => {
                 let int_ptr = ptr.into_pointer_value();
                 let int_val = value.into_int_value();
@@ -4897,7 +4951,8 @@ impl<'ctx> IRGenerator<'ctx> {
         // 成功フラグのみを返す
         let success = self.builder.build_extract_value(
             result.as_any_value_enum().into_struct_value(),
-            0
+            0,
+            "cas_success"
         ).unwrap();
         
         Ok(success.into())
@@ -4907,7 +4962,8 @@ impl<'ctx> IRGenerator<'ctx> {
     fn generate_fence(&mut self, ordering: AtomicOrdering) -> Result<()> {
         self.builder.build_fence(
             convert_atomic_ordering(ordering),
-            None
+            None,
+            &format!("fence_{:?}", ordering)
         );
         
         Ok(())
@@ -4920,7 +4976,8 @@ impl<'ctx> IRGenerator<'ctx> {
             self.builder.build_call(
                 lock_fn.get_type(),
                 lock_fn,
-                &[mutex_ptr.into()]
+                &[mutex_ptr.into()],
+                "lock_call"
             );
             
             Ok(())
@@ -4939,7 +4996,8 @@ impl<'ctx> IRGenerator<'ctx> {
             self.builder.build_call(
                 unlock_fn.get_type(),
                 unlock_fn,
-                &[mutex_ptr.into()]
+                &[mutex_ptr.into()],
+                "unlock_call"
             );
             
             Ok(())
@@ -4956,12 +5014,13 @@ impl<'ctx> IRGenerator<'ctx> {
         // プロファイリングランタイム関数が存在するか確認
         if let Some(profile_entry_fn) = self.llvm_module.get_function("swiftlight_profile_function_entry") {
             // 関数名の文字列定数を作成
-            let func_name_str = self.builder.build_global_string_ptr(function_name);
+            let func_name_str = self.builder.build_global_string_ptr(function_name, "profile_func_name");
             
             // プロファイリング関数を呼び出し
             self.builder.build_call(
                 profile_entry_fn,
-                &[func_name_str.as_pointer_value().into()]
+                &[func_name_str.as_pointer_value().into()],
+                "profile_entry_call"
             );
         }
         
@@ -4973,12 +5032,13 @@ impl<'ctx> IRGenerator<'ctx> {
         // プロファイリングランタイム関数が存在するか確認
         if let Some(profile_exit_fn) = self.llvm_module.get_function("swiftlight_profile_function_exit") {
             // 関数名の文字列定数を作成
-            let func_name_str = self.builder.build_global_string_ptr(function_name);
+            let func_name_str = self.builder.build_global_string_ptr(function_name, "profile_func_name");
             
             // プロファイリング関数を呼び出し
             self.builder.build_call(
                 profile_exit_fn,
-                &[func_name_str.as_pointer_value().into()]
+                &[func_name_str.as_pointer_value().into()],
+                "profile_exit_call"
             );
         }
         
@@ -4990,12 +5050,13 @@ impl<'ctx> IRGenerator<'ctx> {
         // ブロックカウンターランタイム関数が存在するか確認
         if let Some(block_counter_fn) = self.llvm_module.get_function("swiftlight_count_block") {
             // ブロック名の文字列定数を作成
-            let block_name_str = self.builder.build_global_string_ptr(block_name);
+            let block_name_str = self.builder.build_global_string_ptr(block_name, "block_name");
             
             // カウンター関数を呼び出し
             self.builder.build_call(
                 block_counter_fn,
-                &[block_name_str.as_pointer_value().into()]
+                &[block_name_str.as_pointer_value().into()],
+                "block_counter_call"
             );
         }
         
@@ -5021,7 +5082,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 &[
                     ptr.into(),
                     access_size.into()
-                ]
+                ],
+                "mem_instr_call"
             );
         }
         
@@ -5033,12 +5095,13 @@ impl<'ctx> IRGenerator<'ctx> {
         // 分岐インストルメンテーション関数が存在するか確認
         if let Some(branch_instr_fn) = self.llvm_module.get_function("swiftlight_instrument_branch") {
             // 分岐IDの文字列定数を作成
-            let branch_id_str = self.builder.build_global_string_ptr(branch_id);
+            let branch_id_str = self.builder.build_global_string_ptr(branch_id, "branch_id");
             
             // 条件値を拡張
             let cond_ext = self.builder.build_int_z_extend(
                 condition, 
-                self.context.i32_type()
+                self.context.i32_type(), 
+                "branch_cond_ext"
             );
             
             // インストルメンテーション関数を呼び出し
@@ -5047,7 +5110,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 &[
                     cond_ext.into(),
                     branch_id_str.as_pointer_value().into()
-                ]
+                ],
+                "branch_instr_call"
             );
         }
         
@@ -5114,7 +5178,8 @@ impl<'ctx> IRGenerator<'ctx> {
         let counter_ptr = counter_var.as_pointer_value();
         let current_value = self.builder.build_load(
             self.context.i64_type(),
-            counter_ptr
+            counter_ptr,
+            "counter_value"
         );
         
         // カウンターをインクリメント
@@ -5123,7 +5188,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 // 32ビット→64ビットに拡張
                 self.builder.build_int_z_extend(
                     value,
-                    self.context.i64_type()
+                    self.context.i64_type(),
+                    "counter_incr_ext"
                 )
             },
             None => {
@@ -5135,7 +5201,7 @@ impl<'ctx> IRGenerator<'ctx> {
         // 加算
         let new_value = match current_value {
             BasicValueEnum::IntValue(int_val) => {
-                self.builder.build_int_add(int_val, increment)
+                self.builder.build_int_add(int_val, increment, "counter_new_value")
             },
             _ => {
                 return Err(CompilerError::code_generation_error(
@@ -5156,12 +5222,13 @@ impl<'ctx> IRGenerator<'ctx> {
         // ホットスポット検出関数が存在するか確認
         if let Some(hotspot_fn) = self.llvm_module.get_function("swiftlight_detect_hotspot") {
             // ホットスポットIDの文字列定数を作成
-            let hotspot_id_str = self.builder.build_global_string_ptr(hotspot_id);
+            let hotspot_id_str = self.builder.build_global_string_ptr(hotspot_id, "hotspot_id");
             
             // ホットスポット検出関数を呼び出し
             self.builder.build_call(
                 hotspot_fn,
-                &[hotspot_id_str.as_pointer_value().into()]
+                &[hotspot_id_str.as_pointer_value().into()],
+                "hotspot_call"
             );
         }
         
@@ -5173,7 +5240,7 @@ impl<'ctx> IRGenerator<'ctx> {
         // ループ分析関数が存在するか確認
         if let Some(loop_fn) = self.llvm_module.get_function("swiftlight_analyze_loop") {
             // ループIDの文字列定数を作成
-            let loop_id_str = self.builder.build_global_string_ptr(loop_id);
+            let loop_id_str = self.builder.build_global_string_ptr(loop_id, "loop_id");
             
             // イテレーション数（指定がなければ0）
             let iter_count = match iteration_count {
@@ -5187,7 +5254,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 &[
                     loop_id_str.as_pointer_value().into(),
                     iter_count.into()
-                ]
+                ],
+                "loop_analysis_call"
             );
         }
         
@@ -5201,7 +5269,8 @@ impl<'ctx> IRGenerator<'ctx> {
             // 引数なしで関数を呼び出し
             self.builder.build_call(
                 dump_fn,
-                &[]
+                &[],
+                "profile_dump_call"
             );
         }
         
@@ -5242,7 +5311,8 @@ impl<'ctx> IRGenerator<'ctx> {
             // atexit関数を呼び出して、プログラム終了時にプロファイル情報を出力
             self.builder.build_call(
                 atexit_fn,
-                &[dump_fn.as_global_value().as_pointer_value().into()]
+                &[dump_fn.as_global_value().as_pointer_value().into()],
+                "atexit_call"
             );
             
             // 初期化関数を終了
@@ -5268,7 +5338,7 @@ impl<'ctx> IRGenerator<'ctx> {
 }
 
 /// アトミック操作の種類
-enum AtomicOp {
+pub(crate) enum AtomicOp {
     /// アトミックロード
     Load,
     /// アトミックストア
@@ -5342,10 +5412,10 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 // 整数演算
                 BinaryOperator::Add => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
-                        Ok(self.builder.build_int_add(l, r).into())
+                        Ok(self.builder.build_int_add(l, r, "const_add").into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
-                        Ok(self.builder.build_float_add(l, r).into())
+                        Ok(self.builder.build_float_add(l, r, "const_add").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 加算は数値型でのみ有効です",
@@ -5354,10 +5424,10 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 },
                 BinaryOperator::Subtract => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
-                        Ok(self.builder.build_int_sub(l, r).into())
+                        Ok(self.builder.build_int_sub(l, r, "const_sub").into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
-                        Ok(self.builder.build_float_sub(l, r).into())
+                        Ok(self.builder.build_float_sub(l, r, "const_sub").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 減算は数値型でのみ有効です",
@@ -5366,10 +5436,10 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 },
                 BinaryOperator::Multiply => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
-                        Ok(self.builder.build_int_mul(l, r).into())
+                        Ok(self.builder.build_int_mul(l, r, "const_mul").into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
-                        Ok(self.builder.build_float_mul(l, r).into())
+                        Ok(self.builder.build_float_mul(l, r, "const_mul").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 乗算は数値型でのみ有効です",
@@ -5387,10 +5457,10 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                         }
                         
                         // 符号付き除算
-                        Ok(self.builder.build_int_signed_div(l, r).into())
+                        Ok(self.builder.build_int_signed_div(l, r, "const_div").into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
-                        Ok(self.builder.build_float_div(l, r).into())
+                        Ok(self.builder.build_float_div(l, r, "const_div").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 除算は数値型でのみ有効です",
@@ -5401,7 +5471,7 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 // 論理演算
                 BinaryOperator::And => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
-                        Ok(self.builder.build_and(l, r).into())
+                        Ok(self.builder.build_and(l, r, "const_and").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 論理積は整数型でのみ有効です",
@@ -5410,7 +5480,7 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 },
                 BinaryOperator::Or => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
-                        Ok(self.builder.build_or(l, r).into())
+                        Ok(self.builder.build_or(l, r, "const_or").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 論理和は整数型でのみ有効です",
@@ -5422,20 +5492,22 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 BinaryOperator::Equal => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
                         let cmp = self.builder.build_int_compare(
-                            inkwell::IntPredicate::EQ, l, r
+                            inkwell::IntPredicate::EQ, l, r, "const_eq"
                         );
                         Ok(self.builder.build_int_z_extend(
                             cmp, 
-                            self.context.i32_type()
+                            self.context.i32_type(), 
+                            "const_eq_ext"
                         ).into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
                         let cmp = self.builder.build_float_compare(
-                            inkwell::FloatPredicate::OEQ, l, r
+                            inkwell::FloatPredicate::OEQ, l, r, "const_eq"
                         );
                         Ok(self.builder.build_int_z_extend(
                             cmp, 
-                            self.context.i32_type()
+                            self.context.i32_type(), 
+                            "const_eq_ext"
                         ).into())
                     },
                     _ => Err(CompilerError::code_generation_error(
@@ -5446,20 +5518,22 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 BinaryOperator::NotEqual => match (left_val, right_val) {
                     (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
                         let cmp = self.builder.build_int_compare(
-                            inkwell::IntPredicate::NE, l, r
+                            inkwell::IntPredicate::NE, l, r, "const_ne"
                         );
                         Ok(self.builder.build_int_z_extend(
                             cmp, 
-                            self.context.i32_type()
+                            self.context.i32_type(), 
+                            "const_ne_ext"
                         ).into())
                     },
                     (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) => {
                         let cmp = self.builder.build_float_compare(
-                            inkwell::FloatPredicate::ONE, l, r
+                            inkwell::FloatPredicate::ONE, l, r, "const_ne"
                         );
                         Ok(self.builder.build_int_z_extend(
                             cmp, 
-                            self.context.i32_type()
+                            self.context.i32_type(), 
+                            "const_ne_ext"
                         ).into())
                     },
                     _ => Err(CompilerError::code_generation_error(
@@ -5484,10 +5558,10 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
             match op {
                 UnaryOperator::Minus => match operand_val {
                     BasicValueEnum::IntValue(val) => {
-                        Ok(self.builder.build_int_neg(val).into())
+                        Ok(self.builder.build_int_neg(val, "const_neg").into())
                     },
                     BasicValueEnum::FloatValue(val) => {
-                        Ok(self.builder.build_float_neg(val).into())
+                        Ok(self.builder.build_float_neg(val, "const_neg").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 単項マイナスは数値型でのみ有効です",
@@ -5496,7 +5570,7 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 },
                 UnaryOperator::Not => match operand_val {
                     BasicValueEnum::IntValue(val) => {
-                        Ok(self.builder.build_not(val).into())
+                        Ok(self.builder.build_not(val, "const_not").into())
                     },
                     _ => Err(CompilerError::code_generation_error(
                         "不正な定数式: 論理否定は整数型でのみ有効です",
@@ -5581,12 +5655,12 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                     } else if source_bits < target_bits {
                         // 拡張
                         Ok(self.builder.build_int_z_extend(
-                            int_val, target_int_type
+                            int_val, target_int_type, "const_int_ext"
                         ).into())
                     } else {
                         // 縮小
                         Ok(self.builder.build_int_truncate(
-                            int_val, target_int_type
+                            int_val, target_int_type, "const_int_trunc"
                         ).into())
                     }
                 },
@@ -5594,14 +5668,14 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                 // 整数→浮動小数点キャスト
                 (BasicValueEnum::IntValue(int_val), BasicTypeEnum::FloatType(target_float_type)) => {
                     Ok(self.builder.build_signed_int_to_float(
-                        int_val, target_float_type
+                        int_val, target_float_type, "const_int_to_float"
                     ).into())
                 },
                 
                 // 浮動小数点→整数キャスト
                 (BasicValueEnum::FloatValue(float_val), BasicTypeEnum::IntType(target_int_type)) => {
                     Ok(self.builder.build_float_to_signed_int(
-                        float_val, target_int_type
+                        float_val, target_int_type, "const_float_to_int"
                     ).into())
                 },
                 
@@ -5611,13 +5685,13 @@ fn evaluate_constexpr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ct
                         std::cmp::Ordering::Less => {
                             // 拡張 (例: float → double)
                             Ok(self.builder.build_float_ext(
-                                float_val, target_float_type
+                                float_val, target_float_type, "const_float_ext"
                             ).into())
                         },
                         std::cmp::Ordering::Greater => {
                             // 縮小 (例: double → float)
                             Ok(self.builder.build_float_trunc(
-                                float_val, target_float_type
+                                float_val, target_float_type, "const_float_trunc"
                             ).into())
                         },
                         std::cmp::Ordering::Equal => {

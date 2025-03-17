@@ -4,7 +4,8 @@
 //! これらの関数は、特定のハードウェア命令や最適化されたルーチンに直接マップされます。
 
 use std::collections::HashMap;
-use crate::middleend::ir::{Type, Value, Function};
+use crate::middleend::ir::{Type, Value};
+use crate::frontend::ast::Function;
 use crate::frontend::error::Result;
 
 /// イントリンシック関数の種類
@@ -151,19 +152,37 @@ impl IntrinsicManager {
         let intrinsic = self.lookup(kind)
             .ok_or_else(|| format!("イントリンシック関数が見つかりません: {:?}", kind))?;
             
-        // イントリンシックをIR関数に変換するロジック
-        // 実際の実装ではより複雑になる
+        // パラメータの作成
+        let mut parameters = Vec::new();
+        for (i, param_type) in intrinsic.parameter_types.iter().enumerate() {
+            parameters.push(Parameter {
+                name: format!("param{}", i),
+                ty: param_type.clone(),
+                id: i,
+                location: SourceLocation::builtin(),
+            });
+        }
         
+        // 関数IDの生成
+        let function_id = generate_unique_id();
+        // イントリンシック関数の作成
         Ok(Function {
+            id: function_id,
             name: intrinsic.name.clone(),
-            parameters: Vec::new(), // ダミー実装
+            parameters,
             return_type: intrinsic.return_type.clone(),
-            basic_blocks: Vec::new(), // ダミー実装
-            is_declaration: true,
-            is_intrinsic: true,
+            basic_blocks: Vec::new(),
+            body: None,
+            type_parameters: Vec::new(),
+            visibility: Visibility::Public,
+            is_async: false,
+            is_extern: true,
+            location: SourceLocation::builtin(),
+            attributes: vec![FunctionAttribute::Intrinsic(intrinsic.kind)],
+            is_declaration: true,  // イントリンシックは宣言のみ
+            is_intrinsic: true,    // イントリンシック関数
         })
     }
-    
     /// イントリンシック関数の呼び出しを生成
     pub fn generate_call(&self, kind: IntrinsicKind, arguments: Vec<Value>) -> Result<Value> {
         let intrinsic = self.lookup(kind)

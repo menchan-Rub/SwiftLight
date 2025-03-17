@@ -11,6 +11,7 @@ pub mod ast;
 pub mod error;
 pub mod source_map;
 pub mod diagnostic;
+pub mod module;
 
 // 再エクスポート
 pub use self::lexer::Lexer;
@@ -20,3 +21,4 @@ pub use self::ast::Program;
 pub use self::error::{CompilerError, ErrorKind, Result};
 pub use self::source_map::SourceMap;
 pub use self::diagnostic::{Diagnostic, DiagnosticLevel};
+pub use self::module::Module;

@@ -6,12 +6,16 @@ use crate::frontend::ast::{
     self, Program, Declaration, Statement, Expression, TypeAnnotation, TypeKind,
     NodeId, ExpressionKind, StatementKind, DeclarationKind, Identifier, Function,
     VariableDeclaration, ConstantDeclaration, Parameter, Struct, Enum, Trait, TypeAlias,
-    Implementation, Import, BinaryOperator, UnaryOperator, Literal, LiteralKind, MatchArm,
+    Implementation, Import, BinaryOperator, UnaryOperator, Literal, LiteralKind, 
+    // MatchArm, // 存在しないためコメントアウト
 };
-use crate::frontend::error::{Result, CompilerError, Diagnostic, SourceLocation};
+use crate::frontend::error::{Result, CompilerError, SourceLocation};
+use crate::diagnostics::Diagnostic; // 正しいパスからDiagnosticをインポート
 use super::name_resolver::NameResolutionResult;
 use super::symbol_table::{SymbolTable, Symbol, SymbolKind, Visibility};
 use super::scope::ScopeManager;
+use crate::typesystem::TypeRegistry;
+use crate::diagnostics::DiagnosticEmitter;
 
 /// 型チェックの結果
 #[derive(Debug, Clone, Default)]
@@ -218,6 +222,12 @@ pub struct TypeChecker {
     /// 型チェック結果
     result: TypeCheckResult,
     
+    /// 型レジストリ
+    type_registry: TypeRegistry,
+    
+    /// 診断情報エミッタ
+    diagnostic_emitter: DiagnosticEmitter,
+    
     /// 型エイリアスマッピング（型エイリアスID → 解決された型）
     type_aliases: HashMap<NodeId, TypeAnnotation>,
     
@@ -294,20 +304,35 @@ impl Default for TypeCheckOptions {
 
 impl TypeChecker {
     /// 新しい型チェッカーを作成
-    pub fn new(name_resolution: NameResolutionResult, symbol_table: SymbolTable) -> Self {
-        Self::with_options(name_resolution, symbol_table, TypeCheckOptions::default())
+    pub fn new(
+        type_registry: TypeRegistry,
+        diagnostic_emitter: DiagnosticEmitter
+    ) -> Self {
+        let name_resolution = NameResolutionResult::default();
+        let symbol_table = SymbolTable::new();
+        Self::with_options(
+            name_resolution, 
+            symbol_table, 
+            type_registry,
+            diagnostic_emitter,
+            TypeCheckOptions::default()
+        )
     }
     
     /// オプション付きで型チェッカーを作成
     pub fn with_options(
         name_resolution: NameResolutionResult,
         symbol_table: SymbolTable,
+        type_registry: TypeRegistry,
+        diagnostic_emitter: DiagnosticEmitter,
         options: TypeCheckOptions,
     ) -> Self {
         Self {
             name_resolution,
             symbol_table,
             result: TypeCheckResult::new(),
+            type_registry,
+            diagnostic_emitter,
             type_aliases: HashMap::new(),
             context: TypeCheckContext {
                 return_type: None,

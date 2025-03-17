@@ -180,6 +180,11 @@ pub struct Function {
     pub id: NodeId,
     /// 位置情報
     pub location: Option<SourceLocation>,
+    pub(crate) basic_blocks: Vec<_>,
+    pub(crate) basic_blocks: Vec<_>,
+    pub(crate) is_declaration: bool,
+    pub(crate) is_intrinsic: bool,
+    pub(crate) attributes: Vec<_>,
 }
 
 impl Locatable for Function {
@@ -887,13 +892,15 @@ pub enum UnaryOperator {
 }
 
 /// 可視性
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Visibility {
-    /// 非公開（デフォルト）
-    Private,
-    /// 公開
+    /// パブリック（モジュール外からアクセス可能）
     Public,
-    /// 制限付き公開（指定されたパスからのみアクセス可能）
+    /// プライベート（モジュール内からのみアクセス可能）
+    Private,
+    /// 内部（パッケージ内からのみアクセス可能）
+    Internal,
+    /// 制限付き（指定されたモジュールからのみアクセス可能）
     Restricted(Vec<String>),
 }
 

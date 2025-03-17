@@ -6,6 +6,42 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::Duration;
 
+/// 最適化レベル
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizationLevel {
+    /// 最適化なし（O0）
+    O0,
+    /// 最小限の最適化（O1）
+    O1,
+    /// 標準的な最適化（O2、デフォルト）
+    O2,
+    /// 積極的な最適化（O3）
+    O3,
+    /// サイズ優先の最適化（Os）
+    Os,
+    /// デバッグ優先の最適化（Og）
+    Og,
+}
+
+impl Default for OptimizationLevel {
+    fn default() -> Self {
+        OptimizationLevel::O2
+    }
+}
+
+impl fmt::Display for OptimizationLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OptimizationLevel::O0 => write!(f, "O0"),
+            OptimizationLevel::O1 => write!(f, "O1"),
+            OptimizationLevel::O2 => write!(f, "O2"),
+            OptimizationLevel::O3 => write!(f, "O3"),
+            OptimizationLevel::Os => write!(f, "Os"),
+            OptimizationLevel::Og => write!(f, "Og"),
+        }
+    }
+}
+
 /// 最適化パスの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OptimizationPassKind {

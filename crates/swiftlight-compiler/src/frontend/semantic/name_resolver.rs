@@ -11,7 +11,7 @@ use crate::frontend::ast::{
     Identifier, TypeAnnotation, TypeKind, NodeId, Parameter,
     Function, Struct, Enum, EnumVariant, Trait, Implementation,
 };
-use crate::frontend::error::{Result, CompilerError, Diagnostic, SourceLocation};
+use crate::frontend::error::{Result, CompilerError, SourceLocation};
 use super::scope::{ScopeManager, ScopeKind};
 use super::symbol_table::{Symbol, SymbolKind, Visibility};
 

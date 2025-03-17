@@ -496,42 +496,33 @@ impl FromStr for CodeModel {
 }
 
 /// 関数呼び出し規約
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallingConvention {
-    /// C呼び出し規約
-    C,
-    /// FastCall呼び出し規約
-    FastCall,
-    /// System V呼び出し規約
+    /// System V ABI
     SystemV,
-    /// Windows x64呼び出し規約
+    /// Microsoft x64 ABI
     Win64,
-    /// ARM AAPCS呼び出し規約
-    AAPCS,
-    /// ARM AAPCS-VFP呼び出し規約
-    AapcsVfp,
-    /// WebAssembly呼び出し規約
-    WebAssembly,
-    /// Swift呼び出し規約
+    /// Microsoft x86 stdcall
+    Stdcall,
+    /// Microsoft x86 fastcall
+    Fastcall,
+    /// C calling convention
+    C,
+    /// Swift calling convention
     Swift,
-    /// SwiftLight独自の呼び出し規約
-    SwiftLight,
-    /// その他のカスタム呼び出し規約
+    /// カスタム呼び出し規約
     Custom(String),
 }
 
 impl fmt::Display for CallingConvention {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CallingConvention::C => write!(f, "c"),
-            CallingConvention::FastCall => write!(f, "fastcall"),
             CallingConvention::SystemV => write!(f, "systemv"),
             CallingConvention::Win64 => write!(f, "win64"),
-            CallingConvention::AAPCS => write!(f, "aapcs"),
-            CallingConvention::AapcsVfp => write!(f, "aapcs-vfp"),
-            CallingConvention::WebAssembly => write!(f, "wasm"),
+            CallingConvention::Stdcall => write!(f, "stdcall"),
+            CallingConvention::Fastcall => write!(f, "fastcall"),
+            CallingConvention::C => write!(f, "c"),
             CallingConvention::Swift => write!(f, "swift"),
-            CallingConvention::SwiftLight => write!(f, "swiftlight"),
             CallingConvention::Custom(name) => write!(f, "custom:{}", name),
         }
     }
@@ -542,15 +533,12 @@ impl FromStr for CallingConvention {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "c" => Ok(CallingConvention::C),
-            "fastcall" => Ok(CallingConvention::FastCall),
             "systemv" => Ok(CallingConvention::SystemV),
             "win64" => Ok(CallingConvention::Win64),
-            "aapcs" => Ok(CallingConvention::AAPCS),
-            "aapcs-vfp" => Ok(CallingConvention::AapcsVfp),
-            "wasm" => Ok(CallingConvention::WebAssembly),
+            "stdcall" => Ok(CallingConvention::Stdcall),
+            "fastcall" => Ok(CallingConvention::Fastcall),
+            "c" => Ok(CallingConvention::C),
             "swift" => Ok(CallingConvention::Swift),
-            "swiftlight" => Ok(CallingConvention::SwiftLight),
             s if s.starts_with("custom:") => {
                 let name = s.trim_start_matches("custom:").to_string();
                 Ok(CallingConvention::Custom(name))
@@ -683,25 +671,25 @@ impl FromStr for RelocationModel {
 }
 
 /// デバッグ情報の形式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DebugInfoFormat {
-    /// デバッグ情報なし
-    None,
     /// DWARF形式
     DWARF,
     /// CodeView形式
     CodeView,
-    /// SwiftLight独自のデバッグ情報形式
-    SwiftLight,
+    /// STABS形式
+    STABS,
+    /// カスタム形式
+    Custom(String),
 }
 
 impl fmt::Display for DebugInfoFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DebugInfoFormat::None => write!(f, "none"),
             DebugInfoFormat::DWARF => write!(f, "dwarf"),
             DebugInfoFormat::CodeView => write!(f, "codeview"),
-            DebugInfoFormat::SwiftLight => write!(f, "swiftlight"),
+            DebugInfoFormat::STABS => write!(f, "stabs"),
+            DebugInfoFormat::Custom(name) => write!(f, "custom:{}", name),
         }
     }
 }
@@ -711,10 +699,13 @@ impl FromStr for DebugInfoFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "none" => Ok(DebugInfoFormat::None),
             "dwarf" => Ok(DebugInfoFormat::DWARF),
             "codeview" => Ok(DebugInfoFormat::CodeView),
-            "swiftlight" => Ok(DebugInfoFormat::SwiftLight),
+            "stabs" => Ok(DebugInfoFormat::STABS),
+            s if s.starts_with("custom:") => {
+                let name = s.trim_start_matches("custom:").to_string();
+                Ok(DebugInfoFormat::Custom(name))
+            },
             _ => Err(format!("Unknown debug info format: {}", s)),
         }
     }
@@ -857,4 +848,78 @@ impl TargetOptions {
             _ => {}
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TargetFeature {
+    /// SSE命令セット
+    SSE,
+    /// SSE2命令セット
+    SSE2,
+    /// SSE3命令セット
+    SSE3,
+    /// SSSE3命令セット
+    SSSE3,
+    /// SSE4.1命令セット
+    SSE4_1,
+    /// SSE4.2命令セット
+    SSE4_2,
+    /// AVX命令セット
+    AVX,
+    /// AVX2命令セット
+    AVX2,
+    /// AVX-512命令セット
+    AVX512,
+    /// BMI1命令セット
+    BMI1,
+    /// BMI2命令セット
+    BMI2,
+    /// FMA命令セット
+    FMA,
+    /// ADX命令セット
+    ADX,
+    /// AES命令セット
+    AES,
+    /// SHA命令セット
+    SHA,
+    /// PCLMUL命令セット
+    PCLMUL,
+    /// POPCNT命令セット
+    POPCNT,
+    /// LZCNT命令セット
+    LZCNT,
+    /// RTM命令セット
+    RTM,
+    /// HLE命令セット
+    HLE,
+    /// MPX命令セット
+    MPX,
+    /// RDSEED命令セット
+    RDSEED,
+    /// ADCX命令セット
+    ADCX,
+    /// PREFETCHW命令セット
+    PREFETCHW,
+    /// PREFETCHWT1命令セット
+    PREFETCHWT1,
+    /// CLFLUSHOPT命令セット
+    CLFLUSHOPT,
+    /// CLWB命令セット
+    CLWB,
+    /// FSGSBASE命令セット
+    FSGSBASE,
+    /// PTWRITE命令セット
+    PTWRITE,
+    /// FXSR命令セット
+    FXSR,
+    /// XSAVE命令セット
+    XSAVE,
+    /// XSAVEOPT命令セット
+    XSAVEOPT,
+    /// XSAVEC命令セット
+    XSAVEC,
+    /// XSAVES命令セット
+    XSAVES,
+    /// カスタム機能
+    Custom(String),
 }
