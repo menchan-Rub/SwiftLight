@@ -11,6 +11,11 @@ pub mod options;
 pub mod diagnostics;
 pub mod pipeline;
 pub mod cache;
+pub mod dependency;
+pub mod incremental;
+pub mod module_manager;
+pub mod plugin_manager;
+pub mod build_plan;
 
 // 再エクスポート
 pub use self::compiler::Driver;
@@ -19,6 +24,11 @@ pub use self::options::CompileOptions;
 pub use self::diagnostics::{DiagnosticEmitter, Severity};
 pub use self::pipeline::{CompilationStage, Pipeline};
 pub use self::cache::CompilationCache;
+pub use self::dependency::{DependencyGraph, DependencyNode, DependencyType};
+pub use self::incremental::{IncrementalCompilationManager, ChangeDetector, ChangeImpactAnalyzer};
+pub use self::module_manager::ModuleManager;
+pub use self::plugin_manager::PluginManager;
+pub use self::build_plan::BuildPlan;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

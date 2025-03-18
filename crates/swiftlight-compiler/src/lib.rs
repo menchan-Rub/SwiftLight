@@ -1,6 +1,9 @@
 // SwiftLight Compiler Library
 // 言語コンパイラのメインライブラリ
 
+#![allow(unused_imports, unused_variables, dead_code, unused_macros)]
+#![allow(unexpected_cfgs, hidden_glob_reexports, ambiguous_glob_reexports)]
+
 //! # SwiftLight Compiler
 //! 
 //! SwiftLight言語のコンパイラライブラリです。
@@ -372,7 +375,7 @@ pub mod tests {
     }
     
     /// ASTの循環依存関係をチェック
-    fn check_circular_dependencies(ast: &frontend::ast::Program) -> Result<(), String> {
+    fn check_circular_dependencies(ast: &frontend::ast::Program) -> std::result::Result<(), String> {
         // モジュール依存関係グラフの構築
         let mut dependencies = std::collections::HashMap::new();
         
@@ -408,7 +411,7 @@ pub mod tests {
         dependencies: &std::collections::HashMap<u32, std::collections::HashSet<u32>>,
         visited: &mut std::collections::HashSet<u32>,
         path: &mut std::collections::HashSet<u32>,
-    ) -> Result<bool, String> {
+    ) -> std::result::Result<bool, String> {
         if path.contains(&current) {
             return Ok(true); // 循環検出
         }

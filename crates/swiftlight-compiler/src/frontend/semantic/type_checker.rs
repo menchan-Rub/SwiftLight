@@ -7,8 +7,9 @@ use crate::frontend::ast::{
     NodeId, ExpressionKind, StatementKind, DeclarationKind, Identifier, Function,
     VariableDeclaration, ConstantDeclaration, Parameter, Struct, Enum, Trait, TypeAlias,
     Implementation, Import, BinaryOperator, UnaryOperator, Literal, LiteralKind, 
-    // MatchArm, // 存在しないためコメントアウト
+    // MatchArm, // 一時的にコメントアウト
 };
+use crate::frontend::parser::ast::{MatchArm, Pattern}; // 正しいパスからMatchArmとPatternをインポート
 use crate::frontend::error::{Result, CompilerError, SourceLocation};
 use crate::diagnostics::Diagnostic; // 正しいパスからDiagnosticをインポート
 use super::name_resolver::NameResolutionResult;
@@ -639,7 +640,7 @@ impl TypeChecker {
         // 関数の型を記録
         let function_type = TypeAnnotation {
             id: decl.id,
-            kind: TypeKind::Function(param_types.clone(), Box::new(return_type.clone())),
+            kind: TypeKind::Function(param_types.clone(), Some(Box::new(return_type.clone()))),
             location: decl.location.clone(),
         };
         
@@ -854,7 +855,7 @@ impl TypeChecker {
                     }
                 }
             },
-            TypeKind::Array(elem_type) => {
+            TypeKind::Array(elem_type, _) => {  // 配列長の情報は依存関係に不要なため無視
                 // 配列の要素型の依存関係を調べる
                 self.collect_type_dependencies(alias_id, elem_type, deps);
             },
@@ -1041,12 +1042,11 @@ impl TypeChecker {
                 self.is_compatible(expected_inner, actual)
             },
             (_, TypeKind::Optional(actual_inner)) => false, // 非Optional→Optionalは暗黙変換しない
-            
-            // 配列型の互換性
-            (TypeKind::Array(expected_element), TypeKind::Array(actual_element)) => {
-                self.is_compatible(expected_element, actual_element)
+            // 配列型の互換性（要素型と配列長の両方をチェック）
+            (TypeKind::Array(expected_element, expected_len), TypeKind::Array(actual_element, actual_len)) => {
+                // 要素型の互換性と配列長の一致を確認
+                self.is_compatible(expected_element, actual_element) && expected_len == actual_len
             },
-            
             // 関数型の互換性
             (TypeKind::Function(expected_params, expected_return), 
              TypeKind::Function(actual_params, actual_return)) => {
@@ -1129,9 +1129,8 @@ impl TypeChecker {
             
             TypeKind::Named(ident) => ident.name.clone(),
             
-            TypeKind::Array(element_type) => 
+            TypeKind::Array(element_type, _) => 
                 format!("[{}]", self.type_to_string(element_type)),
-                
             TypeKind::Optional(inner_type) => 
                 format!("{}?", self.type_to_string(inner_type)),
                 
@@ -1204,7 +1203,7 @@ impl TypeChecker {
         }
         
         // 未使用の型を検出
-        for (node_id, symbol) in &self.symbol_table.symbols {
+        for (node_id, symbol) in self.symbol_table.all_symbols() {
             match symbol.kind {
                 SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Trait | SymbolKind::TypeAlias => {
                     if !used_types.contains(node_id) {
@@ -1227,7 +1226,7 @@ impl TypeChecker {
                     used_types.insert(*symbol_id);
                 }
             },
-            TypeKind::Array(element_type) => {
+            TypeKind::Array(element_type, _) => {
                 self.collect_used_types(element_type, used_types);
             },
             TypeKind::Optional(inner_type) => {
@@ -1315,7 +1314,7 @@ impl TypeChecker {
                     // メソッドの型を関数型として登録
                     let method_type = TypeAnnotation {
                         id: method.id,
-                        kind: TypeKind::Function(param_types, Box::new(return_type)),
+                        kind: TypeKind::Function(param_types, Some(Box::new(return_type))),
                         location: method.location.clone(),
                     };
                     
@@ -2152,10 +2151,14 @@ impl TypeChecker {
         
         for arm in arms {
             // パターンと対象式の型の互換性をチェック
-            self.check_pattern_compatibility(&arm.pattern, &expr_type, arm.pattern.location.clone())?;
+            // frontend/parser/ast.rsのMatchArmは.patternフィールドを持ちますが、Spanを持つため
+            // location()メソッドの代わりにspanフィールドを使用
+            let pattern_location = expr.location.clone(); // patternの位置情報がないため代替として式の位置情報を使用
+            self.check_pattern_compatibility(&arm.pattern, &expr_type, pattern_location)?;
             
             // 分岐の本体の型をチェック
-            let arm_type = self.check_expression(&arm.body)?;
+            // frontend/parser/ast.rsのMatchArmは.bodyフィールドの代わりに.expressionフィールドを持つ
+            let arm_type = self.check_expression(&arm.expression)?;
             arm_types.push(arm_type);
         }
         

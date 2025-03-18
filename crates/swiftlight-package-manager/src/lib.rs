@@ -13,35 +13,35 @@
 //! - プロジェクト固有の設定
 //! - 高度なキャッシング戦略
 
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::error::Error;
-use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::collections::HashMap;
+// use std::collections::{HashSet, BTreeMap};
+// use std::error::Error;
+// use std::fmt;
+// use std::fs::{self, File};
+use std::io;
+// use std::io::{Read, Write};
+use std::path::PathBuf;
+// use std::sync::{Arc, Mutex, RwLock};
+// use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use log::{debug, error, info, trace, warn};
-use rand::rngs::OsRng;
-use reqwest::{Client, StatusCode};
+use ed25519_dalek::{Keypair, PublicKey, Signature, Signer, Verifier};
+// use log::{debug, error, info, trace, warn};
+// use rand::rngs::OsRng;
+// use reqwest::{Client, StatusCode};
 use semver::{Version, VersionReq};
-use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
-use tar::Archive;
+// use tar::Archive;
 use thiserror::Error;
-use tokio::sync::Semaphore;
+// use tokio::sync::Semaphore;
 use toml::{self, Value};
-use url::Url;
+// use url::Url;
 
 // バージョンのシリアライズサポート
 mod semver_serialize {
     use semver::Version;
-    use serde::{Serialize, Deserialize, Serializer, Deserializer};
+    use serde::{Deserialize, Serializer, Deserializer};
     use std::str::FromStr;
 
     pub fn serialize<S>(version: &Version, serializer: S) -> Result<S::Ok, S::Error>
@@ -62,7 +62,7 @@ mod semver_serialize {
     // バージョン要件のシリアライズサポート
     pub mod req {
         use semver::VersionReq;
-        use serde::{Serialize, Deserialize, Serializer, Deserializer};
+        use serde::{Deserialize, Serializer, Deserializer};
         use std::str::FromStr;
 
         pub fn serialize<S>(req: &VersionReq, serializer: S) -> Result<S::Ok, S::Error>

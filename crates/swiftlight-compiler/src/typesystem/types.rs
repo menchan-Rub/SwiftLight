@@ -27,7 +27,16 @@ use std::sync::Arc;
 // use std::cell::RefCell; // 使用されていないためコメントアウト
 
 // 基本的な型定義のみをインポート
-use super::{TypeId, Symbol, SourceSpan, RegionId};
+// use super::{TypeId, Symbol, SourceSpan, RegionId};
+// TypeIdはおそらく独自に定義する必要があるか、インポート先が間違っています
+// 一時的な解決策として、typesystem/mod.rsで定義されていることを想定
+use super::Symbol;
+use super::SourceSpan;
+use super::RegionId;
+
+// TypeIdを独自に定義
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeId(pub u32);
 
 // 型エイリアスと仮定義（コンパイルを通すため）
 // 実際のプロジェクト実装時に適切に置き換える

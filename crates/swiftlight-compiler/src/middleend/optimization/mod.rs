@@ -7,11 +7,10 @@
 // - 最適化レベルに応じたパスの選択
 
 pub mod pass;
-pub mod transforms;
-
+use log::{debug, warn};
 use std::collections::HashSet;
 use crate::frontend::error::{Result, CompilerError};
-use crate::middleend::ir::{Module, Function};
+use crate::middleend::ir::representation::{Module, Function, Instruction, BasicBlock, Value, Type};
 use crate::middleend::OptimizationLevel;
 
 /// 最適化マネージャ
@@ -217,7 +216,7 @@ pub fn optimize_module_with_level(mut module: Module, level: OptimizationLevel) 
 // 最適化変換の定義（実装はtransformsモジュール内）
 pub mod transforms {
     use crate::frontend::error::Result;
-    use crate::middleend::ir::{Module, Function, Instruction, BasicBlock, Value, Type, BinaryOp};
+    use crate::middleend::ir::representation::{Module, Function, Instruction, BasicBlock, Value, Type};
     use std::collections::{HashSet, HashMap};
 
     // モジュールレベルの最適化パス
@@ -225,28 +224,30 @@ pub mod transforms {
     /// デッドコード除去
     pub fn dead_code_elimination(module: &mut Module) -> Result<()> {
         // 各関数に対してデッドコード除去を適用
-        for function in &mut module.functions {
+        for (_name, function) in module.functions.iter_mut() {
             eliminate_dead_code_in_function(function);
         }
         
         // 未使用の関数を特定
         let mut used_functions = HashSet::new();
         // mainやエクスポートされた関数はルート関数と見なす
-        for function in &module.functions {
+        for (_name, function) in module.functions.iter() {
             if function.is_exported || function.name == "main" {
                 used_functions.insert(function.id);
-                mark_called_functions(function, &module.functions, &mut used_functions);
+                // 関数のリストを作成
+                let all_funcs: Vec<&Function> = module.functions.values().collect();
+                mark_called_functions(function, &all_funcs, &mut used_functions);
             }
         }
         
         // 未使用関数をフィルタリング
-        module.functions.retain(|f| used_functions.contains(&f.id));
+        module.functions.retain(|_name, f| used_functions.contains(&f.id));
         
         Ok(())
     }
     
     // 関数から呼び出される全ての関数を再帰的にマーク
-    fn mark_called_functions(function: &Function, all_functions: &[Function], used: &mut HashSet<u32>) {
+    fn mark_called_functions(function: &Function, all_functions: &[&Function], used: &mut HashSet<u32>) {
         for block in &function.blocks {
             for inst in &block.instructions {
                 if let Instruction::Call { function_id, .. } = inst {
@@ -368,7 +369,7 @@ pub mod transforms {
     /// 定数畳み込み
     pub fn constant_folding(module: &mut Module) -> Result<()> {
         // 各関数に対して定数畳み込みを適用
-        for function in &mut module.functions {
+        for (_name, function) in module.functions.iter_mut() {
             fold_constants_in_function(function);
         }
         
@@ -450,8 +451,7 @@ pub mod transforms {
 
     /// 制御フローグラフの単純化
     pub fn simplify_cfg(module: &mut Module) -> Result<()> {
-        // 各関数のCFGを単純化
-        for function in &mut module.functions {
+        for (_name, function) in module.functions.iter_mut() {
             // 1. 空のブロックを削除
             remove_empty_blocks(function);
             
@@ -542,51 +542,51 @@ pub mod transforms {
 
     /// 関数インライン化
     pub fn inline_functions(module: &mut Module) -> Result<()> {
-        // 小さな関数や頻繁に呼び出される関数をインライン化
-        // 各関数のコピーを保持
-        let function_copies: HashMap<u32, Function> = module.functions.iter()
-            .map(|f| (f.id, f.clone()))
-            .collect();
+        let mut changes = false;
         
-        // 各関数を順に処理
-        for function in &mut module.functions {
-            // 親関数自身の再帰呼び出しは避けるため、自分自身のIDを記録
-            let self_id = function.id;
+        // 各関数に対して実行
+        for (_name, function) in module.functions.iter_mut() {
+            // スモールな関数や単一の呼び出し地点を持つ関数を探す
+            let mut inline_candidates = Vec::new();
             
-            // インライン化対象の呼び出しを探す
-            for block in &mut function.blocks {
-                let mut i = 0;
-                while i < block.instructions.len() {
-                    if let Instruction::Call { function_id, args, result } = &block.instructions[i] {
-                        // 関数自身の再帰呼び出しはスキップ
-                        if *function_id == self_id {
-                            i += 1;
-                            continue;
-                        }
-                        
-                        // インライン化対象の関数を取得
-                        if let Some(target_func) = function_copies.get(function_id) {
-                            // 小さな関数、または単一呼び出し関数のみインライン化
-                            if is_small_function(target_func) || has_single_call_site(target_func, module) {
-                                // インライン化処理（簡略化）
-                                let inline_success = inline_function_at_call_site(
-                                    function, 
-                                    block, 
-                                    i, 
-                                    target_func, 
-                                    args.clone(), 
-                                    *result
-                                );
-                                
-                                if inline_success {
-                                    // インライン化成功したら現在の呼び出し命令はスキップ
-                                    // 命令が置き換えられているため、インデックスはそのまま
-                                    continue;
+            // すべての基本ブロックをスキャン
+            for block_idx in 0..function.blocks.len() {
+                let block = &function.blocks[block_idx];
+                
+                // 各命令をスキャン
+                for inst_idx in 0..block.instructions.len() {
+                    if let Instruction::Call { function_id, args, result } = &block.instructions[inst_idx] {
+                        // 呼び出し先関数を取得
+                        if let Some(target_name) = module.get_function_name(*function_id) {
+                            if let Some(target_func) = module.functions.get(&target_name) {
+                                // スモールな関数かチェック
+                                if is_small_function(target_func) {
+                                    inline_candidates.push((block_idx, inst_idx, target_name.clone(), args.clone(), *result));
                                 }
                             }
                         }
                     }
-                    i += 1;
+                }
+            }
+            
+            // インライン化を実行
+            for (block_idx, inst_idx, target_name, args, result_id) in inline_candidates {
+                if let Some(target_func) = module.functions.get(&target_name) {
+                    let mut block = &mut function.blocks[block_idx];
+                    
+                    // インライン化を実行
+                    let inline_success = inline_function_at_call_site(
+                        function,
+                        block,
+                        inst_idx,
+                        target_func,
+                        args,
+                        result_id
+                    );
+                    
+                    if inline_success {
+                        changes = true;
+                    }
                 }
             }
         }
@@ -635,14 +635,14 @@ pub mod transforms {
         args: Vec<u32>, 
         result_id: u32
     ) -> bool {
-        debug!("関数 {} のインライン化を試行中", callee.name);
+        println!("関数 {} のインライン化を試行中", callee.name);
         
         // 1. 引数をマッピング
         let mut arg_mapping = HashMap::new();
         let callee_params = &callee.parameters;
         
         if args.len() != callee_params.len() {
-            warn!("引数の数が一致しないためインライン化を中止: 期待={}, 実際={}", 
+            println!("警告: 引数の数が一致しないためインライン化を中止: 期待={}, 実際={}", 
                   callee_params.len(), args.len());
             return false;
         }
@@ -659,7 +659,7 @@ pub mod transforms {
         let entry_block = callee.blocks.iter()
             .find(|b| b.id == callee.entry_block)
             .ok_or_else(|| {
-                warn!("エントリーブロックが見つかりませんでした");
+                println!("警告: エントリーブロックが見つかりませんでした");
                 return false;
             })
             .unwrap();
@@ -693,7 +693,7 @@ pub mod transforms {
         for callee_block in &callee.blocks {
             let new_block_id = next_block_id;
             next_block_id += 1;
-            block_mapping.insert(callee_block.id, new_id);
+            block_mapping.insert(callee_block.id, new_block_id);
         }
         
         // 6. インライン化前後の命令位置リスト
@@ -808,7 +808,7 @@ pub mod transforms {
                     Instruction::Call { function_id, args, .. } => {
                         // 再帰呼び出しを避けるため、同じ関数への呼び出しの場合は特別扱い
                         if *function_id == callee.id {
-                            warn!("再帰呼び出しを検出。スキップします。");
+                            println!("警告: 再帰呼び出しを検出。スキップします。");
                             continue;
                         }
                         
@@ -906,8 +906,14 @@ pub mod transforms {
         // 10. インライン化されたブロックを親関数に追加
         for (block_id, insts) in inline_instructions {
             let new_block = BasicBlock {
-                id: block_id,
                 instructions: insts,
+                label: format!(".L{}", block_id),
+                predecessors: HashSet::new(),
+                successors: HashSet::new(),
+                dominator: None,
+                dominates: HashSet::new(),
+                is_loop_header: false,
+                loop_depth: 0,
             };
             parent.blocks.push(new_block);
         }
@@ -919,8 +925,14 @@ pub mod transforms {
         
         if !original_insts_after_call.is_empty() {
             let continuation_block = BasicBlock {
-                id: continuation_block_id,
                 instructions: original_insts_after_call,
+                label: format!(".L{}", continuation_block_id),
+                predecessors: HashSet::new(),
+                successors: HashSet::new(),
+                dominator: None,
+                dominates: HashSet::new(),
+                is_loop_header: false,
+                loop_depth: 0,
             };
             parent.blocks.push(continuation_block);
             
@@ -928,7 +940,7 @@ pub mod transforms {
             block.instructions.push(Instruction::Branch { target: continuation_block_id });
         }
         
-        debug!("関数 {} のインライン化に成功", callee.name);
+        println!("関数 {} のインライン化に成功", callee.name);
         true
     }
 
@@ -970,10 +982,14 @@ pub mod transforms {
         
         // プリヘッダーブロックを作成
         let preheader = BasicBlock {
-            id: next_id,
-            instructions: vec![
-                Instruction::Branch { target: header }
-            ],
+            label: format!(".L{}", next_id),
+            instructions: vec![],
+            predecessors: HashSet::new(),
+            successors: HashSet::new(),
+            dominator: None,
+            dominates: HashSet::new(),
+            is_loop_header: false,
+            loop_depth: 0,
         };
         
         // 関数に新しいブロックを追加
@@ -1021,7 +1037,7 @@ pub mod transforms {
         let preheader_block = match function.blocks.iter_mut().find(|b| b.id == preheader) {
             Some(block) => block,
             None => {
-                warn!("プリヘッダーブロックが見つかりません");
+                println!("警告: プリヘッダーブロックが見つかりません");
                 return;
             }
         };
@@ -1074,7 +1090,7 @@ pub mod transforms {
         let terminator = if let Some(last) = preheader_block.instructions.pop() {
             last
         } else {
-            warn!("プリヘッダーブロックに終端命令がありません");
+            println!("警告: プリヘッダーブロックに終端命令がありません");
             return;
         };
         
@@ -1471,8 +1487,14 @@ pub mod transforms {
                     
                     // 新しいブロックを作成
                     let new_block = BasicBlock {
-                        id: new_block_id,
                         instructions: new_instructions,
+                        label: format!(".L{}", block_id),
+                        predecessors: HashSet::new(),
+                        successors: HashSet::new(),
+                        dominator: None,
+                        dominates: HashSet::new(),
+                        is_loop_header: false,
+                        loop_depth: 0,
                     };
                     
                     cloned_blocks.push(new_block);
@@ -1525,7 +1547,7 @@ pub mod transforms {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleend::ir::{
+    use crate::middleend::ir::representation::{
         Module, Function, BasicBlock, Instruction, OpCode, Type, Value, Operand
     };
     

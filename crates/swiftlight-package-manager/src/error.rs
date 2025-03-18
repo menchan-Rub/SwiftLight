@@ -22,11 +22,7 @@ use serde_json;
 pub enum PackageError {
     /// I/Oエラー
     #[error("I/Oエラー: {0}")]
-    Io(#[from] io::Error),
-
-    /// パースエラー
-    #[error("パースエラー: {0}")]
-    Parse(String),
+    IoError(String),
 
     /// マニフェストエラー
     #[error("マニフェストエラー: {0}")]
@@ -77,13 +73,8 @@ pub enum PackageError {
     Validation(String),
 
     /// ファイルシステムエラー
-    #[error("ファイルシステムエラー: パス '{path}': {message}")]
-    FileSystem {
-        /// 影響を受けるパス
-        path: PathBuf,
-        /// エラーメッセージ
-        message: String,
-    },
+    #[error("ファイルシステムエラー: パス '{path}' - {message}")]
+    FilesystemError { path: PathBuf, message: String },
 
     /// 内部エラー
     #[error("内部エラー: {0}")]
@@ -95,7 +86,7 @@ pub enum PackageError {
 
     /// クレートの依存関係エラー
     #[error("{0}")]
-    Anyhow(#[from] anyhow::Error),
+    Anyhow(String),
 
     /// TOMLシリアライズエラー
     #[error("TOMLシリアライズエラー: {0}")]
@@ -107,11 +98,11 @@ pub enum PackageError {
 
     /// JSONシリアライズエラー
     #[error("JSONシリアライズエラー: {0}")]
-    JsonSer(#[from] serde_json::Error),
+    JsonSer(String),
 
     /// セマンティックバージョニングエラー
     #[error("セマンティックバージョニングエラー: {0}")]
-    SemVer(#[from] semver::Error),
+    SemVer(String),
 
     /// URLパースエラー
     #[error("URLパースエラー: {0}")]
@@ -140,6 +131,10 @@ pub enum PackageError {
     /// プロジェクトロック取得エラー
     #[error("プロジェクトロック取得エラー: {0}")]
     ProjectLock(String),
+
+    /// パースエラー
+    #[error("パースエラー: {0}")]
+    ParseError(String),
 }
 
 /// エラー種別
@@ -147,8 +142,6 @@ pub enum PackageError {
 pub enum ErrorKind {
     /// I/Oエラー
     Io,
-    /// パースエラー
-    Parse,
     /// マニフェストエラー
     Manifest,
     /// 依存関係エラー
@@ -197,8 +190,7 @@ impl PackageError {
     /// エラーの種類を取得
     pub fn kind(&self) -> ErrorKind {
         match self {
-            PackageError::Io(_) => ErrorKind::Io,
-            PackageError::Parse(_) => ErrorKind::Parse,
+            PackageError::IoError(_) => ErrorKind::Io,
             PackageError::Manifest(_) => ErrorKind::Manifest,
             PackageError::Dependency(_) => ErrorKind::Dependency,
             PackageError::Resolution(_) => ErrorKind::Resolution,
@@ -211,28 +203,28 @@ impl PackageError {
             PackageError::Lockfile(_) => ErrorKind::Lockfile,
             PackageError::Security(_) => ErrorKind::Security,
             PackageError::Validation(_) => ErrorKind::Validation,
-            PackageError::FileSystem { .. } => ErrorKind::FileSystem,
+            PackageError::FilesystemError { .. } => ErrorKind::FileSystem,
             PackageError::Internal(_) => ErrorKind::Internal,
             PackageError::User(_) => ErrorKind::User,
-            PackageError::Anyhow(_) |
-            PackageError::TomlSer(_) |
-            PackageError::TomlDe(_) |
-            PackageError::JsonSer(_) |
-            PackageError::SemVer(_) |
+            PackageError::Anyhow(_) => ErrorKind::Other,
+            PackageError::TomlSer(_) => ErrorKind::Other,
+            PackageError::TomlDe(_) => ErrorKind::Other,
+            PackageError::JsonSer(_) => ErrorKind::Other,
+            PackageError::SemVer(_) => ErrorKind::Other,
             PackageError::Url(_) => ErrorKind::Other,
             PackageError::Http(_) => ErrorKind::Http,
             PackageError::Command(_) => ErrorKind::Command,
             PackageError::Timeout(_) => ErrorKind::Timeout,
             PackageError::Permission(_) => ErrorKind::Permission,
             PackageError::GlobalLock(_) | PackageError::ProjectLock(_) => ErrorKind::Lock,
+            PackageError::ParseError(_) => ErrorKind::Parse,
         }
     }
 
     /// ユーザーフレンドリーなエラーメッセージを取得
     pub fn user_message(&self) -> String {
         match self {
-            PackageError::Io(err) => format!("I/Oエラーが発生しました: {}", err),
-            PackageError::Parse(msg) => format!("パースエラーが発生しました: {}", msg),
+            PackageError::IoError(err) => format!("I/Oエラーが発生しました: {}", err),
             PackageError::Manifest(msg) => format!("マニフェストエラーが発生しました: {}", msg),
             PackageError::Dependency(msg) => format!("依存関係エラーが発生しました: {}", msg),
             PackageError::Resolution(msg) => format!("依存関係の解決中にエラーが発生しました: {}", msg),
@@ -245,7 +237,7 @@ impl PackageError {
             PackageError::Lockfile(msg) => format!("ロックファイルエラーが発生しました: {}", msg),
             PackageError::Security(msg) => format!("セキュリティエラーが発生しました: {}", msg),
             PackageError::Validation(msg) => format!("検証エラーが発生しました: {}", msg),
-            PackageError::FileSystem { path, message } => {
+            PackageError::FilesystemError { path, message } => {
                 format!("ファイルシステムエラーが発生しました: パス '{}': {}", path.display(), message)
             },
             PackageError::Internal(msg) => format!("内部エラーが発生しました: {}", msg),
@@ -262,6 +254,7 @@ impl PackageError {
             PackageError::Permission(msg) => format!("パーミッションエラーが発生しました: {}", msg),
             PackageError::GlobalLock(msg) => format!("グローバルなロック取得に失敗しました: {}", msg),
             PackageError::ProjectLock(msg) => format!("プロジェクトロック取得に失敗しました: {}", msg),
+            PackageError::ParseError(msg) => format!("パースエラーが発生しました: {}", msg),
         }
     }
 
@@ -269,7 +262,6 @@ impl PackageError {
     pub fn error_code(&self) -> String {
         let prefix = match self.kind() {
             ErrorKind::Io => "IO",
-            ErrorKind::Parse => "PARSE",
             ErrorKind::Manifest => "MANIFEST",
             ErrorKind::Dependency => "DEP",
             ErrorKind::Resolution => "RESOLVE",
@@ -326,12 +318,7 @@ impl PackageError {
 
     /// I/Oエラーを作成
     pub fn io<S: Into<String>>(msg: S) -> Self {
-        PackageError::Io(io::Error::new(io::ErrorKind::Other, msg.into()))
-    }
-
-    /// パースエラーを作成
-    pub fn parse<S: Into<String>>(msg: S) -> Self {
-        PackageError::Parse(msg.into())
+        PackageError::IoError(msg.into())
     }
 
     /// マニフェストエラーを作成
@@ -381,7 +368,7 @@ impl PackageError {
 
     /// ファイルシステムエラーを作成
     pub fn filesystem<S: Into<String>, P: Into<PathBuf>>(path: P, msg: S) -> Self {
-        PackageError::FileSystem {
+        PackageError::FilesystemError {
             path: path.into(),
             message: msg.into(),
         }

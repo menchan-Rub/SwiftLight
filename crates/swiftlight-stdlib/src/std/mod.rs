@@ -10,7 +10,7 @@ pub use crate::core::*;
 /// 
 /// SwiftLight言語のプログラムのメインエントリーポイントを定義します。
 pub mod main {
-    use crate::core::types::{Error, Result};
+    use crate::core::types::Result;
 
     /// メイン関数を実行
     pub fn run<F>(main_fn: F) -> Result<()>
@@ -200,7 +200,7 @@ pub mod fs {
     use crate::core::types::{Error, ErrorKind, Result};
     use crate::core::collections::Vec;
     use std::fs as StdFs;
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::path::Path;
     
     /// ファイルの内容を読み込む

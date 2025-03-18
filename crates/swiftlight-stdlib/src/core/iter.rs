@@ -3,12 +3,10 @@
 //! このモジュールはコレクションを反復処理するためのイテレータシステムを提供します。
 //! イテレータトレイトとイテレータのユーティリティ機能が含まれています。
 
-use std::iter::{self, Iterator as StdIterator};
+use std::iter::{Iterator as StdIterator};
 use std::collections::VecDeque;
-use std::cmp::{min, max};
-use std::fmt::Debug;
+use std::cmp::min;
 
-use crate::core::types::{Error, ErrorKind};
 
 /// イテレータトレイト
 ///

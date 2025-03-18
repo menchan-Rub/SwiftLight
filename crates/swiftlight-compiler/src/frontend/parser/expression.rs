@@ -433,10 +433,10 @@ impl<'a> Parser<'a> {
                 if let TokenKind::Identifier(name) = &member_token.kind {
                     let member = Identifier::new(name.clone(), Some(member_token.location.clone()));
                     let member_access = ExpressionKind::MemberAccess {
-                        object: Box::new(expr),
+                        span: SourceSpan::combine(expr.location.as_ref(), &member_token.location),
+                        base: Box::new(expr),
                         member,
                     };
-                    
                     expr = Expression::new(member_access, id, Some(dot_token.location.clone()));
                 } else {
                     return Err(error::syntax_error(
@@ -653,7 +653,7 @@ impl<'a> Parser<'a> {
     }
     
     /// 識別子を解析
-    fn parse_identifier(&mut self) -> Result<Identifier> {
+    pub(crate) fn parse_identifier(&mut self) -> Result<Identifier> {
         let token = self.peek().unwrap();
         
         if let TokenKind::Identifier(name) = &token.kind {

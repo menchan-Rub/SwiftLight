@@ -5,17 +5,13 @@
 //! このモジュールは、RISC-V ISAの全ての拡張（RV32/RV64/RV128, M, A, F, D, C, V, P, B, J, T, Zk）に対応し、
 //! ターゲットハードウェアの特性に合わせた最適なコード生成を行います。
 
-use std::collections::{HashMap, HashSet, BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
-use crate::frontend::error::{CompilerError, ErrorKind, Result};
-use crate::middleend::ir::{Module, Function, Instruction, BasicBlock, Type, Value, ControlFlow};
-use crate::middleend::analysis::{dataflow::DataFlowAnalysis, lifetime::LifetimeAnalysis};
-use crate::middleend::optimization::vectorization::VectorizationInfo;
-use crate::backend::target::{TargetFeature, TargetInfo, RegisterClass};
-use crate::utils::{graph::Graph, statistics::OptimizationStatistics};
+use crate::frontend::ast::Function;
+use crate::middleend::ir::{Module, Instruction, BasicBlock, Type, Value};
+use crate::backend::native::x86_64::{TargetInfo, RegisterClass};
+use crate::frontend::error::Result;
 
 /// RISC-V ISA拡張セット
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

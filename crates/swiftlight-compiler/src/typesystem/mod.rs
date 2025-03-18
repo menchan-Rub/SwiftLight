@@ -36,14 +36,16 @@ use std::hash::{Hash, Hasher};
 
 use crate::frontend::ast;
 use crate::frontend::error::{Result, ErrorKind};
-use crate::frontend::source_map::SourceLocation;
+use crate::frontend::error::SourceLocation;
+use crate::frontend::source_map;
+use crate::utils::StrId;
 
 // モジュール定義
 pub mod types;
 pub mod traits;
 
 // モジュールの再エクスポート
-pub use self::types::{Type, TypeId, TypeRegistry};
+pub use self::types::{Type, TypeId, TypeRegistry, BuiltinType, CaptureKind, ClosureKind};
 
 // 現時点で実装されていないモジュールをコメントアウト
 /*

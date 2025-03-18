@@ -21,6 +21,7 @@ pub mod expression;
 pub mod statement;
 pub mod declaration;
 pub mod types;
+pub mod ast;
 
 /// 構文解析器（Parser）
 pub struct Parser<'a> {

@@ -4,9 +4,7 @@
 //! これらの型は言語の型システムの基盤となるもので、様々な場面で使用されます。
 
 use std::fmt;
-use std::ops::{Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Shl, Shr};
-use std::cmp::{PartialEq, PartialOrd};
-use std::hash::Hash;
+use std::cmp::PartialEq;
 use std::convert::{From, Into};
 
 /// 符号付き整数型（デフォルトは32ビット）

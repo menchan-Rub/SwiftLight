@@ -201,7 +201,7 @@ pub mod trig {
 
 /// 統計関数
 pub mod stats {
-    use crate::core::collections::Vec;
+    
 
     /// 平均値を計算
     pub fn mean(values: &[f64]) -> Option<f64> {

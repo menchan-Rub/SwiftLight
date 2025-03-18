@@ -1,7 +1,7 @@
-//! 抽象構文木（AST）の定義
-//! 
-//! このモジュールはSwiftLight言語の抽象構文木を表現する構造体と列挙型を定義します。
-//! ASTはパーサーによって生成され、型チェッカーや中間表現（IR）生成器によって使用されます。
+/// # 抽象構文木（AST）の定義
+/// 
+/// このモジュールはSwiftLight言語の抽象構文木を表現する構造体と列挙型を定義します。
+/// ASTはパーサーによって生成され、型チェッカーや中間表現（IR）生成器によって使用されます。
 
 use std::fmt;
 use std::rc::Rc;
@@ -604,9 +604,9 @@ impl Program {
     }
 }
 
-//! # パーサー用AST補助機能
-//! 
-//! 構文解析器が抽象構文木（AST）を構築する際に使用する補助機能を提供します。
+/// # パーサー用AST補助機能
+/// 
+/// 構文解析器が抽象構文木（AST）を構築する際に使用する補助機能を提供します。
 
 use crate::frontend::ast::*;
 use crate::frontend::error::SourceLocation;
@@ -633,13 +633,13 @@ impl AstFactory {
     
     /// 識別子を作成
     pub fn create_identifier(&mut self, name: &str, token: &Token) -> Identifier {
-        Identifier::new(name.to_string(), self.next_id(), Some(token.location.clone()))
+        Identifier::new(name.to_string(), Some(token.location.clone()))
     }
     
     /// トークンから識別子を作成
     pub fn identifier_from_token(&mut self, token: &Token) -> Identifier {
         debug_assert!(token.is_identifier());
-        Identifier::new(token.lexeme.clone(), self.next_id(), Some(token.location.clone()))
+        Identifier::new(token.lexeme.clone(), Some(token.location.clone()))
     }
     
     /// 整数リテラルを作成
@@ -922,14 +922,10 @@ impl AstFactory {
     }
     
     /// プログラム（ASTのルート）を作成
-    pub fn create_program(&mut self, name: &str, source_path: &str, declarations: Vec<Declaration>,
-                     location: Option<SourceLocation>) -> Program {
+    pub fn create_program(&mut self, source_path: &str, declarations: Vec<Declaration>) -> Program {
         Program::new(
-            name.to_string(),
-            std::path::PathBuf::from(source_path),
             declarations,
-            self.next_id(),
-            location
+            source_path.to_string()
         )
     }
 }
@@ -971,10 +967,9 @@ mod tests {
     #[test]
     fn test_create_identifier() {
         let mut factory = AstFactory::new();
-        let location = SourceLocation::new("test.swl", 1, 1, 0, 3);
+        let location = SourceLocation::new("test.swl", 1, 1, 3);
         let token = Token::new(
-            crate::frontend::lexer::token::TokenKind::Identifier,
-            "foo".to_string(),
+            crate::frontend::lexer::token::TokenKind::Identifier("foo".to_string()),
             location.clone()
         );
         
@@ -988,16 +983,14 @@ mod tests {
     #[test]
     fn test_create_expression() {
         let mut factory = AstFactory::new();
-        let location = SourceLocation::new("test.swl", 1, 1, 0, 3);
+        let location = SourceLocation::new("test.swl", 1, 1, 3); // 引数を4つに修正
         let token = Token::new(
-            crate::frontend::lexer::token::TokenKind::IntLiteral,
-            "123".to_string(),
+            crate::frontend::lexer::token::TokenKind::IntLiteral(123),
             location.clone()
         );
         
         let literal = factory.create_integer_literal(123, &token);
-        let expr = factory.create_literal_expr(literal, Some(location.clone()));
-        
+        let expr = factory.create_literal_expr(literal, Some(token.location.clone()));
         assert!(expr.id > 0);
         assert_eq!(expr.location.unwrap().file_name, "test.swl");
         

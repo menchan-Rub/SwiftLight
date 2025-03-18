@@ -7,7 +7,7 @@ use std::mem;
 use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::marker::PhantomData;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::types::{Error, ErrorKind};

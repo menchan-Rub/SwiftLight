@@ -5,12 +5,10 @@
 
 use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
 use std::collections::{BTreeMap as StdBTreeMap, BTreeSet as StdBTreeSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::fmt::{self, Debug};
 use std::ops::{Index, IndexMut};
-use std::cmp::Ordering;
 
-use crate::core::types::{Error, ErrorKind};
 use std::iter::Iterator as StdIterator;
 
 /// 可変長配列型

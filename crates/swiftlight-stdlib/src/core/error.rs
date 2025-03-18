@@ -3,15 +3,12 @@
 //! このモジュールはSwiftLight言語のエラー処理機能を提供します。
 //! エラーの型、エラーハンドリング機能、およびエラー関連のユーティリティが含まれています。
 
-use std::fmt;
 use std::error::Error as StdError;
-use std::sync::Arc;
 use std::panic::{self, Location};
 use std::backtrace::Backtrace;
 use std::io;
 use std::convert::From;
 
-use crate::core::types;
 
 // types::Errorとtypes::ErrorKindの再エクスポート
 pub use crate::core::types::{Error, ErrorKind};
@@ -91,7 +88,7 @@ pub struct StackFrame {
 impl StackTrace {
     /// 現在のスタックトレースを取得
     pub fn current() -> Self {
-        let backtrace = Backtrace::capture();
+        let _backtrace = Backtrace::capture();
         let mut frames = Vec::new();
         
         // バックトレースからスタックフレームを構築する

@@ -8,8 +8,6 @@
 
 use crate::core::types::{Error, ErrorKind, Result};
 use crate::core::collections::{Vec, HashMap};
-use std::rc::Rc;
-use std::cell::{RefCell, Cell};
 
 /// 色を表す構造体
 #[derive(Debug, Clone, Copy, PartialEq)]

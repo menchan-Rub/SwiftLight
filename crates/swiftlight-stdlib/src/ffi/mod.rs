@@ -217,7 +217,7 @@ pub mod memory {
 
 /// 型変換ユーティリティ
 pub mod convert {
-    use super::*;
+    
     
     /// SwiftLightのバイト配列をCのバイト配列に変換
     pub fn bytes_to_c(bytes: &[u8]) -> (*const u8, usize) {

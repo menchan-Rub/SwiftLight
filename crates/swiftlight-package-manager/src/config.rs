@@ -12,7 +12,7 @@ use crate::error::PackageError;
 
 /// パッケージマネージャーの設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
+pub struct PackageManagerConfig {
     /// 一般設定
     #[serde(default)]
     pub general: GeneralConfig,
@@ -217,7 +217,7 @@ fn default_true() -> bool {
     true
 }
 
-impl Default for Config {
+impl Default for PackageManagerConfig {
     fn default() -> Self {
         Self {
             general: GeneralConfig::default(),
@@ -296,43 +296,47 @@ impl Default for SecurityConfig {
     }
 }
 
-impl Config {
+impl PackageManagerConfig {
     /// 設定をロード
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         
         if !path.exists() {
-            let default_config = Config::default();
+            let default_config = PackageManagerConfig::default();
             return Ok(default_config);
         }
-        
         let mut file = fs::File::open(path).map_err(|err| {
             PackageError::FilesystemError {
                 path: path.to_path_buf(),
-                message: format!("設定ファイルを開けませんでした: {}", err),
+                message: format!("設定ファイルのオープンに失敗: {}", err),
             }
         })?;
         
         let mut contents = String::new();
         file.read_to_string(&mut contents).map_err(|err| {
-            PackageError::FilesystemError {
-                path: path.to_path_buf(),
-                message: format!("設定ファイルを読み込めませんでした: {}", err),
-            }
+            PackageError::ParseError(format!(
+                "設定ファイルの読み込みに失敗しました [パス: {}]: {}",
+                path.display(),
+                err
+            ))
         })?;
         
-        let config: Config = toml::from_str(&contents).map_err(|err| {
-            PackageError::ParseError(format!("設定ファイルの解析に失敗しました: {}", err))
+        let config: PackageManagerConfig = toml::from_str(&contents).map_err(|err| {
+            PackageError::ParseError(format!(
+                "設定ファイルの解析に失敗しました [パス: {}]: {}",
+                path.display(),
+                err
+            ))
         })?;
         
         Ok(config)
     }
     
-    /// 設定を保存
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    /// 設定をファイルに保存
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path = path.as_ref();
         
-        // 親ディレクトリが存在することを確認
+        // 親ディレクトリが存在しない場合は作成
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|err| {
@@ -374,28 +378,23 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// グローバル設定
-    #[serde(default)]
     pub global: HashMap<String, ConfigValue>,
     
     /// ユーザー設定
-    #[serde(default)]
     pub user: HashMap<String, ConfigValue>,
     
     /// プロジェクト設定
-    #[serde(default)]
     pub project: HashMap<String, ConfigValue>,
     
     /// 一時設定
-    #[serde(skip)]
     pub temp: HashMap<String, ConfigValue>,
     
     /// 設定ファイルパス
-    #[serde(skip)]
     pub config_paths: ConfigPaths,
 }
 
 /// 設定ファイルパス
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPaths {
     /// グローバル設定ファイルパス
     pub global: PathBuf,

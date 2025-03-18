@@ -61,14 +61,8 @@ pub enum DependencySource {
     },
 }
 
-/// 依存関係定義
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dependency {
-    /// パッケージ名
-    pub name: String,
-    /// バージョン要求
-    pub version_req: Option<VersionReq>,
     /// 依存関係タイプ
+    #[serde(rename = "type")]
     pub dep_type: DependencyType,
     /// 依存関係ソース
     pub source: DependencySource,

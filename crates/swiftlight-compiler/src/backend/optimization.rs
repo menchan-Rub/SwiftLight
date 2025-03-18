@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use log::{debug, info, trace, warn};
 
-use crate::middleend::ir::{Module, Function, BasicBlock, Instruction, Value, Type, ControlFlow};
+use crate::frontend::error::{Result, CompilerError};
+use crate::middleend::ir::representation::{Module, Function, BasicBlock, Instruction, Value, Type, ControlFlow};
+use crate::middleend::OptimizationLevel;
 use crate::middleend::analysis::{
     ControlFlowGraph, 
     DominatorTree, 
@@ -17,7 +19,6 @@ use crate::middleend::analysis::{
     LoopAnalysis,
     DependenceAnalysis
 };
-use crate::frontend::error::{Result, CompileError, ErrorKind};
 use crate::utils::profiler::{Profiler, OptimizationMetrics};
 use crate::config::CompilerConfig;
 

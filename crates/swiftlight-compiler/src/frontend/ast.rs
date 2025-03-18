@@ -7,6 +7,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::frontend::error::SourceLocation;
+// MatchArm構造体を再エクスポート
+pub use crate::frontend::parser::ast::MatchArm;
 
 /// ノードID（AST内の各ノードを一意に識別する整数）
 pub type NodeId = usize;
@@ -180,11 +182,10 @@ pub struct Function {
     pub id: NodeId,
     /// 位置情報
     pub location: Option<SourceLocation>,
-    pub(crate) basic_blocks: Vec<_>,
-    pub(crate) basic_blocks: Vec<_>,
+    pub(crate) basic_blocks: Vec<BasicBlock>,
     pub(crate) is_declaration: bool,
     pub(crate) is_intrinsic: bool,
-    pub(crate) attributes: Vec<_>,
+    pub(crate) attributes: Vec<Attribute>,
 }
 
 impl Locatable for Function {
@@ -910,13 +911,24 @@ impl Default for Visibility {
     }
 }
 
+// 新しい構造体定義を追加
+#[derive(Debug, Clone)]
+pub struct BasicBlock {
+    // TODO: 必要なフィールドを実装する
+}
+
+#[derive(Debug, Clone)]
+pub struct Attribute {
+    // TODO: 必要なフィールドを実装する
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
     fn test_create_identifier() {
-        let location = SourceLocation::new("test.swl", 1, 1, 0, 3);
+        let location = SourceLocation::new(1, 1, 0, 3);
         let id = Identifier::new("foo", 1, Some(location.clone()));
         
         assert_eq!(id.name, "foo");
@@ -926,7 +938,7 @@ mod tests {
     
     #[test]
     fn test_create_expression() {
-        let location = SourceLocation::new("test.swl", 1, 1, 0, 3);
+        let location = SourceLocation::new(1, 1, 0, 3);
         let id = Identifier::new("foo", 1, Some(location.clone()));
         let expr = Expression::new(ExpressionKind::Identifier(id), 2, Some(location.clone()));
         
@@ -942,7 +954,7 @@ mod tests {
     
     #[test]
     fn test_create_binary_op() {
-        let location = SourceLocation::new("test.swl", 1, 1, 0, 7);
+        let location = SourceLocation::new(1, 1, 0, 7);
         
         // Create left operand: 1
         let left_lit = Literal::new(LiteralKind::Integer(1), 1, Some(location.clone()));

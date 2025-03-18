@@ -7,9 +7,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::middleend::ir::{Module, Function, BasicBlock, Instruction, Value, Type, Loop};
-use crate::middleend::ir::analysis::{LoopInfo, DependenceAnalysis, AliasAnalysis};
-use crate::frontend::error::{Result, CompileError, ErrorKind};
+use crate::frontend::error::{Result, CompilerError};
+use crate::middleend::ir::representation::{Module, Function, BasicBlock, Instruction, Value, Type, Loop};
+use crate::middleend::analysis::{DataFlowAnalysis, DependenceAnalysis, LoopAnalysis};
 use crate::backend::analysis::{AnalysisManager, AnalysisKey};
 use crate::backend::target::{TargetInfo, TargetFeature};
 use crate::backend::codegen::InstructionSelection;
@@ -691,62 +691,118 @@ impl Vectorizer {
                 let instr_type = self.get_instruction_data_type(instr, function);
                 
                 // 同じ型の命令が続いているか確認
-                if let Some(curr_type) = current_type {
-                    if curr_type == instr_type {
-                        // 同じ型なので現在のシーケンスに追加
+                match current_type {
+                    Some(curr_type) if curr_type == instr_type => {
                         current_sequence.push(idx);
-                    } else {
-                        // 型が変わったので新しいシーケンスを開始
-                        if current_sequence.len() >= 4 {  // 最低4つの命令があれば価値がある
+                    },
+                    _ => {
+                        if current_sequence.len() >= self.min_vector_length {
                             sequences.push(current_sequence);
                         }
                         current_sequence = vec![idx];
                         current_type = Some(instr_type);
                     }
-                } else {
-                    // 最初の命令
-                    current_sequence.push(idx);
-                    current_type = Some(instr_type);
                 }
             } else {
-                // ベクトル化不可能な命令なのでシーケンスを終了
+                // 非ベクトル化可能命令でシーケンス終了
+                if current_sequence.len() >= self.min_vector_length {
+                    sequences.push(current_sequence);
+                }
+                current_sequence = Vec::new();
+                current_type = None;
+            }
+        }
+        
+        // 最後のシーケンスをチェック
+        if current_sequence.len() >= self.min_vector_length {
+            sequences.push(current_sequence);
+        }
+        
+        sequences
+    }
+
     /// ベクトル化を実行
-    pub fn vectorize(&self, module: &mut Module) -> Result<usize> {
-        // ベクトル化の実行
-        let info = self.analyze(module)?;
-        let mut vectorized_count = 0;
+    pub fn vectorize(&mut self, module: &mut Module) -> Result<usize> {
+        let analysis_result = self.analyze(module)?;
+        let mut transformed_count = 0;
         
-        // ベクトル化可能なループを変換
-        for loop_id in &info.vectorizable_loops {
-            if self.vectorize_loop(module, loop_id)? {
-                vectorized_count += 1;
+        // ループベクトル化
+        for loop_info in &analysis_result.vectorizable_loops {
+            if self.vectorize_loop(module, &loop_info.id)? {
+                transformed_count += 1;
+                self.log_vectorization(&loop_info.id, "loop", loop_info.vector_width)?;
             }
         }
         
-        // ベクトル化可能な関数を変換
-        for function_id in &info.vectorizable_functions {
-            if self.vectorize_function(module, function_id)? {
-                vectorized_count += 1;
+        // 関数ベクトル化
+        for func_info in &analysis_result.vectorizable_functions {
+            if self.vectorize_function(module, &func_info.id)? {
+                transformed_count += 1;
+                self.log_vectorization(&func_info.id, "function", func_info.vector_width)?;
             }
         }
         
-        Ok(vectorized_count)
+        // 基本ブロックベクトル化
+        for bb_info in &analysis_result.vectorizable_basic_blocks {
+            if self.vectorize_basic_block(module, &bb_info.id)? {
+                transformed_count += 1;
+                self.log_vectorization(&bb_info.id, "basic_block", bb_info.vector_width)?;
+            }
+        }
+        
+        Ok(transformed_count)
     }
     
     /// ループをベクトル化
-    fn vectorize_loop(&self, _module: &mut Module, _loop_id: &str) -> Result<bool> {
-        // 実際にはループをベクトル命令に変換する処理
-        // とりあえずダミー実装
-        Ok(true)
+    fn vectorize_loop(&mut self, module: &mut Module, loop_id: &str) -> Result<bool> {
+        let loop_info = module.get_loop(loop_id)
+            .ok_or_else(|| CompileError::new(ErrorKind::NotFound, format!("Loop {} not found", loop_id)))?;
+        
+        // 依存関係解析
+        let dep_analysis = DependenceAnalysis::analyze(&loop_info.body, module)?;
+        if dep_analysis.has_loop_carried_dependence() {
+            return Err(CompileError::new(ErrorKind::OptimizationFailed, 
+                format!("Loop {} has loop-carried dependencies", loop_id)));
+        }
+        
+        // ベクトル化係数決定
+        let vector_width = self.target_info.simd_width(loop_info.element_type)?;
+        let vectorized = self.transform_loop(module, loop_info, vector_width)?;
+        
+        Ok(vectorized)
     }
     
     /// 関数をベクトル化
-    fn vectorize_function(&self, _module: &mut Module, _function_id: &str) -> Result<bool> {
-        // 実際には関数内の演算をベクトル命令に変換する処理
-        // とりあえずダミー実装
+    fn vectorize_function(&mut self, module: &mut Module, function_id: &str) -> Result<bool> {
+        let function = module.get_function_mut(function_id)
+            .ok_or_else(|| CompileError::new(ErrorKind::NotFound, format!("Function {} not found", function_id)))?;
+        
+        // 関数全体のベクトル化可能命令を探索
+        let mut transformed = false;
+        for bb in &mut function.basic_blocks {
+            let sequences = self.find_vectorizable_sequences(bb, function);
+            if !sequences.is_empty() {
+                self.apply_vectorization_transforms(bb, &sequences)?;
+                transformed = true;
+            }
+        }
+        
+        Ok(transformed)
+    }
+
+    /// 基本ブロックのベクトル化
+    fn vectorize_basic_block(&mut self, module: &mut Module, bb_id: &str) -> Result<bool> {
+        let (function, bb_idx) = module.find_basic_block(bb_id)
+            .ok_or_else(|| CompileError::new(ErrorKind::NotFound, format!("Basic block {} not found", bb_id)))?;
+        
+        let bb = &mut function.basic_blocks[bb_idx];
+        let sequences = self.find_vectorizable_sequences(bb, function);
+        
+        if sequences.is_empty() {
+            return Ok(false);
+        }
+        
+        self.apply_vectorization_transforms(bb, &sequences)?;
         Ok(true)
     }
-}
-}
-}
 }

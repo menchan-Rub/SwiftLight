@@ -18,7 +18,7 @@ use inkwell::{
 };
 use inkwell::values::BasicMetadataValueEnum;
 use crate::frontend::ast::{self, Program, Declaration, Statement, Expression, NodeId, TypeAnnotation, TypeKind};
-use crate::frontend::ast::{ExpressionKind, StatementKind, DeclarationKind, Identifier, Function};
+use crate::frontend::ast::{ExpressionKind, StatementKind, DeclarationKind, Identifier, Function as AstFunction};
 use crate::frontend::ast::{VariableDeclaration, ConstantDeclaration, Parameter, Struct, Enum, Trait};
 use crate::frontend::ast::{TypeAlias, Implementation, Import, BinaryOperator, UnaryOperator, Literal, LiteralKind};
 use crate::frontend::error::{Result, CompilerError, Diagnostic, SourceLocation};
@@ -2291,7 +2291,7 @@ impl<'ctx> IRGenerator<'ctx> {
     }
     
     /// 関数宣言の生成
-    fn generate_function_declaration(&mut self, func: &Function, decl: &Declaration) -> Result<()> {
+    fn generate_function_declaration(&mut self, func: &AstFunction, decl: &Declaration) -> Result<()> {
         let function_name = &func.name.name;
         
         // 関数が既に宣言されているか確認
@@ -3709,7 +3709,7 @@ impl<'ctx> IRGenerator<'ctx> {
     }
     
     /// ジェネリック関数のモノモーフィゼーション
-    fn generate_generic_function_instantiation(&mut self, func_decl: &Function, type_args: &[TypeAnnotation], decl: &Declaration) -> Result<FunctionValue<'ctx>> {
+    fn generate_generic_function_instantiation(&mut self, func_decl: &AstFunction, type_args: &[TypeAnnotation], decl: &Declaration) -> Result<FunctionValue<'ctx>> {
         // 元の関数名
         let base_func_name = &func_decl.name.name;
         

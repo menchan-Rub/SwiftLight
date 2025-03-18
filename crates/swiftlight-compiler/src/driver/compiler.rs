@@ -630,10 +630,21 @@ impl Driver {
                 ..CompileStats::default()
             },
             current_file: None,
-            compiled_modules: HashMap::new(),
+            compiled_modules: DashMap::new(),
             dependency_graph,
-            compilation_cache: CompilationCache::new(options.cache_dir.clone()),
-            diagnostic_reporter: DiagnosticReporter::new(options.error_format, options.color_output, options.max_errors),
+            compilation_cache: CompilationCache::new(
+                options.cache_dir.clone(),
+                options.incremental,
+                content_hasher.clone()
+            ),
+            diagnostic_reporter: {
+                let reporter_config = DiagnosticReporterConfig {
+                    error_format: options.error_format,
+                    color_output: options.color_output,
+                    max_errors: options.max_errors,
+                };
+                DiagnosticReporter::new(reporter_config)
+            },
             profiler: Profiler::new(options.enable_profiling),
             file_system: FileSystem::new(),
             work_queue: WorkQueue::new(thread_count),
@@ -698,7 +709,7 @@ impl Driver {
         // キャッシュをチェック
         let cache_key = self.compilation_cache.compute_key(source_path, &self.options);
         let use_cached = if self.options.use_cache {
-            if let Some(cached_module) = self.compilation_cache.get(&cache_key) {
+            if let Some(cached_module) = self.compilation_cache.get(&cache_key, &self.options) {
                 self.compiled_modules.insert(module_name.clone(), Arc::new(cached_module));
                 self.stats.cache_hits += 1;
                 true
@@ -1163,21 +1174,39 @@ impl Driver {
                     let sig_hash = format!("{:?}", &func.signature);
                     let new_sig_id = *signature_map.get(&sig_hash).unwrap();
                     
-                    // 新しい関数を作成
+                    // 新しい関数を作成（不足していたフィールドを追加）
                     let mut new_func = ir::Function {
                         name: func.name.clone(),
-                        signature: linked_module.signatures[&new_sig_id].clone(),
+                        fn_type: linked_module.signatures[&new_sig_id].fn_type.clone(),
+                        params: func.params.iter().map(|p| {
+                            let type_name = &module.types[&p.type_id].name;
+                            ir::Param {
+                                name: p.name.clone(),
+                                type_id: *type_map.get(type_name).unwrap(),
+                                attributes: p.attributes.clone(),
+                            }
+                        }).collect(),
+                        attributes: func.attributes.clone(),
+                        linkage: func.linkage,
+                        visibility: func.visibility,
+                        inline: func.inline,
+                        is_definition: func.is_definition,
+                        is_constexpr: func.is_constexpr,
+                        mangled_name: func.mangled_name.clone(),
                         blocks: func.blocks.clone(),
-                        basic_blocks: HashMap::new(),
-                        is_external: func.is_external,
                     };
-                    
-                    // 基本ブロックを変換
+                    // 基本ブロックを変換（不足していたフィールドを追加）
                     for (block_id, block) in &func.basic_blocks {
                         let mut new_block = ir::BasicBlock {
+                            label: format!("{}", block_id),
                             instructions: Vec::with_capacity(block.instructions.len()),
+                            predecessors: Vec::new(),
+                            successors: Vec::new(),
+                            dominator: None,
+                            dominates: Vec::new(),
+                            is_loop_header: false,
+                            loop_depth: 0,
                         };
-                        
                         // 命令を変換
                         for instr in &block.instructions {
                             let mut new_instr = instr.clone();

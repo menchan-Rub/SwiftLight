@@ -4,8 +4,8 @@
 //! 構文解析を担当するモジュールです。
 
 use crate::frontend::ast::{
-    EnumVariant, Identifier, Parameter, Statement, StatementKind,
-    StructField, TraitMethod, TypeAnnotation,
+    EnumVariant, Parameter, Statement, StatementKind,
+    StructField, TraitMethod,
 };
 use crate::frontend::error::Result;
 use crate::frontend::lexer::TokenKind;
@@ -55,8 +55,8 @@ impl<'a> Parser<'a> {
         // 可変変数かどうか
         let is_mutable = self.match_token(&TokenKind::Mut);
         
-        // 変数名
-        let name = self.parse_identifier()?;
+        // 変数名（識別子トークンを直接消費）
+        let name = self.consume_identifier("変数名が必要です")?;
         
         // 型注釈（オプション）
         let type_annotation = if self.match_token(&TokenKind::Colon) {
@@ -71,21 +71,21 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        
         // セミコロンは省略可能
         self.match_token(&TokenKind::Semicolon);
-        
         let id = self.next_id();
-        let var_decl = StatementKind::VariableDeclaration {
-            name,
-            type_annotation,
-            initializer,
-            is_mutable,
-        };
+        let var_decl = StatementKind::VariableDeclaration(
+            VariableData {
+                keyword_location: let_token.location.clone(),
+                name,
+                type_annotation,
+                initializer,
+                is_mutable,
+            }
+        );
         
         Ok(Statement::new(var_decl, id, Some(let_token.location.clone())))
     }
-    
     /// 定数宣言を解析
     pub(crate) fn parse_constant_declaration(&mut self) -> Result<Statement> {
         let const_token = self.consume(&TokenKind::Const, "定数宣言には 'const' キーワードが必要です")?;
@@ -106,13 +106,15 @@ impl<'a> Parser<'a> {
         
         // セミコロンは省略可能
         self.match_token(&TokenKind::Semicolon);
-        
         let id = self.next_id();
-        let const_decl = StatementKind::ConstantDeclaration {
-            name,
-            type_annotation,
-            initializer,
-        };
+        let const_decl = StatementKind::ConstantDeclaration(
+            ConstantData {
+                keyword_location: const_token.location.clone(),
+                name,
+                type_annotation,
+                initializer,
+            }
+        );
         
         Ok(Statement::new(const_decl, id, Some(const_token.location.clone())))
     }
@@ -137,7 +139,7 @@ impl<'a> Parser<'a> {
         };
         
         // 関数本体
-        let body = if self.check(&TokenKind::LeftBrace) {
+        let body = if self.peek().map_or(false, |t| t.kind == TokenKind::LeftBrace) {
             self.parse_block()?
         } else {
             return Err(error::syntax_error(
@@ -160,9 +162,8 @@ impl<'a> Parser<'a> {
     /// パラメータリストを解析
     fn parse_parameters(&mut self) -> Result<Vec<Parameter>> {
         let mut params = Vec::new();
-        
         // 空のパラメータリスト
-        if self.check(&TokenKind::RightParen) {
+        if self.peek().map_or(false, |t| t.kind == TokenKind::RightParen) {
             return Ok(params);
         }
         
@@ -217,11 +218,11 @@ impl<'a> Parser<'a> {
         
         // フィールドのリスト
         let mut fields = Vec::new();
-        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+        while !self.is_at_end() && self.peek().kind != TokenKind::RightBrace {
             fields.push(self.parse_struct_field()?);
             
             // カンマまたはセミコロンは省略可能
-            self.match_token(&TokenKind::Comma) || self.match_token(&TokenKind::Semicolon);
+            let _ = self.match_token(&TokenKind::Comma) || self.match_token(&TokenKind::Semicolon);
         }
         
         self.consume(&TokenKind::RightBrace, "構造体宣言の終了には '}' が必要です")?;
@@ -271,11 +272,11 @@ impl<'a> Parser<'a> {
         
         // バリアントのリスト
         let mut variants = Vec::new();
-        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+        while self.parser.peek().kind != TokenKind::RightBrace && !self.parser.is_at_end() {
             variants.push(self.parse_enum_variant()?);
             
             // カンマまたはセミコロンは省略可能
-            self.match_token(&TokenKind::Comma) || self.match_token(&TokenKind::Semicolon);
+            let _ = self.match_token(&TokenKind::Comma) || self.match_token(&TokenKind::Semicolon);
         }
         
         self.consume(&TokenKind::RightBrace, "列挙型宣言の終了には '}' が必要です")?;
@@ -299,7 +300,7 @@ impl<'a> Parser<'a> {
             let mut types = Vec::new();
             
             // 空の関連値リスト
-            if !self.check(&TokenKind::RightParen) {
+            if self.parser.peek().kind != TokenKind::RightParen {
                 // 最初の型
                 types.push(self.parse_type()?);
                 
@@ -335,7 +336,7 @@ impl<'a> Parser<'a> {
         
         // メソッド宣言のリスト
         let mut methods = Vec::new();
-        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+        while self.parser.peek().kind != TokenKind::RightBrace && !self.is_at_end() {
             methods.push(self.parse_trait_method()?);
         }
         
@@ -369,9 +370,8 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        
         // デフォルト実装（オプション）
-        let default_impl = if self.check(&TokenKind::LeftBrace) {
+        let default_impl = if self.parser.peek().kind == TokenKind::LeftBrace {
             let body = self.parse_block()?;
             Some(Box::new(body))
         } else {
@@ -392,9 +392,10 @@ impl<'a> Parser<'a> {
     /// トレイト実装宣言を解析
     pub(crate) fn parse_impl_declaration(&mut self) -> Result<Statement> {
         let impl_token = self.consume(&TokenKind::Impl, "impl宣言には 'impl' キーワードが必要です")?;
-        
         // トレイト名（オプション）
-        let trait_name = if !self.check(&TokenKind::For) && !self.check(&TokenKind::LeftBrace) {
+        let trait_name = if self.parser.peek().kind != TokenKind::For 
+            && self.parser.peek().kind != TokenKind::LeftBrace 
+        {
             Some(self.parse_identifier()?)
         } else {
             None
@@ -411,11 +412,10 @@ impl<'a> Parser<'a> {
         
         // メソッド実装のリスト
         let mut methods = Vec::new();
-        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+        while self.parser.peek().kind != TokenKind::RightBrace && !self.is_at_end() {
             // 各メソッドは関数宣言として解析
             methods.push(self.parse_function_declaration()?);
         }
-        
         self.consume(&TokenKind::RightBrace, "impl宣言の終了には '}' が必要です")?;
         
         let id = self.next_id();
@@ -477,15 +477,17 @@ mod tests {
         
         let stmt = parser.parse_declaration().unwrap();
         match &stmt.kind {
-            StatementKind::VariableDeclaration { name, type_annotation, initializer, .. } => {
-                assert_eq!(name.name, "x");
-                assert!(type_annotation.is_some());
-                assert!(initializer.is_some());
+            StatementKind::VariableDeclaration(variable_decl) => {
+                assert!(!variable_decl.is_mutable, "デフォルトでミュータブルでないことを確認");
+                assert_eq!(variable_decl.decl.identifier.name, "x");
+                assert!(variable_decl.decl.type_annotation.as_ref().expect("型注釈が存在する必要があります").is_resolved(),
+                    "型注釈が解決されていることを確認");
+                assert!(variable_decl.decl.initializer.as_ref().expect("初期化式が存在する必要があります").is_evaluable(),
+                    "評価可能な初期化式が存在することを確認");
             },
             _ => panic!("Expected variable declaration"),
         }
     }
-    
     #[test]
     fn test_parse_function_declaration() {
         let source = "func add(a: Int, b: Int) -> Int { return a + b; }";

@@ -55,7 +55,7 @@ pub enum TargetArch {
 }
 
 /// ターゲットOS
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TargetOS {
     /// Linuxオペレーティングシステム
     Linux,

@@ -133,4 +133,20 @@ impl Backend for LLVMBackend {
     fn target(&self) -> BackendTarget {
         BackendTarget::LLVMIR
     }
+    
+    fn config(&self) -> &super::BackendConfig {
+        todo!()
+    }
+    
+    fn set_config(&mut self, config: super::BackendConfig) {
+        todo!()
+    }
+    
+    fn optimize(&self, module: &mut crate::middleend::ir::Module) -> crate::frontend::error::Result<()> {
+        todo!()
+    }
+    
+    fn clone_for_parallel_codegen(&self) -> Box<dyn Backend> {
+        todo!()
+    }
 }
