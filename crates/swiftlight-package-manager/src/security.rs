@@ -56,21 +56,73 @@ pub struct DependencyIssue {
 /// 監査オプション
 #[derive(Debug, Clone)]
 pub struct AuditOptions {
-    /// セキュリティ脆弱性のチェック
-    pub check_security: bool,
-    /// ライセンスのチェック
-    pub check_license: bool,
-    /// 依存関係のチェック
-    pub check_dependencies: bool,
-    /// 詳細な出力
-    pub verbose: bool,
+    /// 依存関係をスキャンするかどうか
+    pub scan_dependencies: bool,
+    /// 既知の脆弱性をチェックするかどうか
+    pub check_vulnerabilities: bool,
+    /// ライセンスをチェックするかどうか
+    pub check_licenses: bool,
+    /// 許可されたライセンスのリスト
+    pub allowed_licenses: Option<Vec<String>>,
+    /// 禁止されたライセンスのリスト
+    pub forbidden_licenses: Option<Vec<String>>,
+    /// 最大の深さ
+    pub max_depth: Option<usize>,
+    /// 開発依存関係を含めるかどうか
+    pub include_dev: bool,
+    /// JSONで出力するかどうか
+    pub json_output: bool,
+}
+
+impl Default for AuditOptions {
+    fn default() -> Self {
+        Self {
+            scan_dependencies: true,
+            check_vulnerabilities: true,
+            check_licenses: true,
+            allowed_licenses: None,
+            forbidden_licenses: None,
+            max_depth: None,
+            include_dev: false,
+            json_output: false,
+        }
+    }
 }
 
 /// セキュリティ監査オプション
 #[derive(Debug, Clone)]
 pub struct SecurityAuditOptions {
-    /// 詳細な出力
+    /// 脆弱性データベースを更新するかどうか
+    pub update_database: bool,
+    /// 脆弱性データベースのパス
+    pub database_path: Option<String>,
+    /// 最小の深刻度レベル (low, medium, high, critical)
+    pub min_severity: Option<String>,
+    /// 監査対象に含めるパッケージ
+    pub include_packages: Option<Vec<String>>,
+    /// 監査対象から除外するパッケージ
+    pub exclude_packages: Option<Vec<String>>,
+    /// JSONで出力するかどうか
+    pub json_output: bool,
+    /// 詳細出力するかどうか
     pub verbose: bool,
+    /// 監査レポートの出力先
+    pub output_file: Option<String>,
+}
+
+impl Default for SecurityAuditOptions {
+    fn default() -> Self {
+        Self {
+            update_database: true,
+            database_path: None,
+            min_severity: None,
+            include_packages: None,
+            exclude_packages: None,
+            json_output: false,
+            verbose: false,
+            output_file: None,
+        }
+    }
 }
 
 /// 監査結果
@@ -84,6 +136,28 @@ pub struct AuditResult {
     pub dependency_issues: Vec<DependencyIssue>,
 }
 
+impl AuditResult {
+    /// 脆弱性があるかどうかを返します
+    pub fn has_vulnerabilities(&self) -> bool {
+        !self.vulnerabilities.is_empty()
+    }
+
+    /// ライセンス問題があるかどうかを返します
+    pub fn has_license_issues(&self) -> bool {
+        !self.license_issues.is_empty()
+    }
+
+    /// 依存関係問題があるかどうかを返します
+    pub fn has_dependency_issues(&self) -> bool {
+        !self.dependency_issues.is_empty()
+    }
+
+    /// 何らかの問題があるかどうかを返します
+    pub fn has_issues(&self) -> bool {
+        self.has_vulnerabilities() || self.has_license_issues() || self.has_dependency_issues()
+    }
+}
+
 /// パッケージの監査
 pub fn audit_package(options: AuditOptions) -> Result<AuditResult> {
     // 実際の実装では、パッケージの依存関係を取得し、各種データベースと照合
@@ -95,7 +169,7 @@ pub fn audit_package(options: AuditOptions) -> Result<AuditResult> {
     };
     
     // セキュリティ脆弱性のチェック
-    if options.check_security {
+    if options.check_vulnerabilities {
         // 一部のパッケージに脆弱性があるとする
         result.vulnerabilities.push(Vulnerability {
             package_name: "old-crypto".to_string(),
@@ -110,7 +184,7 @@ pub fn audit_package(options: AuditOptions) -> Result<AuditResult> {
     }
     
     // ライセンスのチェック
-    if options.check_license {
+    if options.check_licenses {
         // 一部のパッケージにライセンス問題があるとする
         result.license_issues.push(LicenseIssue {
             package_name: "proprietary-lib".to_string(),
@@ -122,7 +196,7 @@ pub fn audit_package(options: AuditOptions) -> Result<AuditResult> {
     }
     
     // 依存関係のチェック
-    if options.check_dependencies {
+    if options.scan_dependencies {
         // 一部の依存関係に問題があるとする
         result.dependency_issues.push(DependencyIssue {
             package_name: "outdated-dep".to_string(),
@@ -139,10 +213,14 @@ pub fn audit_package(options: AuditOptions) -> Result<AuditResult> {
 pub fn security_audit_package(options: SecurityAuditOptions) -> Result<AuditResult> {
     // audit_packageのセキュリティ部分のみを実行
     let audit_options = AuditOptions {
-        check_security: true,
-        check_license: false,
-        check_dependencies: false,
-        verbose: options.verbose,
+        scan_dependencies: true,
+        check_vulnerabilities: true,
+        check_licenses: true,
+        allowed_licenses: None,
+        forbidden_licenses: None,
+        max_depth: None,
+        include_dev: false,
+        json_output: false,
     };
     
     audit_package(audit_options)
@@ -194,10 +272,14 @@ pub fn analyze_dependency_graph_security() -> Result<AuditResult> {
     // 実際の実装では、依存関係グラフ全体のセキュリティを分析
     // ここではモックの実装を返す
     let audit_options = AuditOptions {
-        check_security: true,
-        check_license: true,
-        check_dependencies: true,
-        verbose: false,
+        scan_dependencies: true,
+        check_vulnerabilities: true,
+        check_licenses: true,
+        allowed_licenses: None,
+        forbidden_licenses: None,
+        max_depth: None,
+        include_dev: false,
+        json_output: false,
     };
     
     audit_package(audit_options)

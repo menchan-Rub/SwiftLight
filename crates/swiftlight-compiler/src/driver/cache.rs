@@ -29,8 +29,23 @@ pub struct CacheEntryMetadata {
     pub dependencies: HashMap<PathBuf, String>,
 }
 
+/// キャッシュ戦略
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheStrategy {
+    /// キャッシュを無効化
+    Disabled,
+    /// 完全なキャッシュ（すべてのコンパイル結果をキャッシュ）
+    Full,
+    /// インクリメンタルキャッシュ（変更されたファイルのみ再コンパイル）
+    Incremental,
+    /// 選択的キャッシュ（特定のモジュールのみキャッシュ）
+    Selective,
+    /// 分散キャッシュ（ネットワーク上で共有）
+    Distributed,
+}
+
 /// キャッシュエントリ
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CacheEntry {
     /// メタデータ
     pub metadata: CacheEntryMetadata,

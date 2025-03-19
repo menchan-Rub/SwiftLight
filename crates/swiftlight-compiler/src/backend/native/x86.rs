@@ -1,7 +1,25 @@
+// x86/x86_64アーキテクチャ向けのネイティブコード生成
+// LLVM IRからx86_64アセンブリコードを生成する機能を提供します
+
 use std::fmt;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
 use crate::ir::{Value, Type};
 use crate::optimization::BandwidthAwareOptimizer;
 use crate::util::AlignedVec;
+use crate::middleend::ir;
+use crate::frontend::error::{CompilerError, ErrorKind, Result};
+use crate::backend::native::{
+    Register, Instruction, OperandType, AddressingMode,
+    CallingConvention, InstructionEncoding
+};
+use crate::utils::{
+    logger::Logger,
+    error_handling::CompilerError as UtilsCompilerError
+};
 
 /// x86-64アーキテクチャ向けコード生成器
 /// 帯域幅最適化、キャッシュライン配置、プリフェッチ制御を実装
@@ -174,14 +192,84 @@ impl fmt::Display for CodegenError {
 
 // 自動検出されたCPU機能の検出
 fn detect_cpu_features() -> X86OptimizationFlags {
-    // CPUID命令を使用した実際の検出ロジック
-    // 簡略化のためデフォルト値を返す
-    X86OptimizationFlags {
+    let mut flags = X86OptimizationFlags {
         avx512: false,
-        bmi2: true,
-        adx: true,
+        bmi2: false,
+        adx: false,
         sha: false,
+    };
+    
+    // CPUID命令を使用してCPU機能を検出
+    unsafe {
+        // 基本情報の取得（EAX=1）
+        let mut eax: u32 = 1;
+        let mut ebx: u32 = 0;
+        let mut ecx: u32 = 0;
+        let mut edx: u32 = 0;
+        
+        // CPUID命令を実行
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::__cpuid;
+            let cpuid_result = __cpuid(eax);
+            ebx = cpuid_result.ebx;
+            ecx = cpuid_result.ecx;
+            edx = cpuid_result.edx;
+        }
+        
+        #[cfg(target_arch = "x86")]
+        {
+            use std::arch::x86::__cpuid;
+            let cpuid_result = __cpuid(eax);
+            ebx = cpuid_result.ebx;
+            ecx = cpuid_result.ecx;
+            edx = cpuid_result.edx;
+        }
+        
+        // 拡張機能の取得（EAX=7）
+        eax = 7;
+        ebx = 0;
+        ecx = 0;
+        edx = 0;
+        
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::__cpuid;
+            let cpuid_result = __cpuid(eax);
+            ebx = cpuid_result.ebx;
+            ecx = cpuid_result.ecx;
+            edx = cpuid_result.edx;
+        }
+        
+        #[cfg(target_arch = "x86")]
+        {
+            use std::arch::x86::__cpuid;
+            let cpuid_result = __cpuid(eax);
+            ebx = cpuid_result.ebx;
+            ecx = cpuid_result.ecx;
+            edx = cpuid_result.edx;
+        }
+        
+        // BMI2のチェック (EBX bit 8)
+        flags.bmi2 = (ebx & (1 << 8)) != 0;
+        
+        // ADXのチェック (EBX bit 19)
+        flags.adx = (ebx & (1 << 19)) != 0;
+        
+        // SHAのチェック (EBX bit 29)
+        flags.sha = (ebx & (1 << 29)) != 0;
+        
+        // AVX-512のチェック (EBX bits 16, 17, 30, 31)
+        let avx512f = (ebx & (1 << 16)) != 0;  // AVX-512 Foundation
+        let avx512dq = (ebx & (1 << 17)) != 0; // AVX-512 Doubleword and Quadword
+        let avx512bw = (ebx & (1 << 30)) != 0; // AVX-512 Byte and Word
+        let avx512vl = (ebx & (1 << 31)) != 0; // AVX-512 Vector Length Extensions
+        
+        // すべての必要なAVX-512機能が利用可能な場合のみtrueに設定
+        flags.avx512 = avx512f && avx512dq && avx512bw && avx512vl;
     }
+    
+    flags
 }
 
 // 命令セットのマクロ（AVX-512、BMI2などの条件付きコンパイル）

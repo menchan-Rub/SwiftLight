@@ -521,13 +521,7 @@ pub enum Type {
     Error,
 }
 
-/// 組み込み型の種類
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuiltinType {
-    Void,
-    Unit,
-    Never,
-    Any,
+
     Bool,
     Int8,
     Int16,

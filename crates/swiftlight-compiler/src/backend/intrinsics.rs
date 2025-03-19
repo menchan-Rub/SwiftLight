@@ -168,11 +168,11 @@ impl IntrinsicManager {
         // イントリンシック関数の作成
         Ok(Function {
             id: function_id,
-            name: intrinsic.name.clone(),
+            name: Identifier::from(intrinsic.name.clone()),  // StringからIdentifierへの変換
             parameters,
-            return_type: intrinsic.return_type.clone(),
+            return_type: Some(intrinsic.return_type.clone()), // Optionでラップ
             basic_blocks: Vec::new(),
-            body: None,
+            body: Statement::Intrinsic(intrinsic.kind), // Statement型でラップ
             type_parameters: Vec::new(),
             visibility: Visibility::Public,
             is_async: false,
@@ -190,11 +190,28 @@ impl IntrinsicManager {
             
         // 引数の数と型をチェック
         if arguments.len() != intrinsic.parameter_types.len() {
-            return Err(format!("イントリンシック関数 {:?} の引数の数が一致しません", kind).into());
+            return Err(CompilerError::new(
+                format!("イントリンシック関数 {:?} の引数の数が一致しません (期待値: {}, 実際: {})", 
+                    kind, 
+                    intrinsic.parameter_types.len(), 
+                    arguments.len()
+                )
+            ));
         }
         
-        // 引数の型をチェック
-        // 実際の実装ではより厳密なチェックが必要
+        // 引数の型を厳密にチェック
+        for (i, (arg, param_type)) in arguments.iter().zip(&intrinsic.parameter_types).enumerate() {
+            if &arg.ty != param_type {
+                return Err(CompilerError::new(
+                    format!("イントリンシック関数 {:?} の{}番目の引数の型が不一致\n期待: {:?}\n実際: {:?}",
+                        kind,
+                        i + 1,
+                        param_type,
+                        arg.ty
+                    )
+                ));
+            }
+        }
         
         // 呼び出しを生成
         // 実際の実装ではより複雑になる

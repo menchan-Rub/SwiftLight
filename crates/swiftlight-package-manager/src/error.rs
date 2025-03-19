@@ -135,6 +135,10 @@ pub enum PackageError {
     /// パースエラー
     #[error("パースエラー: {0}")]
     ParseError(String),
+
+    /// セキュリティ監査エラー
+    #[error("セキュリティ監査エラー: パッケージ {0} - {1}")]
+    SecurityAuditError(String, String),
 }
 
 /// エラー種別
@@ -202,6 +206,7 @@ impl PackageError {
             PackageError::Package(_) => ErrorKind::Package,
             PackageError::Lockfile(_) => ErrorKind::Lockfile,
             PackageError::Security(_) => ErrorKind::Security,
+            PackageError::SecurityAuditError(_, _) => ErrorKind::Security,
             PackageError::Validation(_) => ErrorKind::Validation,
             PackageError::FilesystemError { .. } => ErrorKind::FileSystem,
             PackageError::Internal(_) => ErrorKind::Internal,
@@ -217,7 +222,7 @@ impl PackageError {
             PackageError::Timeout(_) => ErrorKind::Timeout,
             PackageError::Permission(_) => ErrorKind::Permission,
             PackageError::GlobalLock(_) | PackageError::ProjectLock(_) => ErrorKind::Lock,
-            PackageError::ParseError(_) => ErrorKind::Parse,
+            PackageError::ParseError(_) => ErrorKind::Other,
         }
     }
 
@@ -236,6 +241,7 @@ impl PackageError {
             PackageError::Package(msg) => format!("パッケージエラーが発生しました: {}", msg),
             PackageError::Lockfile(msg) => format!("ロックファイルエラーが発生しました: {}", msg),
             PackageError::Security(msg) => format!("セキュリティエラーが発生しました: {}", msg),
+            PackageError::SecurityAuditError(package, msg) => format!("パッケージ {} のセキュリティ監査中にエラーが発生しました: {}", package, msg),
             PackageError::Validation(msg) => format!("検証エラーが発生しました: {}", msg),
             PackageError::FilesystemError { path, message } => {
                 format!("ファイルシステムエラーが発生しました: パス '{}': {}", path.display(), message)
@@ -384,5 +390,17 @@ pub struct DisplayError<'a>(pub &'a PackageError);
 impl<'a> fmt::Display for DisplayError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "エラー {}: {}", self.0.error_code(), self.0.user_message())
+    }
+}
+
+impl From<semver::Error> for PackageError {
+    fn from(e: semver::Error) -> Self {
+        PackageError::SemVer(e.to_string())
+    }
+}
+
+impl From<anyhow::Error> for PackageError {
+    fn from(e: anyhow::Error) -> Self {
+        PackageError::Anyhow(e.to_string())
     }
 } 

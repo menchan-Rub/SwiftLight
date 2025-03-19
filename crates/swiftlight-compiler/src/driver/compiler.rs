@@ -20,46 +20,27 @@ use memmap2::MmapOptions;
 use crate::frontend::{
     lexer::Lexer,
     parser::Parser,
-    semantic::SemanticAnalyzer,
-    ast::{Program, Node, NodeId, NodeKind},
-    error::{CompilerError, ErrorKind, Result, SourceLocation, DiagnosticReporter, Severity},
-    symbol_table::{SymbolTable, Symbol, SymbolKind, Visibility},
-    type_checker::TypeChecker,
-    name_resolution::NameResolver,
-    dependency_analyzer::DependencyAnalyzer,
-    macro_expander::MacroExpander,
-    constant_evaluator::ConstantEvaluator
+    error::{CompilerError, ErrorKind, Result, SourceLocation},
 };
-use crate::middleend::{
-    ir,
-    optimization::{self, OptimizationLevel, PassManager, Pass, PassContext},
-    ir_validator::IRValidator,
-    ir_generator::IRGenerator,
-    ir_serializer::IRSerializer,
-    ir_deserializer::IRDeserializer,
-    dataflow_analyzer::DataFlowAnalyzer,
-    alias_analyzer::AliasAnalyzer,
-    memory_layout_optimizer::MemoryLayoutOptimizer,
-    parallel_region_analyzer::ParallelRegionAnalyzer
-};
-use crate::backend::{
-    self, Target, Backend, CodegenOptions, TargetFeature, 
-    register_allocator::RegisterAllocator,
-    instruction_scheduler::InstructionScheduler,
-    code_emitter::CodeEmitter,
-    binary_generator::BinaryGenerator,
-    debug_info_generator::DebugInfoGenerator,
-    platform_specific::PlatformSpecificGenerator
-};
+use crate::frontend::ast::{Program, Node, NodeId, NodeKind};
+use crate::middleend::ir;
+use crate::middleend::ir_gen::IRGenerator;
+use crate::middleend::validation::IRValidator;
 use crate::driver::{
     config::CompilerConfig,
     options::CompileOptions,
     dependency::{DependencyGraph, DependencyNode, DependencyType},
-    cache::{CompilationCache, CacheEntry, CacheMetadata, CacheStrategy},
+    cache::{CompilationCache, CacheEntry, CacheStrategy},
     incremental::{IncrementalCompilationManager, ChangeDetector, ChangeImpactAnalyzer},
     module_manager::ModuleManager,
     plugin_manager::PluginManager,
-    build_plan::BuildPlan
+    build_plan::BuildPlan,
+    diagnostics::{DiagnosticReporter, DiagnosticReporterConfig},
+};
+use crate::backend::{
+    self, Target, Backend, 
+    target::TargetFeature,
+    codegen::CodegenOptions,
 };
 use crate::utils::{
     profiler::{Profiler, ProfilingEvent, ProfilingScope},
@@ -67,12 +48,13 @@ use crate::utils::{
     parallel::{WorkQueue, Task, TaskPriority, ThreadPool},
     memory_tracker::{MemoryTracker, MemoryUsageSnapshot},
     hash::{HashAlgorithm, ContentHasher},
-    logging::{Logger, LogLevel, LogMessage},
-    error_formatter::{ErrorFormatter, FormattingOptions},
+    logger::{Logger, LogLevel, LogMessage},
+    error_handling::{ErrorFormatter, FormattingOptions},
     string_interner::StringInterner,
-    arena::{Arena, TypedArena},
     config_parser::ConfigParser
 };
+use crate::typesystem::{TypeChecker, TypeRegistry, SymbolTable, NameResolver, SemanticAnalyzer};
+use crate::optimization::{self, OptimizationLevel, PassManager};
 
 /// コンパイル時の詳細な統計情報
 #[derive(Debug, Default, Clone)]
@@ -486,9 +468,9 @@ pub struct Driver {
     /// ロガー
     logger: Logger,
     /// 型アリーナ
-    type_arena: TypedArena<ir::Type>,
+    type_arena: Arc<Mutex<HashMap<usize, ir::Type>>>,
     /// 命令アリーナ
-    instruction_arena: TypedArena<ir::Instruction>,
+    instruction_arena: Arc<Mutex<HashMap<usize, ir::Instruction>>>,
     /// ファイル変更監視
     file_watcher: Option<FileWatcher>,
     /// 変更検出器
@@ -496,11 +478,11 @@ pub struct Driver {
     /// 変更影響分析器
     change_impact_analyzer: ChangeImpactAnalyzer,
     /// コンパイル中のモジュール
-    modules_in_progress: DashMap<String, ()>,
+    modules_in_progress: Arc<Mutex<HashSet<String>>>,
     /// コンパイル待機キュー
     waiting_modules: Mutex<VecDeque<String>>,
     /// コンパイル条件変数
-    compile_condvar: Condvar,
+    compile_condvar: Arc<(Mutex<bool>, Condvar)>,
     /// スレッドプール
     thread_pool: ThreadPool,
     /// 仮想ファイルシステム
@@ -554,8 +536,14 @@ impl Driver {
         };
         let error_formatter = ErrorFormatter::new(formatting_options);
         
-        // 診断レポーターを初期化
-        let diagnostic_reporter = DiagnosticReporter::new(options.error_format.clone(), options.color_output);
+        // 診断レポーターを初期化（フォーマットオプションを統合）
+        let diagnostic_reporter = DiagnosticReporter::new(FormattingOptions {
+            error_format: options.error_format.clone(),
+            color_output: options.color_output,
+            show_line_numbers: true,
+            show_source_code: true,
+            max_context_lines: 3,
+        });
         
         // コンパイルキャッシュを初期化
         let cache_strategy = if options.incremental {
@@ -618,8 +606,8 @@ impl Driver {
         let config_parser = ConfigParser::new();
         
         // 型アリーナとインストラクションアリーナを初期化
-        let type_arena = TypedArena::new();
-        let instruction_arena = TypedArena::new();
+        let type_arena = Arc::new(Mutex::new(HashMap::new()));
+        let instruction_arena = Arc::new(Mutex::new(HashMap::new()));
         
         // ワークキューを初期化
         Self {
@@ -666,14 +654,14 @@ impl Driver {
             thread_pool: ThreadPool::new(thread_count),
             string_interner: StringInterner::new(),
             config_parser: ConfigParser::new(),
-            type_arena: TypedArena::new(),
-            instruction_arena: TypedArena::new(),
+            type_arena: Arc::new(Mutex::new(HashMap::new())),
+            instruction_arena: Arc::new(Mutex::new(HashMap::new())),
             waiting_modules: Mutex::new(VecDeque::new()),
-            compile_condvar: Condvar::new(),
+            compile_condvar: Arc::new((Mutex::new(false), Condvar::new())),
             virtual_fs: VirtualFileSystem::new(),
             error_formatter: ErrorFormatter::new(formatting_options),
             content_hasher: ContentHasher::new(hash_algorithm),
-            modules_in_progress: DashMap::new(),
+            modules_in_progress: Arc::new(Mutex::new(HashSet::new())),
             memory_tracker,
             logger,
         }
@@ -726,7 +714,14 @@ impl Driver {
             
             // キャッシュに保存
             if self.options.use_cache {
-                self.compilation_cache.put(&cache_key, &ir_module);
+                self.compilation_cache.put(
+                    &cache_key,
+                    &ir_module,
+                    &self.options,
+                    &self.memory_tracker,
+                    &self.logger,
+                    &self.file_system
+                );
             }
             
             ir_module
@@ -744,6 +739,24 @@ impl Driver {
             optimization_level: self.options.optimization_level,
             debug_info: self.options.debug_info,
             target_features: self.options.target_features.clone(),
+            inline_threshold: todo!(),
+            unroll_threshold: todo!(),
+            vectorize: todo!(),
+            auto_simd: todo!(),
+            profiling: todo!(),
+            stack_protector: todo!(),
+            function_attrs: todo!(),
+            optimization_profile: todo!(),
+            lto: todo!(),
+            parallel_codegen: todo!(),
+            memory_model: todo!(),
+            exception_model: todo!(),
+            collect_stats: todo!(),
+            verify_generated_code: todo!(),
+            speculative_optimization: todo!(),
+            hot_code_reoptimization: todo!(),
+            auto_parallelization: todo!(),
+            cache_aware_optimization: todo!(),
         };
         let code = backend.generate_code(&ir_module)?;
         self.stats.codegen_time = self.profiler.stop("codegen");
@@ -832,7 +845,7 @@ impl Driver {
                 // キャッシュをチェック
                 let cache_key = self.compilation_cache.compute_key(&source_path, &self.options);
                 let ir_module = if self.options.use_cache {
-                    if let Some(cached_module) = self.compilation_cache.get(&cache_key) {
+                    if let Some(cached_module) = self.compilation_cache.get(&cache_key, &self.options) {
                         // キャッシュヒットを記録
                         let mut stats = stats_mutex.lock().unwrap();
                         stats.cache_hits += 1;
@@ -842,7 +855,14 @@ impl Driver {
                         let module = self.compile_source_with_symbols(&source_code, module_name, global_symbols.clone())?;
                         
                         // キャッシュに保存
-                        self.compilation_cache.put(&cache_key, &module);
+                        self.compilation_cache.put(
+                            &cache_key,
+                            &module,
+                            &self.options.compiler_version,
+                            self.dependency_graph.get_dependencies(module_name),
+                            &self.content_hasher.hash(&source_code),
+                            module.estimate_size()
+                        );
                         
                         Arc::new(module)
                     }
@@ -889,14 +909,42 @@ impl Driver {
         self.stats.linking_time = self.profiler.stop("linking");
         
         // 適切なバックエンドを選択
-        let backend = backend::create_backend(self.options.target);
-        
+        let backend = backend::create_backend(self.options.target, &self.options.target_features);
         // コード生成を実行
         self.profiler.start("codegen");
         let codegen_options = CodegenOptions {
             optimization_level: self.options.optimization_level,
             debug_info: self.options.debug_info,
             target_features: self.options.target_features.clone(),
+            inline_threshold: match self.options.optimization_level {
+                OptimizationLevel::Aggressive => 200,
+                _ => 100,
+            },
+            unroll_threshold: match self.options.optimization_level {
+                OptimizationLevel::Aggressive => 64,
+                _ => 32,
+            },
+            vectorize: self.options.optimization_level >= OptimizationLevel::Standard,
+            auto_simd: self.options.optimization_level >= OptimizationLevel::Standard,
+            profiling: self.options.profiling,
+            stack_protector: self.options.stack_protector,
+            function_attrs: match self.options.optimization_level {
+                OptimizationLevel::Aggressive => vec!["inline".into(), "noinline-optimized".into()],
+                OptimizationLevel::Standard => vec!["inline".into()],
+                _ => Vec::new(),
+            },
+            optimization_profile: self.options.optimization_profile.clone(),
+            lto: self.options.lto,
+            parallel_codegen: self.options.thread_count.unwrap_or(1) > 1,
+            memory_model: self.options.memory_model.clone().unwrap_or("default".into()),
+            exception_model: self.options.exception_model.clone().unwrap_or("default".into()),
+            collect_stats: self.options.collect_stats,
+            verify_generated_code: self.options.optimization_level == OptimizationLevel::None,
+            speculative_optimization: self.options.optimization_level >= OptimizationLevel::Standard,
+            hot_code_reoptimization: self.options.optimization_level >= OptimizationLevel::Aggressive,
+            auto_parallelization: self.options.optimization_level >= OptimizationLevel::Standard 
+                && self.options.target_features.supports_parallel(),
+            cache_aware_optimization: self.options.optimization_level >= OptimizationLevel::Aggressive,
         };
         let code = backend.generate_code(&linked_module)?;
         self.stats.codegen_time = self.profiler.stop("codegen");
@@ -1176,10 +1224,11 @@ impl Driver {
                     
                     // 新しい関数を作成（不足していたフィールドを追加）
                     let mut new_func = ir::Function {
+                        source_location: func.source_location.clone(), // 不足していたソース位置情報を追加
                         name: func.name.clone(),
-                        fn_type: linked_module.signatures[&new_sig_id].fn_type.clone(),
+                        fn_type: module.functions[&func.name].signature.fn_type.clone(), // モジュールの関数から直接シグネチャを取得
                         params: func.params.iter().map(|p| {
-                            let type_name = &module.types[&p.type_id].name;
+                            let type_name = &module.types[&p.type_id].name; // type_registryをtypesに修正
                             ir::Param {
                                 name: p.name.clone(),
                                 type_id: *type_map.get(type_name).unwrap(),

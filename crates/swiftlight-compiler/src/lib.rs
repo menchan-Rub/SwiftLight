@@ -59,10 +59,20 @@ pub use self::config::CompilerConfig;
 pub use self::typesystem::{Type, TypeId, TypeRegistry};
 pub use self::diagnostics::DiagnosticEmitter;
 
-// 必要なインポートを追加
-// use crate::typesystem::types::TypeRegistry; // 重複しているため不要
-// use crate::diagnostics::{Diagnostic, DiagnosticLevel, DiagnosticEmitter}; // 独自定義と競合
-use crate::frontend::semantic::type_checker::TypeChecker;
+// utils モジュールからの再エクスポート
+pub use self::utils::error_handling::{BasicErrorHandler, ErrorHandler, CompilerError as UtilsError};
+pub use self::utils::logger::{Logger, LogLevel, LogEntry, ConsoleLogger, FileLogger, CompositeLogger};
+pub use self::utils::hash::{ContentHasher, HashAlgorithm};
+pub use self::utils::memory_tracker::{MemoryTracker, MemoryUsageSnapshot};
+pub use self::utils::parallel::{ThreadPool, Task, TaskPriority, WorkQueue};
+pub use self::utils::file_system::{FileSystem, VirtualFileSystem, FileWatcher};
+pub use self::utils::config_parser::ConfigParser;
+
+// コンパイラの構成要素の型エイリアス
+pub type SymbolTable = frontend::semantic::symbol_table::SymbolTable;
+pub type TypeRegistry = frontend::semantic::type_registry::TypeRegistry;
+pub type DiagnosticEmitter = diagnostics::DiagnosticEmitter;
+pub type Module = frontend::module::Module;
 
 /// コンパイラのバージョン
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

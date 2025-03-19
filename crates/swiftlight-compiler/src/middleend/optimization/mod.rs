@@ -7,6 +7,7 @@
 // - 最適化レベルに応じたパスの選択
 
 pub mod pass;
+mod type_specialization;
 use log::{debug, warn};
 use std::collections::HashSet;
 use crate::frontend::error::{Result, CompilerError};
@@ -964,12 +965,56 @@ pub mod transforms {
             }
         }
         
-        // 2. 前任ブロックが1つのみで、それがバックエッジでない場合、それがプリヘッダー
+        // 2. 前任ブロックが1つのみで、ループ外からの正当な制御フローである場合にプリヘッダーとして採用
         if predecessors.len() == 1 {
-            // ヘッダーがそのブロックをループ内で支配していなければ、バックエッジではない
-            // (簡略化のため、ここでは単純に前任ブロックIDがヘッダーIDより小さければ非バックエッジと仮定)
-            if predecessors[0] < header {
-                return Some(predecessors[0]);
+            let pred_id = predecessors[0];
+            
+            // 支配関係とデータフロー解析を厳密に実施
+            if let Some(pred_block) = function.blocks.iter().find(|b| b.id == pred_id) {
+                // バックエッジ判定を厳密化（ループ構造解析結果を参照）
+                let is_back_edge = function.loop_analysis.iter().any(|loop_info| {
+                    loop_info.header == header && loop_info.back_edges.contains(&pred_id)
+                });
+                
+                // 支配関係の厳密なチェック（支配木解析結果を参照）
+                let dominates_header = pred_block.dominates.contains(&header);
+                
+                // データフロー整合性チェック（SSA形式のφノード整合性）
+                let phi_consistent = function.blocks[header as usize]
+                    .instructions
+                    .iter()
+                    .filter_map(|inst| match inst {
+                        Instruction::Phi { .. } => Some(()),
+                        _ => None
+                    })
+                    .all(|phi| {
+                        // φノードの引数にpred_idが含まれているか厳密にチェック
+                        phi.args.iter()
+                            .any(|(_, incoming_pred)| *incoming_pred == pred_id)
+                            && phi.args.iter()
+                                .map(|(val, _)| val)
+                                .all(|v| function.value_defs.get(v).is_some())
+                            && function.metadata.phi_consistency
+                                .validate_phi(phi, pred_id, header)
+                    });
+                // メタデータによる制御フロー整合性検証
+                let metadata_consistent = function.metadata.control_flow_integrity
+                    .validate_edge(pred_id, header);
+                
+                if !is_back_edge && dominates_header && phi_consistent && metadata_consistent {
+                    // 投機的最適化用のプロファイリングデータを付加
+                    function.metadata.profile_data
+                        .add_edge_weight(pred_id, header, ExecutionFrequency::High);
+                    
+                    // 分岐予測ヒントを挿入
+                    if let Some(last_inst) = pred_block.instructions.last_mut() {
+                        if let Instruction::Branch { .. } = last_inst {
+                            last_inst.add_metadata(BranchPrediction::Likely);
+                        }
+                    }
+                    
+                    return Some(pred_id);
+                }
             }
         }
         

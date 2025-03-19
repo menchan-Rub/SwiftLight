@@ -500,11 +500,88 @@ impl Executor {
         let mut worker_handles = Vec::with_capacity(self.worker_count);
         
         for worker_id in 0..self.worker_count {
+            let task_queue = Arc::clone(&self.task_queue);
+            let actor_queues = Arc::clone(&self.actor_queues);
+            let running = Arc::clone(&self.running);
+            let stats = Arc::clone(&self.stats);
+            let work_stealing_enabled = self.work_stealing_enabled;
+            let worker_backoff_strategy = self.worker_backoff_strategy.clone();
+            let task_counter = Arc::clone(&self.task_counter);
+            
+            // ワーカースレッド間の通信用チャネルを作成
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.worker_channels.insert(worker_id, tx);
+            
             // ワーカースレッドを作成
-            // 実際の実装ではスレッド間通信や状態共有が必要
-            // ここでは簡略化のため省略
+            let handle = thread::Builder::new()
+                .name(format!("worker-{}", worker_id))
+                .spawn(move || {
+                    let mut local_stats = WorkerStats::default();
+                    let mut rng = rand::thread_rng();
+                    let mut backoff = worker_backoff_strategy.create_backoff();
+                    let thread_id = thread::current().id();
+                    
+                    while running.load(AtomicOrdering::SeqCst) {
+                        // 1. 専用タスクがあれば処理
+                        if let Some(task) = rx.try_recv().ok() {
+                            backoff.reset();
+                            Self::execute_task(task, &mut local_stats, thread_id);
+                            continue;
+                        }
+                        
+                        // 2. グローバルキューからタスクを取得
+                        if let Some(task) = task_queue.pop() {
+                            backoff.reset();
+                            Self::execute_task(task, &mut local_stats, thread_id);
+                            continue;
+                        }
+                        
+                        // 3. アクターキューからタスクを取得
+                        let mut actor_processed = false;
+                        for (actor_id, queue) in actor_queues.lock().unwrap().iter_mut() {
+                            if let Some(task) = queue.pop_front() {
+                                backoff.reset();
+                                Self::execute_task(task, &mut local_stats, thread_id);
+                                actor_processed = true;
+                                break;
+                            }
+                        }
+                        if actor_processed {
+                            continue;
+                        }
+                        
+                        // 4. ワークスティーリングが有効な場合、他のワーカーからタスクを盗む
+                        if work_stealing_enabled {
+                            let mut stole_task = false;
+                            // ランダムなワーカーを選択
+                            let victim_id = rng.gen_range(0..self.worker_count);
+                            if victim_id != worker_id {
+                                // 実装省略: 他のワーカーのローカルキューからタスクを盗む
+                                // stole_task = true;
+                            }
+                            if stole_task {
+                                backoff.reset();
+                                continue;
+                            }
+                        }
+                        
+                        // タスクがない場合はバックオフ
+                        if backoff.is_completed() {
+                            // 長時間タスクがない場合はスリープ
+                            thread::sleep(Duration::from_millis(1));
+                            backoff.reset();
+                        } else {
+                            backoff.snooze();
+                        }
+                    }
+                    
+                    // 統計情報を更新
+                    stats.lock().unwrap().merge_worker_stats(&local_stats);
+                })
+                .expect(&format!("ワーカースレッド {} の作成に失敗しました", worker_id));
+            
+            worker_handles.push(handle);
         }
-        
         // すべてのワーカーが終了するのを待機
         for handle in worker_handles {
             // handle.join().unwrap();
@@ -586,18 +663,286 @@ impl Executor {
                 }
             }
         }
-        
         // タスクをキャンセル
         self.cancel_task(lowest_priority_task);
+        
+        // 関連リソースの特定
+        let mut involved_resources = HashSet::new();
+        for &task_id in &cycle {
+            if let Some(context) = self.tasks.get(&task_id) {
+                for &resource_id in &context.waiting_for {
+                    involved_resources.insert(resource_id);
+                }
+                for &resource_id in &context.holding {
+                    involved_resources.insert(resource_id);
+                }
+            }
+        }
         
         // デッドロック解決イベントを記録
         self.deadlock_detector.detection_history.push(DeadlockEvent {
             timestamp: Instant::now(),
             tasks: cycle.clone(),
-            resources: Vec::new(), // リソース情報は簡略化のため省略
+            resources: involved_resources.into_iter().collect(),
             resolution: Some(DeadlockResolution::TaskCancellation(lowest_priority_task)),
+            resolution_time: Duration::from_micros(self.stats.total_execution_time.as_micros() as u64),
         });
+        
+        // デッドロック統計を更新
+        self.stats.deadlocks_detected += 1;
+        self.stats.deadlocks_resolved += 1;
+        
+        // 適応型デッドロック検出間隔の調整
+        self.adjust_deadlock_detection_interval();
+        
+        // デッドロック解決後のシステム状態を最適化
+        self.rebalance_resources_after_deadlock();
+    }
+    
+    /// タスクをキャンセルする
+    fn cancel_task(&mut self, task_id: usize) {
+        if let Some(mut context) = self.tasks.remove(&task_id) {
+            // 保持しているリソースを解放
+            for &resource_id in &context.holding {
+                if let Some(resource) = self.resources.get_mut(&resource_id) {
+                    resource.owner = None;
+                    
+                    // 待機キューから次のタスクを選択
+                    if !resource.waiting_queue.is_empty() {
+                        let next_task_id = self.select_next_task_for_resource(&resource.waiting_queue);
+                        if let Some(next_id) = next_task_id {
+                            if let Some(next_task) = self.tasks.get_mut(&next_id) {
+                                // 待機リストからリソースを削除
+                                next_task.waiting_for.retain(|&r| r != resource_id);
+                                // 保持リソースに追加
+                                next_task.holding.push(resource_id);
+                                // リソースの所有者を更新
+                                resource.owner = Some(next_id);
+                                // 待機キューから削除
+                                resource.waiting_queue.retain(|&id| id != next_id);
+                                
+                                // タスクが実行可能になったら実行キューに追加
+                                if next_task.waiting_for.is_empty() {
+                                    self.ready_queue.push(TaskQueueEntry {
+                                        task_id: next_id,
+                                        priority: next_task.priority,
+                                        deadline: next_task.deadline,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // キャンセルコールバックを実行
+            if let Some(callback) = context.on_cancel.take() {
+                callback(TaskCancellationReason::Deadlock);
+            }
+            
+            // タスク統計を更新
+            self.stats.tasks_cancelled += 1;
+            
+            // キャンセルイベントを通知
+            self.event_listeners.iter_mut().for_each(|listener| {
+                listener.on_task_cancelled(task_id, TaskCancellationReason::Deadlock);
+            });
+        }
+    }
+    
+    /// リソースに対する次のタスクを選択
+    fn select_next_task_for_resource(&self, waiting_queue: &[usize]) -> Option<usize> {
+        if waiting_queue.is_empty() {
+            return None;
+        }
+        
+        // 優先度に基づいてタスクを選択
+        let mut highest_priority_task = None;
+        let mut highest_priority = Priority::Low;
+        let mut earliest_deadline = Instant::now() + Duration::from_secs(3600); // 1時間後をデフォルトに
+        
+        for &task_id in waiting_queue {
+            if let Some(task) = self.tasks.get(&task_id) {
+                // 優先度が高いか、同じ優先度でデッドラインが早いタスクを選択
+                if task.priority < highest_priority || 
+                   (task.priority == highest_priority && task.deadline < earliest_deadline) {
+                    highest_priority = task.priority;
+                    earliest_deadline = task.deadline;
+                    highest_priority_task = Some(task_id);
+                }
+            }
+        }
+        
+        highest_priority_task
+    }
+    
+    /// デッドロック検出間隔を適応的に調整
+    fn adjust_deadlock_detection_interval(&mut self) {
+        let detection_history = &self.deadlock_detector.detection_history;
+        
+        // 直近のデッドロック検出履歴を分析
+        if detection_history.len() >= 10 {
+            let recent_history = &detection_history[detection_history.len() - 10..];
+            
+            // 直近のデッドロック頻度を計算
+            let first_event_time = recent_history.first().unwrap().timestamp;
+            let last_event_time = recent_history.last().unwrap().timestamp;
+            let time_span = last_event_time.duration_since(first_event_time);
+            
+            // デッドロック頻度に基づいて検出間隔を調整
+            if time_span.as_secs() < 60 && recent_history.len() >= 5 {
+                // 頻繁にデッドロックが発生している場合、検出間隔を短くする
+                self.deadlock_detector.detection_interval = self.deadlock_detector.detection_interval.mul_f32(0.8);
+                if self.deadlock_detector.detection_interval < Duration::from_millis(100) {
+                    self.deadlock_detector.detection_interval = Duration::from_millis(100);
+                }
+            } else if time_span.as_secs() > 300 {
+                // デッドロックが稀な場合、検出間隔を長くする
+                self.deadlock_detector.detection_interval = self.deadlock_detector.detection_interval.mul_f32(1.2);
+                if self.deadlock_detector.detection_interval > Duration::from_secs(10) {
+                    self.deadlock_detector.detection_interval = Duration::from_secs(10);
+                }
+            }
+        }
+    }
+    
+    /// デッドロック解決後のリソース再配分
+    fn rebalance_resources_after_deadlock(&mut self) {
+        // 優先度の高いタスクが必要とするリソースを優先的に割り当て
+        let mut priority_tasks = Vec::new();
+        
+        // 優先度の高いタスクを抽出
+        for (&task_id, task) in &self.tasks {
+            if task.priority == Priority::High || task.priority == Priority::Critical {
+                priority_tasks.push(task_id);
+            }
+        }
+        
+        // 優先度順にソート
+        priority_tasks.sort_by(|&a, &b| {
+            let priority_a = self.tasks.get(&a).map_or(Priority::Low, |t| t.priority);
+            let priority_b = self.tasks.get(&b).map_or(Priority::Low, |t| t.priority);
+            priority_a.cmp(&priority_b)
+        });
+        
+        // 優先度の高いタスクにリソースを再配分
+        for task_id in priority_tasks {
+            if let Some(task) = self.tasks.get(&task_id) {
+                for &resource_id in &task.waiting_for {
+                    if let Some(resource) = self.resources.get_mut(&resource_id) {
+                        // リソースが他のタスクに割り当てられている場合
+                        if let Some(owner_id) = resource.owner {
+                            if let Some(owner_task) = self.tasks.get(&owner_id) {
+                                // 所有者の優先度が現在のタスクより低い場合、リソースを再配分
+                                if owner_task.priority > task.priority {
+                                    // 現在の所有者からリソースを取り上げる処理
+                                    self.preempt_resource(resource_id, owner_id, task_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// リソースの先取り（プリエンプション）
+    fn preempt_resource(&mut self, resource_id: usize, current_owner: usize, new_owner: usize) {
+        if let Some(resource) = self.resources.get_mut(&resource_id) {
+            // 現在の所有者からリソースを削除
+            if let Some(owner_task) = self.tasks.get_mut(&current_owner) {
+                owner_task.holding.retain(|&r| r != resource_id);
+                // 所有者がリソースを待機するように設定
+                owner_task.waiting_for.push(resource_id);
+                resource.waiting_queue.push(current_owner);
+                
+                // 所有者が他のリソースを待っている場合は実行キューから削除
+                if !owner_task.waiting_for.is_empty() {
+                    self.ready_queue.retain(|entry| entry.task_id != current_owner);
+                }
+            }
+            
+            // 新しい所有者にリソースを割り当て
+            if let Some(new_owner_task) = self.tasks.get_mut(&new_owner) {
+                new_owner_task.waiting_for.retain(|&r| r != resource_id);
+                new_owner_task.holding.push(resource_id);
+                resource.owner = Some(new_owner);
+                
+                // 待機キューから削除
+                resource.waiting_queue.retain(|&id| id != new_owner);
+                
+                // 新しい所有者が他のリソースを待っていない場合は実行キューに追加
+                if new_owner_task.waiting_for.is_empty() {
+                    self.ready_queue.push(TaskQueueEntry {
+                        task_id: new_owner,
+                        priority: new_owner_task.priority,
+                        deadline: new_owner_task.deadline,
+                    });
+                }
+            }
+            
+            // リソースプリエンプションイベントを記録
+            self.stats.resource_preemptions += 1;
+            
+            // イベントリスナーに通知
+            self.event_listeners.iter_mut().for_each(|listener| {
+                listener.on_resource_preempted(resource_id, current_owner, new_owner);
+            });
+        }
     }
 }
 
-// その他のユーティリティ関数や補助実装 
+// デッドロック検出と解決のためのユーティリティ
+impl Executor {
+    /// 待機グラフからサイクルを検出
+    fn detect_cycles(&self) -> Vec<Vec<usize>> {
+        let mut cycles = Vec::new();
+        let mut visited = HashSet::new();
+        let mut path = Vec::new();
+        let mut on_path = HashSet::new();
+        
+        // 全タスクを起点としてDFSを実行
+        for &task_id in self.tasks.keys() {
+            if !visited.contains(&task_id) {
+                self.dfs_for_cycles(task_id, &mut visited, &mut path, &mut on_path, &mut cycles);
+            }
+        }
+        
+        cycles
+    }
+    
+    /// サイクル検出のためのDFS
+    fn dfs_for_cycles(
+        &self,
+        task_id: usize,
+        visited: &mut HashSet<usize>,
+        path: &mut Vec<usize>,
+        on_path: &mut HashSet<usize>,
+        cycles: &mut Vec<Vec<usize>>
+    ) {
+        visited.insert(task_id);
+        path.push(task_id);
+        on_path.insert(task_id);
+        
+        if let Some(task) = self.tasks.get(&task_id) {
+            // タスクが待機しているリソースの所有者を調べる
+            for &resource_id in &task.waiting_for {
+                if let Some(resource) = self.resources.get(&resource_id) {
+                    if let Some(owner_id) = resource.owner {
+                        if on_path.contains(&owner_id) {
+                            // サイクルを検出
+                            let cycle_start = path.iter().position(|&id| id == owner_id).unwrap();
+                            let cycle = path[cycle_start..].to_vec();
+                            cycles.push(cycle);
+                        } else if !visited.contains(&owner_id) {
+                            self.dfs_for_cycles(owner_id, visited, path, on_path, cycles);
+                        }
+                    }
+                }
+            }
+        }
+        
+        path.pop();
+        on_path.remove(&task_id);
+    }
+}

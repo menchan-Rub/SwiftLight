@@ -253,37 +253,39 @@ pub fn find_workspace_root(start_dir: &Path) -> Result<PathBuf> {
     Err(anyhow!("ワークスペースのルートディレクトリが見つかりません"))
 }
 
-/// ワークスペースメンバーを探す
-fn find_workspace_members(
-    root_dir: &Path,
-    workspace_info: &WorkspaceInfo,
-) -> Result<(HashMap<String, Manifest>, HashMap<String, PathBuf>)> {
+/// ワークスペースのメンバーパッケージを検索
+fn find_workspace_members(root_dir: &Path, workspace_info: &WorkspaceInfo) -> Result<(HashMap<String, Manifest>, HashMap<String, PathBuf>)> {
     let mut member_manifests = HashMap::new();
     let mut member_dirs = HashMap::new();
     
-    // 除外パターンをセット
-    let excludes: HashSet<_> = workspace_info.exclude.iter().cloned().collect();
-    
-    // 各メンバーパターンを処理
-    for pattern in &workspace_info.members {
-        let glob_pattern = format!("{}/{}/swiftlight.toml", root_dir.display(), pattern);
+    // globs パターンを使用してメンバーを検索
+    for member_pattern in &workspace_info.members {
+        let pattern = format!("{}/{}/swiftlight.toml", root_dir.display(), member_pattern);
         
-        for entry in glob(&glob_pattern)? {
-            let manifest_path = entry?;
-            let parent_dir = manifest_path.parent().unwrap().to_path_buf();
-            let rel_path = parent_dir.strip_prefix(root_dir)?.to_string_lossy().to_string();
-            
-            // 除外リストにあるか確認
-            if excludes.contains(&rel_path) {
-                continue;
+        for entry in glob(&pattern)? {
+            match entry {
+                Ok(manifest_path) => {
+                    // マニフェストを読み込む
+                    let manifest = Manifest::load(&manifest_path)?;
+                    let package_name = manifest.package.name.clone();
+                    
+                    // パッケージディレクトリ
+                    let package_dir = manifest_path.parent().unwrap().to_path_buf();
+                    
+                    // 除外されているパッケージかどうかチェック
+                    let rel_path = package_dir.strip_prefix(root_dir)?.to_string_lossy().into_owned();
+                    if workspace_info.exclude.contains(&rel_path) {
+                        continue;
+                    }
+                    
+                    // 追加
+                    member_manifests.insert(package_name.clone(), manifest);
+                    member_dirs.insert(package_name, package_dir);
+                }
+                Err(e) => {
+                    eprintln!("警告: パターン '{}' のマッチで問題が発生しました: {}", pattern, e);
+                }
             }
-            
-            // マニフェストを読み込む
-            let manifest = Manifest::load(&manifest_path)?;
-            let package_name = manifest.package.name.clone();
-            
-            member_manifests.insert(package_name.clone(), manifest);
-            member_dirs.insert(package_name, parent_dir);
         }
     }
     
@@ -307,6 +309,11 @@ pub fn create_workspace(
         members,
         exclude: Vec::new(),
         inheritance: None,
+        default_members: None,
+        metadata: None,
+        dependencies: None,
+        layout: None,
+        resolver: None,
     };
     
     manifest.workspace = Some(workspace_info);

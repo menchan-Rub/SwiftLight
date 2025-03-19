@@ -63,6 +63,12 @@ semver = "1.0"
 # ライブラリ読み込み
 libloading = "0.7"
 
+# 一時ファイル操作
+tempfile = "3.8"
+
+# 正規表現
+regex = "1.9"
+
 # 開発依存
 [dev-dependencies]
 assert_cmd = "2.0"

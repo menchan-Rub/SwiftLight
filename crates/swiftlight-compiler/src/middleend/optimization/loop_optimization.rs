@@ -468,31 +468,158 @@ fn should_unroll_loop(function: &Function, loop_info: &LoopInfo) -> bool {
         return false; // 大きすぎるループは展開しない
     }
     
-    // 固定回数のループかどうか判定
-    for (_, pattern) in &loop_info.induction_vars {
-        if let InductionPattern::Linear { step, .. } = pattern {
-            // 単純な固定回数ループを検出
-            if *step == 1 || *step == -1 {
-                // ループの終了条件を分析（単純化のため省略）
-                return true;
+/// ループ展開の可否を高度な条件で判定
+fn should_unroll_loop(function: &Function, loop_info: &LoopInfo) -> bool {
+    // ループサイズと展開後の推定サイズを計算
+    let loop_size = loop_info.blocks.iter()
+        .map(|&id| function.blocks.iter().find(|b| b.id == id).unwrap().instructions.len())
+        .sum::<usize>();
+    let estimated_unrolled_size = loop_size * (loop_info.estimated_trip_count.unwrap_or(1) as usize);
+
+    // 展開制限条件チェック
+    if loop_size > 50 || estimated_unrolled_size > 200 {
+        return false;
+    }
+
+    // 依存型解析による安全性保証
+    let mut has_memory_dependency = false;
+    let mut has_volatile_access = false;
+    for &block_id in &loop_info.blocks {
+        if let Some(block) = function.blocks.iter().find(|b| b.id == block_id) {
+            for instr in &block.instructions {
+                if let Instruction::Load { volatile, .. } | Instruction::Store { volatile, .. } = instr {
+                    if *volatile {
+                        has_volatile_access = true;
+                    }
+                }
+                if has_side_effect(instr) {
+                    has_memory_dependency = true;
+                }
             }
         }
     }
+
+    // イテレーション数がコンパイル時定数か解析
+    let mut is_fix_iteration = false;
+    let mut trip_count = None;
+    for (var, pattern) in &loop_info.induction_vars {
+        if let InductionPattern::Linear { start, step, end } = pattern {
+            if let (Some(start_val), Some(step_val), Some(end_val)) = (
+                start.as_constant(),
+                step.as_constant(),
+                end.as_constant(),
+            ) {
+                let count = ((end_val - start_val) / step_val).abs() as u32;
+                if count <= 16 && count > 1 {
+                    is_fix_iteration = true;
+                    trip_count = Some(count);
+                    break;
+                }
+            }
+        }
+    }
+
+    // 展開の有効性条件
+    is_fix_iteration &&
+    !has_volatile_access &&
+    !has_memory_dependency &&
+    loop_info.control_flow.is_simple() &&
+    function.verify().is_ok()
+}
+
+/// 完全なループ展開の実装
+fn unroll_loop(function: &mut Function, loop_info: &mut LoopInfo) {
+    let trip_count = loop_info.estimated_trip_count.unwrap_or(1);
+    let header_id = loop_info.header_block;
+    let latch_block = loop_info.latch_block.expect("Latch block must exist");
     
-    false
+    // ヘッダーブロックのPHIノードを収集
+    let mut phi_nodes = Vec::new();
+    if let Some(header) = function.blocks.iter_mut().find(|b| b.id == header_id) {
+        phi_nodes = header.instructions.iter()
+            .filter_map(|instr| if let Instruction::Phi { result, ty, incoming } = instr {
+                Some((*result, ty.clone(), incoming.clone()))
+            } else {
+                None
+            })
+            .collect();
+    }
+
+    // ループボディの複製と接続
+    let mut cloned_blocks = Vec::new();
+    for i in 0..trip_count {
+        let mut new_blocks = function.clone_blocks(&loop_info.blocks);
+        function.renumber_blocks(&mut new_blocks);
+        function.renumber_instructions(&mut new_blocks);
+        
+        // PHIノードの更新
+        for (result, ty, incoming) in &phi_nodes {
+            let new_val = function.make_constant(Value::Int(i as i64));
+            function.blocks.iter_mut().for_each(|block| {
+                block.instructions.iter_mut().for_each(|instr| {
+                    if let Instruction::Phi { incoming: ref mut inc, .. } = instr {
+                        inc.iter_mut().for_each(|(val, pred)| {
+                            if *val == *result {
+                                *val = new_val;
+                                *pred = latch_block;
+                            }
+                        });
+                    }
+                });
+            });
+        }
+        
+        cloned_blocks.extend(new_blocks);
+    }
+
+    // 制御フローの再接続
+    function.cfg.redirect_loop_exits(&loop_info, &cloned_blocks);
+    function.cfg.remove_block(latch_block);
+    function.cfg.verify().expect("CFG integrity check failed");
+    
+    // 不要なPHIノードの削除
+    function.remove_dead_phi_nodes();
+    function.verify().expect("Function verification failed after unrolling");
 }
 
-/// ループを展開
-fn unroll_loop(function: &mut Function, loop_info: &LoopInfo) {
-    // ループ展開の実装（複雑なため簡略版）
-    // 実際の実装ではループの複製と制御フローの修正が必要
-}
-
-/// 隣接するループを融合
+/// 高度なループ融合の実装
 fn fuse_adjacent_loops(function: &mut Function, loops: &[LoopInfo]) {
-    // ループ融合の実装（複雑なため簡略版）
-    // 実際の実装では以下の条件を確認する必要があります：
-    // 1. 同じイテレーション範囲を持つループが隣接している
-    // 2. ループ間に依存関係がない
-    // 3. 融合によりパフォーマンスが向上する見込みがある
+    let fusion_candidates = loops.windows(2)
+        .filter(|pair| {
+            let l1 = &pair[0];
+            let l2 = &pair[1];
+            
+            // 融合条件チェック
+            l1.is_adjacent_to(l2) &&
+            l1.has_same_iteration_space(l2) &&
+            !l1.has_dependency_with(l2) &&
+            l1.control_flow.is_compatible_with(&l2.control_flow) &&
+            function.dominance.is_safe_to_fuse(l1, l2)
+        })
+        .collect::<Vec<_>>();
+
+    for candidates in fusion_candidates {
+        let (l1, l2) = (&candidates[0], &candidates[1]);
+        
+        // ループヘッダの統合
+        let new_header = function.fuse_headers(l1.header_block, l2.header_block);
+        
+        // ループボディのマージ
+        let merged_body = function.merge_blocks(&[l1.body(), l2.body()]);
+        
+        // 制御フローの更新
+        function.cfg.redirect_branches(l1.latch_block.unwrap(), new_header);
+        function.cfg.redirect_branches(l2.latch_block.unwrap(), new_header);
+        
+        // データフロー解析の更新
+        function.update_dataflow_analysis();
+        
+        // 不要なブロックの削除
+        function.remove_blocks(&[l1.header_block, l2.header_block]);
+    }
+    
+    // 最適化後の検証
+    function.verify().expect("Function verification failed after loop fusion");
+    function.cfg.verify().expect("CFG verification failed after loop fusion");
+}
 }

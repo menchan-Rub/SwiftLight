@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::Duration;
+use std::ops::ControlFlow;
 
 /// 最適化レベル
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

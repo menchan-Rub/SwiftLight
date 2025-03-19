@@ -716,30 +716,24 @@ impl TypeLevelComputationEngine {
     {
         self.type_functions.insert(name.to_string(), Box::new(func));
     }
-    
     /// 型レベル計算を実行
     pub fn evaluate(&mut self, expr: &str, args: &[TypeId]) -> Result<TypeId, String> {
-        // 簡略化のため、実際の実装は省略
-        if let Some(func) = self.type_functions.get(expr) {
-            func(args)
-        } else {
-            Err(format!("未定義の型レベル関数: {}", expr))
-        }
+        self.type_functions
+            .get(expr)
+            .map(|func| func(args))
+            .ok_or_else(|| format!("未定義の型レベル関数: {}", expr))
     }
-}
 
-impl TypeSpecializationManager {
-    /// 新しい型特化マネージャーを作成
-    pub fn new() -> Self {
+    /// 構造体初期化用のデフォルト実装
+    fn new() -> Self {
         Self {
-            module: None,
             candidates: Vec::new(),
             specialized_functions: HashMap::new(),
             results: Vec::new(),
             in_progress: false,
             memory_limit: 100 * 1024 * 1024, // デフォルト: 100MB
             estimated_memory_usage: 0,
-            code_expansion_factor: 1.5, // 最大1.5倍までのコード膨張を許容
+            code_expansion_factor: 1.5,      // 最大1.5倍までのコード膨張を許容
             stats: SpecializationStats::default(),
             priority_map: HashMap::new(),
             type_level_engine: Some(Arc::new(Mutex::new(TypeLevelComputationEngine::new()))),
@@ -752,12 +746,12 @@ impl TypeSpecializationManager {
             max_specializations: 1000,
             min_benefit_score: 0.5,
             max_code_size_increase_ratio: 0.3, // 最大30%のコードサイズ増加を許容
-            max_time_ms: 10000, // 最大10秒
+            max_time_ms: 10000,              // 最大10秒
             start_time: None,
             dependency_graph: HashMap::new(),
         }
     }
-    
+
     /// モジュールを設定
     pub fn set_module(&mut self, module: Module) {
         self.module = Some(module);
@@ -767,7 +761,7 @@ impl TypeSpecializationManager {
         self.estimated_memory_usage = self.estimate_module_size();
         self.stats = SpecializationStats::default();
         self.start_time = Some(Instant::now());
-        
+
         // データフロー解析エンジンを初期化
         if let Some(module) = &self.module {
             self.dataflow_engine = Some(DataFlowEngine::new(module.clone()));
@@ -775,33 +769,35 @@ impl TypeSpecializationManager {
             self.inlining_decider = Some(InliningDecider::new());
         }
     }
-    
+
     /// メモリ制限を設定
     pub fn set_memory_limit(&mut self, limit_bytes: usize) {
         self.memory_limit = limit_bytes;
     }
-    
+
     /// コード膨張係数を設定
     pub fn set_code_expansion_factor(&mut self, factor: f64) {
-        assert!(factor >= 1.0, "コード膨張係数は1.0以上である必要があります");
+        assert!(
+            factor >= 1.0,
+            "コード膨張係数は1.0以上である必要があります"
+        );
         self.code_expansion_factor = factor;
     }
-    
+
     /// 最大再帰深度を設定
     pub fn set_max_recursion_depth(&mut self, depth: usize) {
         self.max_recursion_depth = depth;
     }
-    
+
     /// 最大特化数を設定
     pub fn set_max_specializations(&mut self, count: usize) {
         self.max_specializations = count;
     }
-    
+
     /// 最小利益スコアを設定
     pub fn set_min_benefit_score(&mut self, score: f64) {
         self.min_benefit_score = score;
     }
-    
     /// 最大コードサイズ増加率を設定
     pub fn set_max_code_size_increase_ratio(&mut self, ratio: f64) {
         self.max_code_size_increase_ratio = ratio;

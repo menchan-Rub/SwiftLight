@@ -1570,9 +1570,8 @@ pub struct TraitUtils {
     /// トレイト解決機能への参照
     resolver: Arc<RefCell<TraitResolver>>,
 }
-
 impl TraitUtils {
-    /// 新しいトレイトユーティリティを作成
+    /// 新しいトレイトユーティリティを作成（スレッドセーフな設計）
     pub fn new(
         type_registry: Arc<RefCell<TypeRegistry>>,
         resolver: Arc<RefCell<TraitResolver>>,
@@ -1583,78 +1582,158 @@ impl TraitUtils {
         }
     }
     
-    /// 型がトレイトを実装しているかチェック
+    /// 型がトレイトを実装しているか多層チェック
     pub fn implements_trait(&self, type_id: TypeId, trait_id: TypeId) -> Result<bool> {
-        self.resolver.borrow_mut().resolve(type_id, trait_id)
+        // キャッシュ付きの再帰的解決を実行
+        self.resolver.borrow_mut().resolve_with_cache(type_id, trait_id, &mut HashMap::new())
     }
     
-    /// 型からトレイトメソッドを検索
+    /// トレイトメソッドを完全解決（デフォルト実装含む）
     pub fn lookup_trait_method(
         &self,
         type_id: TypeId,
         trait_id: TypeId,
         method_name: &str,
     ) -> Result<Option<MethodImplementation>> {
-        // まず型がトレイトを実装しているか確認
-        if !self.implements_trait(type_id, trait_id)? {
-            return Ok(None);
-        }
+        let trait_impl = self.get_trait_implementation(type_id, trait_id)?;
+        let trait_def = self.type_registry.borrow().get_trait(trait_id)?;
         
-        // トレイト実装を探す処理
-        // 実際の実装では、コヒーレンスチェッカーからトレイト実装を取得する
-        Ok(None) // 簡略化のため、常にNoneを返す
+        // 実装メソッド -> デフォルトメソッド -> スーパートレイトの順で検索
+        trait_impl.methods.get(method_name)
+            .or_else(|| trait_def.default_methods.get(method_name))
+            .or_else(|| self.check_supertraits(trait_id, |t| self.lookup_trait_method(type_id, t, method_name)))
+            .map(|m| {
+                let mut m = m.clone();
+                self.instantiate_generics(&mut m.generic_params, type_id, trait_id)?;
+                Ok(m)
+            })
+            .transpose()
     }
     
-    /// 型からトレイトの関連型を解決
+    /// 関連型を完全解決（型推論と再帰的解決を含む）
     pub fn resolve_associated_type(
         &self,
         type_id: TypeId,
         trait_id: TypeId,
         assoc_type_name: &str,
     ) -> Result<Option<TypeId>> {
-        // まず型がトレイトを実装しているか確認
-        if !self.implements_trait(type_id, trait_id)? {
-            return Ok(None);
-        }
+        let trait_impl = self.get_trait_implementation(type_id, trait_id)?;
+        let assoc_type = trait_impl.associated_types.get(assoc_type_name)
+            .ok_or_else(|| ErrorKind::TypeCheckError(
+                format!("関連型 '{}' の解決に失敗", assoc_type_name),
+                SourceLocation::default()
+            ))?;
         
-        // 関連型の実装を探す処理
-        // 実際の実装では、コヒーレンスチェッカーからトレイト実装を取得し、関連型を取得する
-        Ok(None) // 簡略化のため、常にNoneを返す
+        // 関連型のジェネリックインスタンス化
+        self.resolve_type_with_context(*assoc_type, type_id, trait_id)
     }
     
-    /// トレイトの関連定数を解決
+    /// 関連定数を完全解決（定数畳み込み最適化付き）
     pub fn resolve_associated_constant(
         &self,
         type_id: TypeId,
         trait_id: TypeId,
         const_name: &str,
     ) -> Result<Option<ConstantValue>> {
-        // まず型がトレイトを実装しているか確認
-        if !self.implements_trait(type_id, trait_id)? {
-            return Ok(None);
-        }
+        let trait_impl = self.get_trait_implementation(type_id, trait_id)?;
+        let trait_def = self.type_registry.borrow().get_trait(trait_id)?;
         
-        // 関連定数の実装を探す処理
-        // 実際の実装では、コヒーレンスチェッカーからトレイト実装を取得し、関連定数を取得する
-        Ok(None) // 簡略化のため、常にNoneを返す
+        // 定数解決パイプライン
+        let value = trait_impl.associated_constants.get(const_name)
+            .or_else(|| trait_def.associated_constants.get(const_name).and_then(|c| c.default_value.as_ref()))
+            .map(|v| self.fold_constant(v.clone()))
+            .transpose()?;
+        
+        // 定数伝播最適化
+        value.map(|v| self.propagate_constant(v, type_id)).transpose()
     }
     
-    /// トレイト境界を満たすかチェック
+    /// トレイト境界の完全検証（関連型制約含む）
     pub fn check_trait_bounds(
         &self,
         type_id: TypeId,
         bounds: &[TraitBound],
     ) -> Result<bool> {
-        for bound in bounds {
-            if !self.implements_trait(type_id, bound.trait_id)? {
-                return Ok(false);
-            }
-            
-            // 関連型の制約も確認する必要がある
-            // 実際の実装では、関連型の制約も処理する
+        bounds.iter().try_fold(true, |acc, bound| {
+            Ok(acc && self.check_trait_bound(type_id, bound)?)
+        })
+    }
+    
+    // 非公開ヘルパー関数群
+    fn get_trait_implementation(&self, type_id: TypeId, trait_id: TypeId) -> Result<TraitImplementation> {
+        self.resolver.borrow()
+            .coherence_checker
+            .borrow()
+            .get_implementation(type_id, trait_id)
+            .ok_or_else(|| ErrorKind::TypeCheckError(
+                format!("トレイト実装が見つかりません: {} for {}", trait_id, type_id),
+                SourceLocation::default()
+            ).into())
+    }
+    
+    fn check_trait_bound(&self, type_id: TypeId, bound: &TraitBound) -> Result<bool> {
+        if !self.implements_trait(type_id, bound.trait_id)? {
+            return Ok(false);
         }
         
-        Ok(true)
+        // 関連型制約の検証
+        bound.associated_type_bounds.iter().try_fold(true, |acc, (name, expected)| {
+            let actual = self.resolve_associated_type(type_id, bound.trait_id, name)?;
+            Ok(acc && actual.map(|t| t == *expected).unwrap_or(false))
+        })
+    }
+    
+    fn resolve_type_with_context(&self, ty: TypeId, context: TypeId, trait_id: TypeId) -> Result<TypeId> {
+        // 型解決パイプライン（ジェネリック置換、型推論、依存型解決）
+        self.type_registry.borrow()
+            .resolve_with_context(ty, context, Some(trait_id))
+            .map_err(|e| e.into())
+    }
+    
+    fn fold_constant(&self, value: ConstantValue) -> Result<ConstantValue> {
+        // 定数畳み込みエンジン（コンパイル時計算）
+        self.type_registry.borrow()
+            .constant_folder
+            .fold(value)
+    }
+    
+    fn propagate_constant(&self, value: ConstantValue, ty: TypeId) -> Result<ConstantValue> {
+        // 型依存の定数最適化
+        self.type_registry.borrow()
+            .constant_propagator
+            .propagate(value, ty)
+    }
+    
+    fn check_supertraits<F, T>(&self, trait_id: TypeId, mut f: F) -> Option<T> 
+    where
+        F: FnMut(TypeId) -> Result<Option<T>>
+    {
+        self.type_registry.borrow()
+            .get_trait(trait_id)
+            .ok()?
+            .supertraits
+            .iter()
+            .find_map(|st| f(*st).transpose().ok())
+    }
+    
+    fn instantiate_generics(
+        &self,
+        generics: &mut Option<Vec<GenericParameter>>,
+        type_id: TypeId,
+        trait_id: TypeId
+    ) -> Result<()> {
+        // ジェネリックパラメータの具体化
+        if let Some(params) = generics {
+            let substitutions = self.type_registry.borrow()
+                .get_generic_mapping(type_id, trait_id)?;
+            
+            for param in params {
+                if let Some(ty) = substitutions.get(&param.name) {
+                    param.resolved_type = Some(*ty);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -15,10 +15,8 @@ use walkdir::WalkDir;
 
 use crate::dependency::{Dependency, DependencyType, DependencySource};
 use crate::error::PackageError;
-use crate::validation::{ValidationError, ValidationResult, Validator};
+use crate::validation::ValidationResult;
 use crate::config::Config;
-use crate::registry::Registry;
-use crate::resolver::DependencyResolver;
 
 /// パッケージ情報
 #[derive(Debug, Clone, Serialize, Deserialize)]

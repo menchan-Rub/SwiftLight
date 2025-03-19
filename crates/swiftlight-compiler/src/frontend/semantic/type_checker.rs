@@ -1715,7 +1715,7 @@ impl TypeChecker {
         
         // 配列型か文字列型かを確認
         match &array_type.kind {
-            TypeKind::Array(element_type) => {
+            TypeKind::Array(element_type, _) => {
                 // 配列の要素型を返す
                 Ok(element_type.as_ref().clone())
             },
@@ -1770,11 +1770,14 @@ impl TypeChecker {
                     id: ast::generate_id(),
                     kind: TypeKind::Any,
                     location: None,
+                }), Box::new(TypeAnnotation {
+                    id: ast::generate_id(),
+                    kind: TypeKind::Int,
+                    location: None,
                 })),
                 location: None,
             });
         }
-        
         // 最初の要素の型をチェック
         let first_type = self.check_expression(&elements[0])?;
         
@@ -1794,11 +1797,14 @@ impl TypeChecker {
         // 配列型を返す
         Ok(TypeAnnotation {
             id: ast::generate_id(),
-            kind: TypeKind::Array(Box::new(first_type)),
+            kind: TypeKind::Array(Box::new(first_type), Box::new(TypeAnnotation {
+                id: ast::generate_id(),
+                kind: TypeKind::Int,
+                location: None,
+            })),
             location: None,
         })
     }
-    
     // 構造体リテラルの型チェック
     fn check_struct_literal(&self, name: &Identifier, fields: &[(Identifier, Expression)]) -> Result<TypeAnnotation> {
         // 構造体名を解決
@@ -1987,9 +1993,8 @@ impl TypeChecker {
             // その他のキャスト（許可されない）
             _ => false,
         };
-        
         if !is_safe {
-            return Err(self.type_error(
+            return Err(CompilerError::type_error(
                 format!("不安全なキャストです: {} から {} へ", 
                         self.type_to_string(&expr_type), 
                         self.type_to_string(&resolved_target)),
@@ -2062,7 +2067,7 @@ impl TypeChecker {
         // 関数型を返す
         Ok(TypeAnnotation {
             id: ast::generate_id(),
-            kind: TypeKind::Function(param_types, Box::new(body_type)),
+            kind: TypeKind::Function(param_types, Some(Box::new(body_type))),
             location: None,
         })
     }
@@ -2214,14 +2219,14 @@ impl TypeChecker {
             // リテラルパターン
             ExpressionKind::Literal(lit) => {
                 let lit_type = self.check_literal(lit)?;
-                if !self.is_compatible(expr_type, &lit_type) {
+                Ok(if !self.is_compatible(expr_type, &lit_type) {
                     return Err(self.type_error(
                         "パターンの型がマッチ対象の式の型と互換性がありません",
                         expr_type,
                         &lit_type,
                         location,
                     ));
-                }
+                })
             },
             
             // 識別子パターン（変数バインディング）
@@ -2275,7 +2280,7 @@ impl TypeChecker {
             
             // 配列パターン
             ExpressionKind::ArrayLiteral(elements) => {
-                if let TypeKind::Array(elem_type) = &expr_type.kind {
+                if let TypeKind::Array(elem_type, _) = &expr_type.kind {
                     // 各要素のパターンマッチングを再帰的にチェック
                     for (i, pattern_elem) in elements.iter().enumerate() {
                         self.check_pattern_compatibility(pattern_elem, elem_type, pattern_elem.location.clone())?;

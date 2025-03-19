@@ -149,20 +149,17 @@ pub mod time {
         
         /// 経過時間をミリ秒で取得
         pub fn elapsed_ms(&self) -> u64 {
-            let elapsed = self.inner.elapsed();
-            elapsed.as_secs() * 1000 + elapsed.subsec_millis() as u64
+            self.inner.elapsed().as_millis() as u64
         }
         
         /// 経過時間をマイクロ秒で取得
         pub fn elapsed_us(&self) -> u64 {
-            let elapsed = self.inner.elapsed();
-            elapsed.as_secs() * 1_000_000 + elapsed.subsec_micros() as u64
+            self.inner.elapsed().as_micros() as u64
         }
         
         /// 経過時間をナノ秒で取得
         pub fn elapsed_ns(&self) -> u64 {
-            let elapsed = self.inner.elapsed();
-            elapsed.as_secs() * 1_000_000_000 + elapsed.subsec_nanos() as u64
+            self.inner.elapsed().as_nanos() as u64
         }
     }
     

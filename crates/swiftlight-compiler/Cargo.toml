@@ -17,6 +17,12 @@ parking_lot = "0.12.1"
 dashmap = "5.5.3"
 crossbeam-channel = "0.5.8"
 memmap2 = "0.7.1"
+rayon = "1.8.0"
+num_cpus = "1.16.0"
+
+# シリアライズ/デシリアライズ
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3.3"
 
 # ユーティリティ
 thiserror = { workspace = true }

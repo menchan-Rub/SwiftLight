@@ -5,13 +5,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, Context};
 use semver::Version;
 use sha2::{Sha256, Digest};
+use serde::{Serialize, Deserialize};
+use glob::glob;
 
 use crate::manifest::Manifest;
-use crate::dependency::{Dependency, DependencyType};
+use crate::dependency::{Dependency, DependencyType, DependencySource};
 
 /// バリデーション結果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValidationResult {
+    /// エラー
+    pub errors: Vec<ValidationError>,
     /// 深刻度ごとの問題リスト
     pub issues: HashMap<ValidationSeverity, Vec<ValidationIssue>>,
     /// 検証されたファイル数
@@ -21,7 +25,7 @@ pub struct ValidationResult {
 }
 
 /// バリデーション問題
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationIssue {
     /// 問題コード
     pub code: String,
@@ -34,7 +38,7 @@ pub struct ValidationIssue {
 }
 
 /// バリデーション問題の場所
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationLocation {
     /// ファイルパス
     pub file: Option<PathBuf>,
@@ -45,7 +49,7 @@ pub struct ValidationLocation {
 }
 
 /// バリデーション問題の深刻度
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValidationSeverity {
     /// エラー
     Error,
@@ -55,6 +59,60 @@ pub enum ValidationSeverity {
     Info,
     /// ヒント
     Hint,
+}
+
+/// パッケージバリデータ
+#[derive(Debug)]
+pub struct PackageValidator {
+    /// バリデーションルール
+    rules: Vec<Box<dyn ValidationRule>>,
+}
+
+impl PackageValidator {
+    /// 新しいバリデータを作成
+    pub fn new() -> Self {
+        Self {
+            rules: Vec::new(),
+        }
+    }
+
+    /// バリデーションルールを追加
+    pub fn add_rule<R: ValidationRule + 'static>(&mut self, rule: R) {
+        self.rules.push(Box::new(rule));
+    }
+
+    /// パッケージを検証
+    pub fn validate(&self, manifest: &Manifest) -> ValidationResult {
+        let mut result = ValidationResult::default();
+
+        for rule in &self.rules {
+            if let Err(e) = rule.validate(manifest) {
+                result.errors.push(ValidationError {
+                    rule_name: rule.name().to_string(),
+                    message: e.to_string(),
+                });
+            }
+        }
+
+        result
+    }
+}
+
+/// バリデーションルール
+pub trait ValidationRule: std::fmt::Debug {
+    /// ルール名を取得
+    fn name(&self) -> &str;
+    /// パッケージを検証
+    fn validate(&self, manifest: &Manifest) -> Result<()>;
+}
+
+/// バリデーションエラー
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationError {
+    /// ルール名
+    pub rule_name: String,
+    /// エラーメッセージ
+    pub message: String,
 }
 
 impl ValidationResult {
@@ -67,6 +125,7 @@ impl ValidationResult {
         issues.insert(ValidationSeverity::Hint, Vec::new());
         
         ValidationResult {
+            errors: Vec::new(),
             issues,
             files_checked: 0,
             completed: false,
@@ -80,7 +139,7 @@ impl ValidationResult {
 
     /// エラーがあるか
     pub fn has_errors(&self) -> bool {
-        !self.issues[&ValidationSeverity::Error].is_empty()
+        !self.errors.is_empty()
     }
 
     /// 警告があるか
@@ -95,7 +154,7 @@ impl ValidationResult {
 
     /// エラー数を取得
     pub fn error_count(&self) -> usize {
-        self.issues[&ValidationSeverity::Error].len()
+        self.errors.len()
     }
 
     /// 警告数を取得

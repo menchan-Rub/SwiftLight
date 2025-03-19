@@ -21,8 +21,9 @@ pub mod build_plan;
 pub use self::compiler::Driver;
 pub use self::config::CompilerConfig;
 pub use self::options::CompileOptions;
-pub use self::diagnostics::{DiagnosticEmitter, Severity};
-pub use self::pipeline::{CompilationStage, Pipeline};
+// 一時的にコメントアウト - 必要に応じて診断モジュールを実装後に復活させる
+// pub use self::diagnostics::{DiagnosticEmitter, Severity};
+// pub use self::pipeline::{CompilationStage, Pipeline};
 pub use self::cache::CompilationCache;
 pub use self::dependency::{DependencyGraph, DependencyNode, DependencyType};
 pub use self::incremental::{IncrementalCompilationManager, ChangeDetector, ChangeImpactAnalyzer};
@@ -35,9 +36,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use crate::frontend::error::{CompilerError, ErrorKind, Result};
-use crate::frontend::source::SourceFile;
+// 一時的にコメントアウト - frontend/source モジュールを作成後に復活させる
+// use crate::frontend::source::SourceFile;
 use crate::middleend::ir::Module;
-use crate::backend::target::TargetMachine;
+// 一時的にコメントアウト - backend/target モジュールを作成後に復活させる
+// use crate::backend::target::TargetMachine;
+use crate::utils::{
+    logger::Logger,
+    error_handling::BasicErrorHandler,
+    parallel::ThreadPool,
+};
 
 /// コンパイル処理のエントリーポイント
 /// 
@@ -67,26 +75,20 @@ use crate::backend::target::TargetMachine;
 /// let result = compile("src/main.sl", "output/main", options);
 /// ```
 pub fn compile<P: AsRef<Path>>(source_path: P, output_path: P, options: CompileOptions) -> Result<()> {
-    let start_time = Instant::now();
+    let mut driver = compiler::Driver::new(options);
+    let result = driver.compile(source_path, output_path)?;
     
-    // ドライバーを初期化
-    let mut driver = Driver::new(options);
-    
-    // コンパイルを実行
-    let result = driver.compile(source_path, output_path);
-    
-    // コンパイル時間の計測と記録
-    let elapsed = start_time.elapsed();
-    if driver.config().verbose {
-        log::info!("コンパイル完了: {:?}", elapsed);
+    // エラーがあれば失敗を返す
+    if result.has_errors() {
+        return Err(CompilerError::new(
+            ErrorKind::CompilationFailed,
+            format!("コンパイルに失敗しました: {} エラー, {} 警告", 
+                    result.stats.error_count, result.stats.warning_count),
+            None
+        ));
     }
     
-    // コンパイル統計情報の収集
-    if driver.config().collect_stats {
-        record_compilation_stats(&driver, elapsed);
-    }
-    
-    result
+    Ok(())
 }
 
 /// 複数のソースファイルをコンパイルして一つの出力ファイルを生成
@@ -115,86 +117,74 @@ pub fn compile<P: AsRef<Path>>(source_path: P, output_path: P, options: CompileO
 /// let result = compile_multiple(&source_files, "output/program", options);
 /// ```
 pub fn compile_multiple<P: AsRef<Path>>(source_paths: &[P], output_path: P, options: CompileOptions) -> Result<()> {
-    let start_time = Instant::now();
+    let mut driver = compiler::Driver::new(options.clone());
     
-    // ドライバーを初期化
-    let mut driver = Driver::new(options);
-    
-    // 並列コンパイルが有効な場合
-    if driver.config().parallel_compilation {
+    // 並列コンパイルを使用する場合
+    if options.thread_count.unwrap_or(1) > 1 {
         return compile_multiple_parallel(source_paths, output_path, &mut driver);
     }
     
-    // 複数ファイルのコンパイルを実行（シーケンシャル）
-    let result = driver.compile_multiple(source_paths, output_path);
+    let result = driver.compile_multiple(source_paths, output_path)?;
     
-    // コンパイル時間の計測と記録
-    let elapsed = start_time.elapsed();
-    if driver.config().verbose {
-        log::info!("複数ファイルのコンパイル完了: {:?}", elapsed);
+    // エラーがあれば失敗を返す
+    if result.has_errors() {
+        return Err(CompilerError::new(
+            ErrorKind::CompilationFailed,
+            format!("コンパイルに失敗しました: {} エラー, {} 警告", 
+                    result.stats.error_count, result.stats.warning_count),
+            None
+        ));
     }
     
-    // コンパイル統計情報の収集
-    if driver.config().collect_stats {
-        record_compilation_stats(&driver, elapsed);
-    }
-    
-    result
+    Ok(())
 }
 
-/// 複数ソースファイルの並列コンパイル実装
+/// 複数ファイルの並列コンパイル
 fn compile_multiple_parallel<P: AsRef<Path>>(
     source_paths: &[P], 
     output_path: P, 
-    driver: &mut Driver
+    driver: &mut compiler::Driver
 ) -> Result<()> {
-    let start_time = Instant::now();
+    // ここで並列コンパイルの実装
+    // 依存関係グラフの構築
+    driver.build_dependency_graph(source_paths)?;
     
-    // ソースファイルの依存関係を解析
-    let dependency_graph = driver.analyze_dependencies(source_paths)?;
+    // コンパイル順序の取得
+    let compilation_order = driver.get_compilation_order()?;
     
-    // 依存関係に基づいてコンパイル順序を決定
-    let compilation_order = dependency_graph.topological_sort()?;
+    // 並列処理用のスレッドプールを初期化
+    let thread_count = driver.options().thread_count.unwrap_or_else(num_cpus::get);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build()
+        .map_err(|e| CompilerError::new(
+            ErrorKind::Internal,
+            format!("スレッドプールの作成に失敗しました: {}", e),
+            None
+        ))?;
     
-    // 並列処理可能なファイルグループを特定
-    let compilation_groups = dependency_graph.parallel_groups();
+    // 各ファイルを並列コンパイル
+    let results = Arc::new(Mutex::new(Vec::new()));
     
-    // コンパイル結果を保持する共有コンテナ
-    let compiled_modules = Arc::new(Mutex::new(Vec::with_capacity(source_paths.len())));
-    
-    // 各グループを順番に処理し、グループ内は並列処理
-    for group in compilation_groups {
-        group.par_iter().try_for_each(|file_index| {
-            let source_path = &source_paths[*file_index];
-            let module_result = driver.compile_to_ir(source_path)?;
+    pool.install(|| {
+        compilation_order.par_iter().try_for_each(|module_name| -> Result<()> {
+            let source_path = driver.get_module_source_path(module_name)?;
+            let module_result = driver.compile_module(&source_path, module_name)?;
             
-            // 成功したモジュールを共有コンテナに追加
-            if let Ok(module) = module_result {
-                let mut modules = compiled_modules.lock().unwrap();
-                modules.push(module);
-            }
+            let mut results_guard = results.lock().unwrap();
+            results_guard.push(module_result);
             
-            Ok::<_, CompilerError>(())
-        })?;
-    }
+            Ok(())
+        })
+    })?;
     
-    // すべてのモジュールをリンク
-    let modules = compiled_modules.lock().unwrap();
-    let linked_module = driver.link_modules(&modules)?;
+    // 最終リンク
+    let modules = results.lock().unwrap();
+    driver.link_modules(&modules, &output_path)?;
     
-    // 最終的なコード生成
-    driver.generate_code(&linked_module, output_path)?;
-    
-    // コンパイル時間の計測と記録
-    let elapsed = start_time.elapsed();
-    if driver.config().verbose {
-        log::info!("並列コンパイル完了: {:?}", elapsed);
-    }
-    
-    // コンパイル統計情報の収集
-    if driver.config().collect_stats {
-        record_compilation_stats(driver, elapsed);
-    }
+    // コンパイル統計を記録
+    let elapsed = driver.total_time();
+    record_compilation_stats(driver, elapsed);
     
     Ok(())
 }
@@ -213,38 +203,44 @@ fn compile_multiple_parallel<P: AsRef<Path>>(
 /// 
 /// * `Result<()>` - 成功時は`()`、失敗時はエラー
 pub fn build_project<P: AsRef<Path>>(project_path: P, options: CompileOptions) -> Result<()> {
-    let start_time = Instant::now();
+    // プロジェクト設定の読み込み
+    let config_path = project_path.as_ref().join("swiftlight.toml");
+    let config = if config_path.exists() {
+        config::load_project_config(&config_path)?
+    } else {
+        config::default_project_config()
+    };
     
-    // プロジェクト設定を読み込み
-    let project_config = config::ProjectConfig::load(project_path.as_ref())?;
+    // ソースファイルの検索
+    let source_dir = project_path.as_ref().join("src");
+    let source_files = find_source_files(&source_dir)?;
     
-    // ドライバーを初期化（プロジェクト設定を反映）
-    let mut driver = Driver::new(options.merge_with_project(&project_config));
+    // 出力ディレクトリの作成
+    let output_dir = project_path.as_ref().join("target");
+    std::fs::create_dir_all(&output_dir)?;
     
-    // プロジェクトのビルドを実行
-    let result = driver.build_project(&project_config);
+    // 出力ファイルパスの決定
+    let output_file = output_dir.join(config.output_name);
     
-    // ビルド時間の計測と記録
-    let elapsed = start_time.elapsed();
-    if driver.config().verbose {
-        log::info!("プロジェクトビルド完了: {:?}", elapsed);
-    }
-    
-    result
+    // コンパイル実行
+    compile_multiple(&source_files, output_file, options)
 }
 
 /// コンパイル統計情報を記録
-fn record_compilation_stats(driver: &Driver, elapsed: Duration) {
-    let stats = driver.get_compilation_stats();
+fn record_compilation_stats(driver: &compiler::Driver, elapsed: Duration) {
+    let stats = driver.get_stats();
     
-    log::info!("コンパイル統計:");
-    log::info!("  総時間: {:?}", elapsed);
-    log::info!("  パース時間: {:?}", stats.parse_time);
-    log::info!("  型チェック時間: {:?}", stats.type_check_time);
-    log::info!("  最適化時間: {:?}", stats.optimization_time);
-    log::info!("  コード生成時間: {:?}", stats.codegen_time);
-    log::info!("  メモリ使用量: {} MB", stats.memory_usage_mb);
-    log::info!("  生成コードサイズ: {} KB", stats.output_size_kb);
+    println!("===== コンパイル統計 =====");
+    println!("合計時間: {:?}", elapsed);
+    println!("ファイル数: {}", stats.file_count);
+    println!("合計行数: {}", stats.total_lines);
+    println!("字句解析時間: {:?}", stats.lexing_time);
+    println!("構文解析時間: {:?}", stats.parsing_time);
+    println!("意味解析時間: {:?}", stats.semantic_time);
+    println!("コード生成時間: {:?}", stats.codegen_time);
+    println!("キャッシュヒット: {}", stats.cache_hits);
+    println!("キャッシュミス: {}", stats.cache_misses);
+    println!("ピークメモリ使用量: {} MB", stats.peak_memory_usage / (1024 * 1024));
 }
 
 /// 指定されたソースコードの静的解析を実行
@@ -260,7 +256,7 @@ fn record_compilation_stats(driver: &Driver, elapsed: Duration) {
 /// 
 /// * `Result<Vec<diagnostics::Diagnostic>>` - 診断結果のリスト
 pub fn analyze<P: AsRef<Path>>(source_path: P, options: CompileOptions) -> Result<Vec<diagnostics::Diagnostic>> {
-    let mut driver = Driver::new(options);
+    let mut driver = compiler::Driver::new(options);
     driver.analyze(source_path)
 }
 
@@ -278,6 +274,40 @@ pub fn analyze<P: AsRef<Path>>(source_path: P, options: CompileOptions) -> Resul
 /// 
 /// * `Result<()>` - 成功時は`()`、失敗時はエラー
 pub fn generate_docs<P: AsRef<Path>>(source_paths: &[P], output_dir: P, options: CompileOptions) -> Result<()> {
-    let mut driver = Driver::new(options);
+    let mut driver = compiler::Driver::new(options);
     driver.generate_docs(source_paths, output_dir)
+}
+
+// ユーティリティ関数
+
+/// ディレクトリ内のSwiftLightソースファイルを再帰的に検索
+fn find_source_files<P: AsRef<Path>>(dir: P) -> Result<Vec<PathBuf>> {
+    let dir = dir.as_ref();
+    let mut result = Vec::new();
+    
+    if !dir.exists() || !dir.is_dir() {
+        return Err(CompilerError::new(
+            ErrorKind::IO,
+            format!("ディレクトリが存在しません: {}", dir.display()),
+            None
+        ));
+    }
+    
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_dir() {
+            // 再帰的に検索
+            let mut sub_files = find_source_files(path)?;
+            result.append(&mut sub_files);
+        } else if let Some(ext) = path.extension() {
+            // SwiftLightソースファイル (.sl) のみを追加
+            if ext == "sl" {
+                result.push(path);
+            }
+        }
+    }
+    
+    Ok(result)
 }

@@ -4,6 +4,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, Context};
 use serde::{Serialize, Deserialize};
+use sha2::{Sha256, Digest};
+use log::{info, warn, debug};
+use chrono::{DateTime, Utc, FixedOffset};
 
 use crate::config::Config;
 use crate::manifest::Manifest;
@@ -55,6 +58,17 @@ pub struct OfflineConfig {
     pub use_mirrors: bool,
     /// ローカルレジストリの使用
     pub use_local_registry: bool,
+}
+
+/// オフラインモード
+#[derive(Debug, Clone)]
+pub struct OfflineMode {
+    /// オフラインモードが有効かどうか
+    pub enabled: bool,
+    /// キャッシュディレクトリ
+    pub cache_dir: PathBuf,
+    /// キャッシュ設定
+    pub cache: OfflineCache,
 }
 
 impl OfflineCache {
@@ -149,47 +163,108 @@ impl OfflineCache {
         Ok(total_size)
     }
 
-    /// キャッシュのクリーンアップ（指定サイズ以下にする）
+    /// キャッシュのクリーンアップ
     pub fn cleanup(&mut self, max_size_mb: usize) -> Result<Vec<String>> {
-        let max_size = max_size_mb * 1024 * 1024;
-        let current_size = self.get_cache_size()?;
+        let max_size: u64 = (max_size_mb as u64) * 1024 * 1024; // MBをバイトに変換
+        let mut current_size = self.get_cache_size()?;
         
-        if current_size <= max_size as u64 {
-            return Ok(Vec::new());  // サイズ内なので何もしない
+        // キャッシュサイズが制限内の場合は何もしない
+        if current_size <= max_size {
+            return Ok(Vec::new());
         }
         
-        // 日付でソートしたエントリを取得
+        // 古い順にソート
         let mut entries: Vec<_> = self.entries.iter().collect();
-        entries.sort_by(|a, b| {
-            let a_date = chrono::DateTime::parse_from_rfc3339(&a.1.cached_at).unwrap_or_else(|_| chrono::DateTime::from_timestamp(0, 0).unwrap());
-            let b_date = chrono::DateTime::parse_from_rfc3339(&b.1.cached_at).unwrap_or_else(|_| chrono::DateTime::from_timestamp(0, 0).unwrap());
-            a_date.cmp(&b_date)
+        entries.sort_by(|(_, a), (_, b)| {
+            let a_date = chrono::DateTime::parse_from_rfc3339(&a.cached_at)
+                .unwrap_or_else(|_| chrono::DateTime::parse_from_rfc3339("1970-01-01T00:00:00Z").unwrap());
+            let b_date = chrono::DateTime::parse_from_rfc3339(&b.cached_at)
+                .unwrap_or_else(|_| chrono::DateTime::parse_from_rfc3339("1970-01-01T00:00:00Z").unwrap());
+            a_date.cmp(&b_date) // 昇順（古い日付が先）
         });
         
         let mut removed = Vec::new();
-        let mut current_size = current_size;
+        let mut keys_to_remove = Vec::new();
         
-        // 古いエントリから削除していく
+        // キャッシュサイズが上限を下回るまで削除
         for (key, entry) in entries {
-            if current_size <= max_size as u64 {
+            if current_size <= max_size {
                 break;
             }
             
-            let full_path = self.cache_path.join(&entry.file_path);
-            if full_path.exists() {
-                let file_size = fs::metadata(&full_path)?.len();
-                fs::remove_file(&full_path)?;
-                current_size -= file_size;
+            // ファイルサイズを取得
+            let file_path = &entry.file_path;
+            if let Ok(metadata) = fs::metadata(file_path) {
+                let file_size = metadata.len();
                 
-                self.entries.remove(key);
-                removed.push(format!("{}-{}", entry.name, entry.version));
+                // ファイルを削除
+                if let Err(e) = fs::remove_file(file_path) {
+                    eprintln!("キャッシュファイルの削除に失敗しました: {}", e);
+                    continue;
+                }
+                
+                // 現在のサイズを更新
+                current_size = if current_size >= file_size {
+                    current_size - file_size
+                } else {
+                    0
+                };
+                
+                // エントリをコピーして保存
+                let entry_to_remove = entry.clone();
+                removed.push(format!("{}-{}", entry_to_remove.name, entry_to_remove.version));
+                
+                // 削除するキーを保存
+                keys_to_remove.push(key.clone());
             }
+        }
+        
+        // エントリを一括削除
+        for key in keys_to_remove {
+            self.entries.remove(&key);
         }
         
         self.last_updated = chrono::Utc::now().to_rfc3339();
         self.save()?;
         
         Ok(removed)
+    }
+}
+
+impl OfflineMode {
+    /// 新しいオフラインモードを作成
+    pub fn new(cache_dir: PathBuf) -> Result<Self> {
+        let cache = if cache_dir.exists() {
+            OfflineCache::load(&cache_dir)?
+        } else {
+            OfflineCache::new(cache_dir.clone())
+        };
+
+        Ok(Self {
+            enabled: false,
+            cache_dir,
+            cache,
+        })
+    }
+
+    /// オフラインモードを有効化
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// オフラインモードを無効化
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// オフラインモードが有効かどうかを返します
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// キャッシュを更新
+    pub fn update_cache(&mut self) -> Result<()> {
+        self.cache.save()
     }
 }
 
@@ -225,7 +300,7 @@ pub fn add_package_to_cache(
     let mut file = File::open(package_path)
         .with_context(|| format!("パッケージファイルを開けません: {}", package_path.display()))?;
     
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = Sha256::new();
     let mut buffer = [0; 8192];
     
     loop {
@@ -414,4 +489,33 @@ pub fn build_project_offline(
     crate::build::build_package(project_dir, &options, config)?;
     
     Ok(())
+}
+
+/// キャッシュに保存されたパッケージをソートする（新しいものが優先）
+pub fn sort_cached_packages(cache: &mut OfflineCache) {
+    // エントリを日付でソート
+    let mut entries: Vec<_> = cache.entries.iter().collect();
+    entries.sort_by(|(_, a), (_, b)| {
+        // RFC3339からDateTimeを解析
+        let a_date = match chrono::DateTime::parse_from_rfc3339(&a.cached_at) {
+            Ok(dt) => dt,
+            Err(_) => return std::cmp::Ordering::Equal, // エラーの場合は等しいとみなす
+        };
+        
+        let b_date = match chrono::DateTime::parse_from_rfc3339(&b.cached_at) {
+            Ok(dt) => dt,
+            Err(_) => return std::cmp::Ordering::Equal, // エラーの場合は等しいとみなす
+        };
+        
+        b_date.cmp(&a_date) // 降順（新しい日付が先）
+    });
+    
+    // ソートした結果に基づいて新しいHashMapを作成
+    let mut sorted_entries = HashMap::new();
+    for (key, entry) in entries {
+        sorted_entries.insert(key.clone(), entry.clone());
+    }
+    
+    // 古いエントリをソートされた結果で置き換え
+    cache.entries = sorted_entries;
 } 

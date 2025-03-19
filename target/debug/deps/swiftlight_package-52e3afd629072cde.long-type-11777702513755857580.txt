@@ -1,0 +1,1 @@
+std::result::Result<toml::map::Map<std::string::String, toml::Value>, PackageError>
