@@ -409,7 +409,7 @@ impl TypeChecker {
         }
         
         // 文の型チェック（プログラム本体のステートメント）
-        for stmt in &program.statements {
+        for stmt in &program.declarations {
             // 統計情報を更新
             self.result.statistics.statements_checked += 1;
             
@@ -452,15 +452,15 @@ impl TypeChecker {
     /// 宣言の型チェック
     fn check_declaration(&mut self, declaration: &Declaration) -> Result<()> {
         match &declaration.kind {
-            DeclarationKind::Variable(var_decl) => self.check_variable_declaration(var_decl, declaration)?,
-            DeclarationKind::Constant(const_decl) => self.check_constant_declaration(const_decl, declaration)?,
-            DeclarationKind::Function(func_decl) => self.check_function_declaration(func_decl, declaration)?,
-            DeclarationKind::Struct(struct_decl) => self.check_struct_declaration(struct_decl, declaration)?,
-            DeclarationKind::Enum(enum_decl) => self.check_enum_declaration(enum_decl, declaration)?,
-            DeclarationKind::Trait(trait_decl) => self.check_trait_declaration(trait_decl, declaration)?,
-            DeclarationKind::TypeAlias(alias) => self.check_type_alias_declaration(alias, declaration)?,
-            DeclarationKind::Implementation(impl_decl) => self.check_implementation_declaration(impl_decl, declaration)?,
-            DeclarationKind::Import(import) => self.check_import_declaration(import, declaration)?,
+            DeclarationKind::VariableDecl(var_decl) => self.check_variable_declaration(var_decl, declaration)?,
+            DeclarationKind::ConstantDecl(const_decl) => self.check_constant_declaration(const_decl, declaration)?,
+            DeclarationKind::FunctionDecl(func_decl) => self.check_function_declaration(func_decl, declaration)?,
+            DeclarationKind::StructDecl(struct_decl) => self.check_struct_declaration(struct_decl, declaration)?,
+            DeclarationKind::EnumDecl(enum_decl) => self.check_enum_declaration(enum_decl, declaration)?,
+            DeclarationKind::TraitDecl(trait_decl) => self.check_trait_declaration(trait_decl, declaration)?,
+            DeclarationKind::TypeAliasDecl(alias) => self.check_type_alias_declaration(alias, declaration)?,
+            DeclarationKind::ImplementationDecl(impl_decl) => self.check_implementation_declaration(impl_decl, declaration)?,
+            DeclarationKind::ImportDecl(import) => self.check_import_declaration(import, declaration)?,
         }
         
         Ok(())
@@ -521,11 +521,11 @@ impl TypeChecker {
     fn is_redundant_annotation(&self, declared_type: &TypeAnnotation, inferred_type: &TypeAnnotation) -> bool {
         match (&declared_type.kind, &inferred_type.kind) {
             // 基本型同士で完全に一致する場合は冗長
-            (TypeKind::Int, TypeKind::Int) |
-            (TypeKind::Float, TypeKind::Float) |
-            (TypeKind::Bool, TypeKind::Bool) |
-            (TypeKind::String, TypeKind::String) |
-            (TypeKind::Char, TypeKind::Char) => true,
+            (TypeKind::Primitive(PrimitiveType::Int), TypeKind::Primitive(PrimitiveType::Int)) |
+            (TypeKind::Primitive(PrimitiveType::Float), TypeKind::Primitive(PrimitiveType::Float)) |
+            (TypeKind::Primitive(PrimitiveType::Bool), TypeKind::Primitive(PrimitiveType::Bool)) |
+            (TypeKind::Primitive(PrimitiveType::String), TypeKind::Primitive(PrimitiveType::String)) |
+            (TypeKind::Primitive(PrimitiveType::Char), TypeKind::Primitive(PrimitiveType::Char)) => true,
             
             // 名前付き型が完全に一致する場合は冗長
             (TypeKind::Named(name1), TypeKind::Named(name2)) if name1.name == name2.name => true,
@@ -632,7 +632,7 @@ impl TypeChecker {
             // 戻り値の型注釈がなければVoid型
             TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Void,
+                kind: TypeKind::Primitive(PrimitiveType::Void),
                 location: None,
             }
         };
@@ -669,7 +669,7 @@ impl TypeChecker {
     // 関数の全パスが適切な戻り値を持つことを検証
     fn verify_return_paths(&self, body: &Statement, expected_return_type: &TypeAnnotation, location: Option<SourceLocation>) -> Result<()> {
         // Void型の関数は戻り値チェック不要
-        if matches!(expected_return_type.kind, TypeKind::Void) {
+        if matches!(expected_return_type.kind, TypeKind::Primitive(PrimitiveType::Void)) {
             return Ok(());
         }
         
@@ -689,10 +689,10 @@ impl TypeChecker {
     fn always_returns(&self, stmt: &Statement) -> bool {
         match &stmt.kind {
             // 式文は値を返さない
-            StatementKind::Expression(_) => false,
+            StatementKind::ExpressionStmt(_) => false,
             
             // 宣言は値を返さない
-            StatementKind::Declaration(_) => false,
+            StatementKind::DeclarationStmt(_) => false,
             
             // ブロックは最後の文が値を返すなら値を返す
             StatementKind::Block(statements) => {
@@ -700,23 +700,23 @@ impl TypeChecker {
             },
             
             // if文は両方の分岐が値を返すなら値を返す
-            StatementKind::If(_, then_branch, else_branch) => {
+            StatementKind::IfStmt(_, then_branch, else_branch) => {
                 self.always_returns(then_branch) && 
                 else_branch.as_ref().map_or(false, |e| self.always_returns(e))
             },
             
             // while文はループが必ず実行されるなら値を返す（保守的に評価してfalse）
-            StatementKind::While(_, _) => false,
+            StatementKind::WhileStmt(_, _) => false,
             
             // for文はループが必ず実行されるなら値を返す（保守的に評価してfalse）
-            StatementKind::For(_, _, _, _) => false,
-            StatementKind::ForEach(_, _, _) => false,
+            StatementKind::ForStmt(_, _, _, _) => false,
+            StatementKind::ForStmtEach(_, _, _) => false,
             
             // return文は値を返す
-            StatementKind::Return(_) => true,
+            StatementKind::ReturnStmt(_) => true,
             
             // break/continue文は値を返さない
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::BreakStmt | StatementKind::ContinueStmt => false,
         }
     }
     
@@ -724,12 +724,12 @@ impl TypeChecker {
     fn initialize_builtin_types(&mut self) {
         // 基本型（Int, Float, Bool, String, Char, Void）を登録
         let primitive_types = [
-            ("Int", TypeKind::Int),
-            ("Float", TypeKind::Float),
-            ("Bool", TypeKind::Bool),
-            ("String", TypeKind::String),
-            ("Char", TypeKind::Char),
-            ("Void", TypeKind::Void),
+            ("Int", TypeKind::Primitive(PrimitiveType::Int)),
+            ("Float", TypeKind::Primitive(PrimitiveType::Float)),
+            ("Bool", TypeKind::Primitive(PrimitiveType::Bool)),
+            ("String", TypeKind::Primitive(PrimitiveType::String)),
+            ("Char", TypeKind::Primitive(PrimitiveType::Char)),
+            ("Void", TypeKind::Primitive(PrimitiveType::Void)),
         ];
         
         for (name, kind) in primitive_types {
@@ -750,7 +750,7 @@ impl TypeChecker {
         // 構造体、列挙型、トレイト、型エイリアスなどの型宣言を収集
         for decl in &program.declarations {
             match &decl.kind {
-                DeclarationKind::Struct(struct_decl) => {
+                DeclarationKind::StructDecl(struct_decl) => {
                     // 構造体の型情報を仮登録（フィールド解決は後で行う）
                     let type_id = decl.id;
                     let struct_name = &struct_decl.name.name;
@@ -763,7 +763,7 @@ impl TypeChecker {
                     
                     self.result.node_types.insert(type_id, type_ann);
                 },
-                DeclarationKind::Enum(enum_decl) => {
+                DeclarationKind::EnumDecl(enum_decl) => {
                     // 列挙型の型情報を仮登録
                     let type_id = decl.id;
                     let enum_name = &enum_decl.name.name;
@@ -776,7 +776,7 @@ impl TypeChecker {
                     
                     self.result.node_types.insert(type_id, type_ann);
                 },
-                DeclarationKind::Trait(trait_decl) => {
+                DeclarationKind::TraitDecl(trait_decl) => {
                     // トレイトの型情報を仮登録
                     let type_id = decl.id;
                     let trait_name = &trait_decl.name.name;
@@ -789,7 +789,7 @@ impl TypeChecker {
                     
                     self.result.node_types.insert(type_id, type_ann);
                 },
-                DeclarationKind::TypeAlias(alias) => {
+                DeclarationKind::TypeAliasDecl(alias) => {
                     // 型エイリアスの型情報を仮登録
                     // エイリアス先の型はまだ解決しない（循環参照の可能性があるため）
                     let type_id = decl.id;
@@ -999,7 +999,7 @@ impl TypeChecker {
                     // 戻り値がない場合、Void型と一致するかチェック
                     let void_type = TypeAnnotation {
                         id: ast::generate_id(),
-                        kind: TypeKind::Void,
+                        kind: TypeKind::Primitive(PrimitiveType::Void),
                         location: None,
                     };
                     
@@ -1034,8 +1034,8 @@ impl TypeChecker {
             (TypeKind::Any, _) | (_, TypeKind::Any) => true,
             
             // 整数型と浮動小数点型の互換性
-            (TypeKind::Int, TypeKind::Float) => false, // 暗黙的な型変換は許可しない
-            (TypeKind::Float, TypeKind::Int) => false,
+            (TypeKind::Primitive(PrimitiveType::Int), TypeKind::Primitive(PrimitiveType::Float)) => false, // 暗黙的な型変換は許可しない
+            (TypeKind::Primitive(PrimitiveType::Float), TypeKind::Primitive(PrimitiveType::Int)) => false,
             
             // Optional型の互換性
             (TypeKind::Optional(expected_inner), inner_type) => {
@@ -1118,12 +1118,12 @@ impl TypeChecker {
     // 型を文字列に変換
     fn type_to_string(&self, typ: &TypeAnnotation) -> String {
         match &typ.kind {
-            TypeKind::Int => "Int".to_string(),
-            TypeKind::Float => "Float".to_string(),
-            TypeKind::Bool => "Bool".to_string(),
-            TypeKind::String => "String".to_string(),
-            TypeKind::Char => "Char".to_string(),
-            TypeKind::Void => "Void".to_string(),
+            TypeKind::Primitive(PrimitiveType::Int) => "Int".to_string(),
+            TypeKind::Primitive(PrimitiveType::Float) => "Float".to_string(),
+            TypeKind::Primitive(PrimitiveType::Bool) => "Bool".to_string(),
+            TypeKind::Primitive(PrimitiveType::String) => "String".to_string(),
+            TypeKind::Primitive(PrimitiveType::Char) => "Char".to_string(),
+            TypeKind::Primitive(PrimitiveType::Void) => "Void".to_string(),
             TypeKind::Never => "Never".to_string(),
             TypeKind::Any => "Any".to_string(),
             
@@ -1287,7 +1287,7 @@ impl TypeChecker {
     // トレイトのメソッド情報を収集
     fn collect_trait_methods(&mut self, program: &Program) -> Result<()> {
         for decl in &program.declarations {
-            if let DeclarationKind::Trait(trait_decl) = &decl.kind {
+            if let DeclarationKind::TraitDecl(trait_decl) = &decl.kind {
                 let trait_id = decl.id;
                 let mut methods = HashMap::new();
                 
@@ -1306,7 +1306,7 @@ impl TypeChecker {
                     } else {
                         TypeAnnotation {
                             id: ast::generate_id(),
-                            kind: TypeKind::Void,
+                            kind: TypeKind::Primitive(PrimitiveType::Void),
                             location: None,
                         }
                     };
@@ -1422,7 +1422,7 @@ impl TypeChecker {
                 } else {
                     TypeAnnotation {
                         id: ast::generate_id(),
-                        kind: TypeKind::Void,
+                        kind: TypeKind::Primitive(PrimitiveType::Void),
                         location: None,
                     }
                 };
@@ -1527,7 +1527,7 @@ impl TypeChecker {
                 } else {
                     TypeAnnotation {
                         id: ast::generate_id(),
-                        kind: TypeKind::Void,
+                        kind: TypeKind::Primitive(PrimitiveType::Void),
                         location: None,
                     }
                 };
@@ -1563,7 +1563,7 @@ impl TypeChecker {
     fn trait_has_default_implementation(&self, trait_id: NodeId, method_name: &str) -> bool {
         // プログラムフィールドへの参照を修正する必要があるかもしれません
         for decl in &self.name_resolution.program.declarations {
-            if let DeclarationKind::Trait(trait_decl) = &decl.kind {
+            if let DeclarationKind::TraitDecl(trait_decl) = &decl.kind {
                 if decl.id == trait_id {
                     for method in &trait_decl.methods {
                         if method.name.name == method_name {
@@ -1612,7 +1612,7 @@ impl TypeChecker {
             } else {
                 TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Void,
+                    kind: TypeKind::Primitive(PrimitiveType::Void),
                     location: None,
                 }
             };
@@ -1700,12 +1700,12 @@ impl TypeChecker {
         let index_type = self.check_expression(index)?;
         
         // インデックスが整数型であることを確認
-        if !matches!(index_type.kind, TypeKind::Int) {
+        if !matches!(index_type.kind, TypeKind::Primitive(PrimitiveType::Int)) {
             return Err(self.type_error(
                 "配列のインデックスは整数型である必要があります",
                 &TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Int,
+                    kind: TypeKind::Primitive(PrimitiveType::Int),
                     location: None,
                 },
                 &index_type,
@@ -1719,11 +1719,11 @@ impl TypeChecker {
                 // 配列の要素型を返す
                 Ok(element_type.as_ref().clone())
             },
-            TypeKind::String => {
+            TypeKind::Primitive(PrimitiveType::String) => {
                 // 文字列のインデックスアクセスは文字を返す
                 Ok(TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Char,
+                    kind: TypeKind::Primitive(PrimitiveType::Char),
                     location: None,
                 })
             },
@@ -1772,7 +1772,7 @@ impl TypeChecker {
                     location: None,
                 }), Box::new(TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Int,
+                    kind: TypeKind::Primitive(PrimitiveType::Int),
                     location: None,
                 })),
                 location: None,
@@ -1799,7 +1799,7 @@ impl TypeChecker {
             id: ast::generate_id(),
             kind: TypeKind::Array(Box::new(first_type), Box::new(TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Int,
+                kind: TypeKind::Primitive(PrimitiveType::Int),
                 location: None,
             })),
             location: None,
@@ -1978,12 +1978,12 @@ impl TypeChecker {
             (_, _, _) if expr_type.kind == resolved_target.kind => true,
             
             // 数値型間のキャスト
-            (_, TypeKind::Int, TypeKind::Float) => true,
-            (_, TypeKind::Float, TypeKind::Int) => true,
+            (_, TypeKind::Primitive(PrimitiveType::Int), TypeKind::Primitive(PrimitiveType::Float)) => true,
+            (_, TypeKind::Primitive(PrimitiveType::Float), TypeKind::Primitive(PrimitiveType::Int)) => true,
             
             // 厳格モードでない場合に許可されるキャスト
-            (CastSafetyLevel::Standard | CastSafetyLevel::Relaxed, TypeKind::Int, TypeKind::Char) => true,
-            (CastSafetyLevel::Standard | CastSafetyLevel::Relaxed, TypeKind::Char, TypeKind::Int) => true,
+            (CastSafetyLevel::Standard | CastSafetyLevel::Relaxed, TypeKind::Primitive(PrimitiveType::Int), TypeKind::Primitive(PrimitiveType::Char)) => true,
+            (CastSafetyLevel::Standard | CastSafetyLevel::Relaxed, TypeKind::Primitive(PrimitiveType::Char), TypeKind::Primitive(PrimitiveType::Int)) => true,
             
             // 緩和モードでのみ許可されるキャスト
             (CastSafetyLevel::Relaxed, TypeKind::Any, _) => true,
@@ -2036,13 +2036,13 @@ impl TypeChecker {
         let body_type = if let StatementKind::Block(stmts) = &body.kind {
             let mut last_expr_type = TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Void,
+                kind: TypeKind::Primitive(PrimitiveType::Void),
                 location: None,
             };
             
             for stmt in stmts {
                 // 式文の場合は型を記録
-                if let StatementKind::Expression(expr) = &stmt.kind {
+                if let StatementKind::ExpressionStmt(expr) = &stmt.kind {
                     last_expr_type = self.check_expression(expr)?;
                 } else {
                     self.check_statement(stmt)?;
@@ -2056,7 +2056,7 @@ impl TypeChecker {
             // 単一文の場合はVoid型を返す
             TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Void,
+                kind: TypeKind::Primitive(PrimitiveType::Void),
                 location: None,
             }
         };
@@ -2090,7 +2090,7 @@ impl TypeChecker {
             // 最終式がなければVoid型
             TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Void,
+                kind: TypeKind::Primitive(PrimitiveType::Void),
                 location: None,
             }
         };
@@ -2107,12 +2107,12 @@ impl TypeChecker {
         let cond_type = self.check_expression(cond)?;
         
         // 条件式はブール型であるべき
-        if !matches!(cond_type.kind, TypeKind::Bool) {
+        if !matches!(cond_type.kind, TypeKind::Primitive(PrimitiveType::Bool)) {
             return Err(self.type_error(
                 "if式の条件部はブール型である必要があります",
                 &TypeAnnotation {
                     id: ast::generate_id(),
-                    kind: TypeKind::Bool,
+                    kind: TypeKind::Primitive(PrimitiveType::Bool),
                     location: None,
                 },
                 &cond_type,
@@ -2130,7 +2130,7 @@ impl TypeChecker {
             // else部がない場合はVoid型
             TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Void,
+                kind: TypeKind::Primitive(PrimitiveType::Void),
                 location: None,
             }
         };
@@ -2173,7 +2173,7 @@ impl TypeChecker {
     
     // 数値型かどうかを判定
     fn is_numeric_type(&self, typ: &TypeAnnotation) -> bool {
-        matches!(typ.kind, TypeKind::Int | TypeKind::Float)
+        matches!(typ.kind, TypeKind::Primitive(PrimitiveType::Int) | TypeKind::Primitive(PrimitiveType::Float))
     }
     
     // 二つの型が比較可能かどうかを判定
@@ -2198,16 +2198,16 @@ impl TypeChecker {
     
     // 数値型の共通型を求める（Int と Float の場合は Float を優先）
     fn common_numeric_type(&self, type1: &TypeAnnotation, type2: &TypeAnnotation) -> Result<TypeAnnotation> {
-        if matches!(type1.kind, TypeKind::Float) || matches!(type2.kind, TypeKind::Float) {
+        if matches!(type1.kind, TypeKind::Primitive(PrimitiveType::Float)) || matches!(type2.kind, TypeKind::Primitive(PrimitiveType::Float)) {
             Ok(TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Float,
+                kind: TypeKind::Primitive(PrimitiveType::Float),
                 location: None,
             })
         } else {
             Ok(TypeAnnotation {
                 id: ast::generate_id(),
-                kind: TypeKind::Int,
+                kind: TypeKind::Primitive(PrimitiveType::Int),
                 location: None,
             })
         }
@@ -2299,7 +2299,7 @@ impl TypeChecker {
             // レンジパターン
             ExpressionKind::Range(start, end) => {
                 // レンジパターンは整数型または文字型とのみマッチ可能
-                if !matches!(expr_type.kind, TypeKind::Int | TypeKind::Char) {
+                if !matches!(expr_type.kind, TypeKind::Primitive(PrimitiveType::Int) | TypeKind::Primitive(PrimitiveType::Char)) {
                     return Err(CompilerError::type_error(
                         format!("レンジパターンは整数型または文字型とのみマッチ可能ですが、型 '{}' が指定されました",
                                 self.type_to_string(expr_type)),

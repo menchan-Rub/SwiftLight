@@ -823,7 +823,7 @@ impl AstFactory {
         let loc = location.or_else(|| expr.location().cloned());
         
         Statement::new(
-            StatementKind::ExpressionStatement(expr),
+            StatementKind::ExpressionStmtStatement(expr),
             self.next_id(),
             loc
         )
@@ -857,7 +857,7 @@ impl AstFactory {
         });
         
         Statement::new(
-            StatementKind::IfStatement {
+            StatementKind::IfStmtStatement {
                 condition,
                 then_branch: Box::new(then_branch),
                 else_branch: else_branch.map(Box::new),
@@ -879,7 +879,7 @@ impl AstFactory {
         });
         
         Statement::new(
-            StatementKind::WhileStatement {
+            StatementKind::WhileStmtStatement {
                 condition,
                 body: Box::new(body),
             },
@@ -900,7 +900,7 @@ impl AstFactory {
         });
         
         Statement::new(
-            StatementKind::ForStatement {
+            StatementKind::ForStmtStatement {
                 variable,
                 iterable,
                 body: Box::new(body),
@@ -915,7 +915,7 @@ impl AstFactory {
         let loc = location.or_else(|| expr.as_ref().and_then(|e| e.location().cloned()));
         
         Statement::new(
-            StatementKind::ReturnStatement(expr),
+            StatementKind::ReturnStmtStatement(expr),
             self.next_id(),
             loc
         )

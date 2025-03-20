@@ -176,7 +176,7 @@ mod tests {
         // 変数宣言 let x = 5
         let var_decl = Declaration {
             id: 1,
-            kind: DeclarationKind::Variable(VariableDeclaration {
+            kind: DeclarationKind::VariableDecl(VariableDeclaration {
                 name: Identifier {
                     id: 2,
                     name: "x".to_string(),
@@ -205,7 +205,7 @@ mod tests {
         // 式文 (x)
         let expr_stmt = Statement {
             id: 6,
-            kind: StatementKind::Expression(var_ref),
+            kind: StatementKind::ExpressionStmt(var_ref),
             location: None,
         };
         
@@ -250,11 +250,11 @@ mod tests {
         
         let undefined_var_stmt = Statement {
             id: 9,
-            kind: StatementKind::Expression(undefined_var_ref),
+            kind: StatementKind::ExpressionStmt(undefined_var_ref),
             location: None,
         };
         
-        program.statements.push(undefined_var_stmt);
+        program.declarations.push(undefined_var_stmt);
         
         let mut analyzer = SemanticAnalyzer::new();
         let result = analyzer.analyze(program);

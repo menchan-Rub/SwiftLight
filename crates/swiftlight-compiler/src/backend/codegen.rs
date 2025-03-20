@@ -1614,7 +1614,7 @@ impl CodeGenerator {
                     let element_ptr = builder.build_gep(*source_ptr, &[context.i32_type().const_int(0, false), idx_value], "arrayidx");
                     
                     // 要素をロード
-                    builder.build_load(element_ptr, "load")
+                    builder.build_load("load", "load")
                 } else {
                     // 通常の変数からロード
                     builder.build_load(*source_ptr, "load")

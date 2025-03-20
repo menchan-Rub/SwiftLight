@@ -7,15 +7,18 @@
 
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
-use log::{info, warn, debug};
-use indicatif::{ProgressBar, ProgressStyle};
+use log::{info, warn, debug, error};
+use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
 use walkdir;
 use env_logger;
-
+use semver::VersionReq;
+use tempfile::tempdir;
 use swiftlight_compiler::{
-    driver::CompileOptions,
+    driver::{CompileOptions, compile},
+    formatter::format_code as format_swiftlight_code,
+    package::{PackageManager, DependencyType},
     VERSION
 };
 
@@ -76,8 +79,8 @@ pub struct BuildArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
     
-    /// 最適化レベル
-    #[arg(short, long, default_value = "2")]
+    /// 最適化レベル (0-3)
+    #[arg(short, long, default_value = "2", value_parser = clap::value_parser!(u8).range(0..=3))]
     pub optimization: u8,
     
     /// 警告をエラーとして扱う
@@ -112,15 +115,15 @@ pub struct RunArgs {
 /// プロジェクト作成サブコマンドの引数
 #[derive(Args)]
 pub struct NewArgs {
-    /// プロジェクト名
-    #[arg(required = true)]
+    /// プロジェクト名 (小文字、数字、ハイフンのみ許可)
+    #[arg(required = true, value_parser = validate_project_name)]
     pub name: String,
     
     /// ライブラリプロジェクトとして作成
     #[arg(short, long, default_value = "false")]
     pub lib: bool,
     
-    /// テンプレートを指定
+    /// 使用するテンプレート
     #[arg(short, long, default_value = "default")]
     pub template: String,
 }
@@ -150,13 +153,9 @@ pub struct PackageArgs {
 pub enum PackageCommands {
     /// 依存関係を追加
     Add {
-        /// パッケージ名
-        #[arg(required = true)]
-        name: String,
-        
-        /// バージョン制約
-        #[arg(short, long)]
-        version: Option<String>,
+        /// パッケージ名 (形式: name@version)
+        #[arg(required = true, value_parser = parse_package_spec)]
+        spec: (String, Option<VersionReq>),
         
         /// 開発依存として追加
         #[arg(short, long, default_value = "false")]
@@ -171,6 +170,13 @@ pub enum PackageCommands {
     
     /// 依存関係を一覧表示
     List,
+    
+    /// 依存関係を削除
+    Remove {
+        /// パッケージ名
+        #[arg(required = true)]
+        name: String,
+    },
 }
 
 /// コードフォーマットサブコマンドの引数
@@ -183,6 +189,10 @@ pub struct FormatArgs {
     /// 変更のみを表示（実際には変更しない）
     #[arg(short, long, default_value = "false")]
     pub check: bool,
+    
+    /// 再帰的に処理
+    #[arg(short, long, default_value = "false")]
+    pub recursive: bool,
 }
 
 /// CLIからコンパイル処理を実行
@@ -213,7 +223,7 @@ fn setup_logging(verbose: bool, quiet: bool) -> Result<()> {
         });
     
     env_logger::Builder::from_env(env)
-        .format_timestamp(None)
+        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
         .format_module_path(verbose)
         .init();
     
@@ -226,7 +236,6 @@ fn build(args: &BuildArgs, cli: &Cli) -> Result<()> {
     
     let input_path = &args.input;
     let output_path = args.output.clone().unwrap_or_else(|| {
-        // デフォルトの出力パスを決定
         if input_path.is_dir() {
             PathBuf::from("./build")
         } else {
@@ -240,25 +249,23 @@ fn build(args: &BuildArgs, cli: &Cli) -> Result<()> {
           input_path.display().to_string().cyan(),
           output_path.display().to_string().green());
     
-    // プログレスバーの設定
+    let mp = MultiProgress::new();
     let pb = if !cli.quiet {
-        let pb = ProgressBar::new_spinner();
+        let pb = mp.add(ProgressBar::new_spinner());
         pb.set_style(
             ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
                 .unwrap()
         );
-        pb.set_message("コンパイル中...");
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         Some(pb)
     } else {
         None
     };
     
-    // コンパイルオプションの設定
     let options = CompileOptions {
         optimization_level: match (args.optimization, args.release) {
-            (_, true) => 3,  // リリースモードは最大最適化
+            (_, true) => 3,
             (o, false) => o as u32,
         },
         debug_info: args.debug,
@@ -267,188 +274,138 @@ fn build(args: &BuildArgs, cli: &Cli) -> Result<()> {
         ..Default::default()
     };
     
-    // コンパイル実行
-    let result = compile(input_path, &output_path, options);
+    let result = compile(input_path, &output_path, options)
+        .with_context(|| format!("{} のコンパイルに失敗しました", input_path.display()));
     
-    // プログレスバーを完了
     if let Some(pb) = pb {
         match &result {
-            Ok(_) => {
-                pb.finish_with_message(format!("コンパイル成功: {}", 
-                                             output_path.display().to_string().green()));
-            },
-            Err(e) => {
-                pb.finish_with_message(format!("コンパイル失敗: {}", e.to_string().red()));
-            }
+            Ok(_) => pb.finish_with_message(format!("✅ コンパイル成功: {}", output_path.display())),
+            Err(e) => pb.finish_with_message(format!("❌ コンパイル失敗: {}", e.to_string().red())),
         }
     }
     
-    result.context("コンパイル処理に失敗しました")
+    result
 }
 
 /// 実行コマンドの処理
 fn run(args: &RunArgs, cli: &Cli) -> Result<()> {
-    // ビルド引数を構成
     let build_args = BuildArgs {
         input: args.file.clone(),
         output: None,
-        optimization: 0,  // 開発モードでの実行なので低い最適化レベル
+        optimization: 0,
         warnings_as_errors: false,
         debug: true,
         release: false,
         target: None,
     };
     
-    // ビルド実行
     build(&build_args, cli)?;
     
-    // 実行ファイルパスの決定
-    let exe_path = if let Some(stem) = args.file.file_stem() {
-        let mut path = PathBuf::from(".");
-        path.push(stem);
-        if cfg!(windows) {
-            path.set_extension("exe");
-        }
-        path
-    } else {
-        return Err(anyhow::anyhow!("無効なファイル名: {}", args.file.display()));
-    };
-    
-    // プログラムを実行
-    info!("実行: {}", exe_path.display().to_string().green());
-    
-    let status = std::process::Command::new(exe_path)
-        .args(&args.args)
-        .status()
-        .context("プログラムの実行に失敗しました")?;
-    
-    if !status.success() {
-        warn!("プログラムは終了コード {} で終了しました", 
-             status.code().unwrap_or(-1));
+    let exe_path = args.file.with_extension(if cfg!(windows) { "exe" } else { "" });
+    if !exe_path.exists() {
+        return Err(anyhow::anyhow!("実行ファイル {} が見つかりません", exe_path.display()));
     }
     
-    Ok(())
+    info!("🚀 実行開始: {}", exe_path.display().green());
+    let output = std::process::Command::new(exe_path)
+        .args(&args.args)
+        .output()
+        .context("プログラムの実行に失敗しました")?;
+    
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    
+    if !output.status.success() {
+        Err(anyhow::anyhow!("プログラムが終了コード {} で異常終了しました", 
+            output.status.code().unwrap_or(-1)))
+    } else {
+        Ok(())
+    }
 }
 
 /// 新規プロジェクト作成の処理
 fn create_new_project(args: &NewArgs, _cli: &Cli) -> Result<()> {
-    info!("新規プロジェクト '{}' を作成中...", args.name);
-    
-    // プロジェクトディレクトリの作成
     let project_dir = PathBuf::from(&args.name);
     if project_dir.exists() {
-        return Err(anyhow::anyhow!("ディレクトリ '{}' はすでに存在します", args.name));
+        return Err(anyhow::anyhow!("ディレクトリ '{}' は既に存在します", args.name));
     }
     
-    std::fs::create_dir(&project_dir)
-        .context("プロジェクトディレクトリの作成に失敗しました")?;
+    fs::create_dir_all(project_dir.join("src"))?;
+    fs::create_dir_all(project_dir.join("tests"))?;
     
-    // src ディレクトリの作成
-    let src_dir = project_dir.join("src");
-    std::fs::create_dir(&src_dir)
-        .context("ソースディレクトリの作成に失敗しました")?;
-    
-    // テンプレートファイルの作成
-    if args.lib {
-        // ライブラリプロジェクトテンプレート
-        let lib_file = src_dir.join("lib.sl");
-        std::fs::write(lib_file, include_str!("../templates/lib.sl"))
-            .context("ライブラリテンプレートファイルの作成に失敗しました")?;
+    let template_path = PathBuf::from("templates").join(&args.template);
+    if template_path.exists() {
+        copy_dir_all(template_path, &project_dir)?;
     } else {
-        // 実行可能プロジェクトテンプレート
-        let main_file = src_dir.join("main.sl");
-        std::fs::write(main_file, include_str!("../templates/main.sl"))
-            .context("メインテンプレートファイルの作成に失敗しました")?;
+        let main_file = project_dir.join("src/main.sl");
+        fs::write(main_file, "func main() {\n    println(\"Hello, SwiftLight!\");\n}\n")?;
     }
     
-    // 設定ファイルの作成
-    let config_file = project_dir.join("swiftlight.toml");
-    let config_contents = format!(
-        r#"[package]
-name = "{}"
-version = "0.1.0"
-authors = []
-
-[dependencies]
-"#,
+    let config_content = format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nauthors = []\n\n[dependencies]\n",
         args.name
     );
+    fs::write(project_dir.join("swiftlight.toml"), config_content)?;
     
-    std::fs::write(config_file, config_contents)
-        .context("設定ファイルの作成に失敗しました")?;
-    
-    // .gitignore ファイルの作成
-    let gitignore_file = project_dir.join(".gitignore");
-    std::fs::write(gitignore_file, include_str!("../templates/gitignore"))
-        .context(".gitignore ファイルの作成に失敗しました")?;
-    
-    info!("プロジェクト '{}' の作成が完了しました", args.name.green());
-    info!("新しいプロジェクトを始めるには:");
-    info!("    cd {}", args.name);
-    info!("    swiftlight build");
+    info!("🎉 プロジェクト '{}' が正常に作成されました", args.name.green());
+    info!("次のコマンドでビルドできます:\n    cd {}\n    swiftlight build", args.name);
     
     Ok(())
 }
 
 /// 型チェックコマンドの処理
 fn check(args: &CheckArgs, _cli: &Cli) -> Result<()> {
-    info!("型チェック: {}", args.input.display().to_string().cyan());
-    
-    // 型チェックのみを実行するオプションを設定
     let options = CompileOptions {
         type_check_only: true,
+        explain_types: args.explain,
         ..Default::default()
     };
     
-    // 一時的な出力パスを使用
-    let temp_dir = tempfile::tempdir()
-        .context("一時ディレクトリの作成に失敗しました")?;
-    let output_path = temp_dir.path().join("output");
-    
-    // コンパイル処理（型チェックのみ）を実行
-    match compile(&args.input, &output_path, options) {
-        Ok(_) => {
-            info!("型チェックは成功しました ✓");
-            Ok(())
-        },
-        Err(e) => {
-            error!("型チェックに失敗しました: {}", e);
-            Err(anyhow::anyhow!("型チェックエラー"))
-        }
-    }
+    let temp_dir = tempdir()?;
+    compile(&args.input, &temp_dir.path().join("output"), options)
+        .map(|_| info!("✅ 型チェックが正常に完了しました"))
+        .map_err(|e| {
+            error!("❌ 型チェックエラー: {}", e);
+            anyhow::anyhow!("型チェックに失敗しました")
+        })
 }
 
 /// パッケージ管理コマンドの処理
 fn handle_package(args: &PackageArgs, _cli: &Cli) -> Result<()> {
+    let mut pm = PackageManager::new()?;
+    
     match &args.command {
-        PackageCommands::Add { name, version, dev } => {
-            info!("パッケージの追加: {}{}", 
-                 name, 
-                 version.as_ref().map_or(String::new(), |v| format!(" v{}", v)));
-            
-            if *dev {
-                info!("開発依存関係として追加します");
-            }
-            
-            // パッケージ追加の実装
-            // （ここでは実装を省略し、"未実装"メッセージを表示）
-            warn!("パッケージ管理機能は現在開発中です");
+        PackageCommands::Add { spec: (name, version), dev } => {
+            pm.add_dependency(
+                name,
+                version.clone(),
+                if *dev { DependencyType::Dev } else { DependencyType::Normal }
+            )?;
+            info!("📦 パッケージ '{}' を追加しました", name);
         },
         PackageCommands::Update { name } => {
-            if let Some(pkg_name) = name {
-                info!("パッケージの更新: {}", pkg_name);
+            if let Some(name) = name {
+                pm.update_dependency(name)?;
+                info!("🔄 パッケージ '{}' を更新しました", name);
             } else {
-                info!("全パッケージの更新");
+                pm.update_all()?;
+                info!("🔄 全てのパッケージを更新しました");
             }
-            
-            // パッケージ更新の実装
-            warn!("パッケージ管理機能は現在開発中です");
         },
         PackageCommands::List => {
-            info!("依存関係の一覧:");
-            
-            // 依存関係一覧の実装
-            warn!("パッケージ管理機能は現在開発中です");
+            let deps = pm.list_dependencies()?;
+            if deps.is_empty() {
+                info!("📭 依存関係はありません");
+            } else {
+                info!("📜 依存関係一覧:");
+                for (name, version) in deps {
+                    info!("  - {} {}", name, version.map_or("".into(), |v| v.to_string()));
+                }
+            }
+        },
+        PackageCommands::Remove { name } => {
+            pm.remove_dependency(name)?;
+            info!("🗑️ パッケージ '{}' を削除しました", name);
         }
     }
     
@@ -457,36 +414,39 @@ fn handle_package(args: &PackageArgs, _cli: &Cli) -> Result<()> {
 
 /// コードフォーマットコマンドの処理
 fn format_code(args: &FormatArgs, _cli: &Cli) -> Result<()> {
-    let path_str = args.path.display().to_string();
+    let files = collect_source_files(&args.path, args.recursive)?;
+    let mut changed = 0;
+    
+    for file in files {
+        let original = fs::read_to_string(&file)?;
+        let formatted = format_swiftlight_code(&original)?;
+        
+        if original != formatted {
+            if args.check {
+                warn!("⚠️ フォーマットが必要: {}", file.display());
+                changed += 1;
+            } else {
+                fs::write(&file, formatted)?;
+                info!("✨ フォーマット完了: {}", file.display());
+            }
+        }
+    }
     
     if args.check {
-        info!("フォーマットのチェック: {}", path_str.cyan());
+        if changed > 0 {
+            Err(anyhow::anyhow!("{} 個のファイルにフォーマットが必要です", changed))
+        } else {
+            info!("✅ 全てのファイルが正しくフォーマットされています");
+            Ok(())
+        }
     } else {
-        info!("フォーマット: {}", path_str.cyan());
+        info!("🎉 {} 個のファイルをフォーマットしました", changed);
+        Ok(())
     }
-    
-    // ファイル列挙
-    let files = collect_source_files(&args.path)?;
-    info!("{} 個のファイルを処理します", files.len());
-    
-    // ここでフォーマット処理の実装を行う
-    // 現在はsleepで処理を模擬
-    for file in &files {
-        debug!("ファイルのフォーマット: {}", file.display());
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    
-    if args.check {
-        info!("全てのファイルは正しくフォーマットされています ✓");
-    } else {
-        info!("{} 個のファイルをフォーマットしました", files.len());
-    }
-    
-    Ok(())
 }
 
-/// ディレクトリからソースファイルを再帰的に収集
-fn collect_source_files(path: &Path) -> Result<Vec<PathBuf>> {
+/// ディレクトリからソースファイルを収集
+fn collect_source_files(path: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     
     if path.is_file() {
@@ -494,15 +454,14 @@ fn collect_source_files(path: &Path) -> Result<Vec<PathBuf>> {
             files.push(path.to_path_buf());
         }
     } else if path.is_dir() {
-        for entry in walkdir::WalkDir::new(path)
+        let walker = walkdir::WalkDir::new(path)
             .follow_links(true)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| !e.file_type().is_dir()) 
-        {
-            let path = entry.path().to_path_buf();
-            if has_swiftlight_extension(&path) {
-                files.push(path);
+            .max_depth(if recursive { 100 } else { 1 });
+        
+        for entry in walker.into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() && has_swiftlight_extension(path) {
+                files.push(path.to_path_buf());
             }
         }
     }
@@ -510,9 +469,46 @@ fn collect_source_files(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// ファイルがSwiftLight拡張子を持つかチェック
+/// 拡張子チェック
 fn has_swiftlight_extension(path: &Path) -> bool {
     path.extension()
-        .map(|ext| ext == "sl")
+        .map(|ext| ext == "sl" || ext == "swiftlight")
         .unwrap_or(false)
+}
+
+/// プロジェクト名のバリデーション
+fn validate_project_name(name: &str) -> Result<String> {
+    let valid = name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name.len() >= 3;
+    
+    if valid {
+        Ok(name.to_string())
+    } else {
+        Err(anyhow::anyhow!("プロジェクト名は小文字、数字、ハイフンのみ使用可能で、3文字以上必要です"))
+    }
+}
+
+/// パッケージ仕様のパース
+fn parse_package_spec(spec: &str) -> Result<(String, Option<VersionReq>)> {
+    let parts: Vec<_> = spec.splitn(2, '@').collect();
+    let name = parts[0].to_string();
+    let version = parts.get(1).map(|s| VersionReq::parse(s)).transpose()?;
+    Ok((name, version))
+}
+
+/// ディレクトリコピーユーティリティ
+fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+    fs::create_dir_all(&dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }

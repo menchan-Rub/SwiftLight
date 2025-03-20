@@ -1,0 +1,25 @@
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // マージブロックの生成
+        self.builder.position_at_end(merge_block);
+        
+        // PHI節点が必要な場合
+        if incoming_values.len() > 0 {
+            let result_type = incoming_values[0].get_type();
+            let phi = self.builder.build_phi(result_type, "matchresult");
+            
+            for (i, value) in incoming_values.iter().enumerate() {
+                phi.add_incoming(&[(&value, incoming_blocks[i])]);
+            }
+            
+            Ok(phi.as_basic_value())
+        } else {
+            // すべてエラーの場合は適当な値を返す（実行されることはない）
+            Ok(self.context.i32_type().const_zero().into())
+        }
+    } 

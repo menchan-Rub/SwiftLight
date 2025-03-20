@@ -1182,8 +1182,8 @@ mod tests {
             
             // テスト用の基本型を登録
             let base_types = vec![
-                ("i32", TypeKind::Integer(32)),
-                ("f64", TypeKind::Float(64)),
+                ("i32", TypeKind::Primitive(PrimitiveType::Int)eger(32)),
+                ("f64", TypeKind::Primitive(PrimitiveType::Float)(64)),
                 ("Waker", TypeKind::Struct(waker_type)),
             ];
 

@@ -172,9 +172,9 @@ impl CodeGenerator {
         
         // 型の種類に応じてWasm型を生成
         let wasm_type = match &ty.kind {
-            TypeKind::Void => WasmType::Void,
-            TypeKind::Boolean => WasmType::I32, // Wasmではboolもi32で表現
-            TypeKind::Integer { bits, signed: _ } => {
+            TypeKind::Primitive(PrimitiveType::Void) => WasmType::Void,
+            TypeKind::Primitive(PrimitiveType::Boolean) => WasmType::I32, // Wasmではboolもi32で表現
+            TypeKind::Primitive(PrimitiveType::Integer { bits, signed: _ }) => {
                 match *bits {
                     32 => WasmType::I32,
                     64 => WasmType::I64,
@@ -183,7 +183,7 @@ impl CodeGenerator {
                     _ => WasmType::I64,
                 }
             },
-            TypeKind::Float { bits } => {
+            TypeKind::Primitive(PrimitiveType::Float { bits }) => {
                 match *bits {
                     32 => WasmType::F32,
                     64 => WasmType::F64,

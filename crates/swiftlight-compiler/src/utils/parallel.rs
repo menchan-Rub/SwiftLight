@@ -23,14 +23,38 @@ pub enum TaskPriority {
 }
 
 /// タスクトレイト（コンパイル時計算向け最適化）
-pub trait Task: Send + Sync + 'static {
-    /// タスク実行（パニック捕捉付き）
-    fn execute(&self) -> Result<()>;
+pub trait Task: Send + Sync + Ord {
+    /// タスクの名前
+    fn name(&self) -> &str;
     
-    /// 優先度（デフォルト実装）
-    fn priority(&self) -> TaskPriority {
-        TaskPriority::Normal
+    /// タスクの優先度（低いほど優先）
+    fn priority(&self) -> u32;
+    
+    /// タスクを実行
+    fn execute(&self) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+// Taskトレイトのデフォルト実装
+impl<T: Task> PartialEq for T {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority() == other.priority()
     }
+}
+
+impl<T: Task> Eq for T {}
+
+impl<T: Task> PartialOrd for T {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: Task> Ord for T {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // 優先度が低いほど先に実行される（BinaryHeapは最大値を取り出すため）
+        other.priority().cmp(&self.priority())
+    }
+}
     
     /// タスク名（デバッグ用）
     fn name(&self) -> &'static str {
@@ -41,11 +65,10 @@ pub trait Task: Send + Sync + 'static {
     fn timeout(&self) -> Duration {
         Duration::from_secs(30)
     }
-}
 
 /// ワークスティーリング対応キュー
 struct WorkStealingQueue<T> {
-    queues: Vec<Mutex<BinaryHeap<Arc<dyn Task>>>>,
+    queues: Vec<Mutex<BinaryHeap<TaskWrapper>>>,
     cond_var: Arc<Condvar>,
     steal_idx: AtomicUsize,
 }
@@ -86,7 +109,7 @@ impl<T: Task> WorkStealingQueue<T> {
     fn push_with_priority(&self, task: Arc<dyn Task>) {
         let target_idx = self.steal_idx.fetch_add(1, Ordering::Relaxed) % self.queues.len();
         let mut queue = self.queues[target_idx].lock().unwrap();
-        queue.push(task);
+        queue.push(TaskWrapper(task));
         self.cond_var.notify_all();
     }
 

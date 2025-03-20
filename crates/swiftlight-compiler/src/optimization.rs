@@ -149,6 +149,7 @@ pub trait OptimizationPass {
     }
     
     /// 実行メソッド（パスの種類によって具体的な実装が異なる）
+    fn execute(&self) -> OptimizationPassResult;
 }
 
 /// AST最適化パスのインターフェース
@@ -466,7 +467,11 @@ impl ConstantFolding {
 impl OptimizationPass for ConstantFolding {
     fn id(&self) -> OptimizationPassId {
         OptimizationPassId::new("ConstantFolding", OptimizationPassKind::AST)
-    }
+    
+    fn execute(&self) -> OptimizationPassResult {
+        // このメソッドは直接呼ばれない - run_on_astが使用される
+        OptimizationPassResult::new(false, std::time::Duration::from_secs(0))
+    }}
     
     fn description(&self) -> &str {
         "コンパイル時に計算可能な定数式を評価します"
@@ -493,7 +498,11 @@ impl DeadCodeElimination {
 impl OptimizationPass for DeadCodeElimination {
     fn id(&self) -> OptimizationPassId {
         OptimizationPassId::new("DeadCodeElimination", OptimizationPassKind::AST)
-    }
+    
+    fn execute(&self) -> OptimizationPassResult {
+        // このメソッドは直接呼ばれない - run_on_astが使用される
+        OptimizationPassResult::new(false, std::time::Duration::from_secs(0))
+    }}
     
     fn description(&self) -> &str {
         "到達不能コードや使用されない変数を削除します"
@@ -524,7 +533,11 @@ impl CommonSubexpressionElimination {
 impl OptimizationPass for CommonSubexpressionElimination {
     fn id(&self) -> OptimizationPassId {
         OptimizationPassId::new("CommonSubexpressionElimination", OptimizationPassKind::IR)
-    }
+    
+    fn execute(&self) -> OptimizationPassResult {
+        // このメソッドは直接呼ばれない - run_on_irが使用される
+        OptimizationPassResult::new(false, std::time::Duration::from_secs(0))
+    }}
     
     fn description(&self) -> &str {
         "重複する計算を検出して除去します"
@@ -551,7 +564,11 @@ impl InstructionCombining {
 impl OptimizationPass for InstructionCombining {
     fn id(&self) -> OptimizationPassId {
         OptimizationPassId::new("InstructionCombining", OptimizationPassKind::IR)
-    }
+    
+    fn execute(&self) -> OptimizationPassResult {
+        // このメソッドは直接呼ばれない - run_on_irが使用される
+        OptimizationPassResult::new(false, std::time::Duration::from_secs(0))
+    }}
     
     fn description(&self) -> &str {
         "単純な命令を組み合わせてより効率的な命令に変換します"
@@ -578,7 +595,11 @@ impl LoopOptimization {
 impl OptimizationPass for LoopOptimization {
     fn id(&self) -> OptimizationPassId {
         OptimizationPassId::new("LoopOptimization", OptimizationPassKind::IR)
-    }
+    
+    fn execute(&self) -> OptimizationPassResult {
+        // このメソッドは直接呼ばれない - run_on_irが使用される
+        OptimizationPassResult::new(false, std::time::Duration::from_secs(0))
+    }}
     
     fn description(&self) -> &str {
         "ループの最適化（展開、不変式移動、ベクトル化）を行います"

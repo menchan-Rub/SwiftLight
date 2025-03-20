@@ -228,34 +228,34 @@ impl OwnershipChecker {
     /// 宣言の所有権チェックを実行します。
     fn check_declaration(&mut self, declaration: &Declaration) -> Result<()> {
         match &declaration.kind {
-            DeclarationKind::Function(function) => {
+            DeclarationKind::FunctionDecl(function) => {
                 self.check_function(function)?;
             },
-            DeclarationKind::Variable(var_decl) => {
+            DeclarationKind::VariableDecl(var_decl) => {
                 self.check_variable_declaration(var_decl)?;
             },
-            DeclarationKind::Struct(_) => {
+            DeclarationKind::StructDecl(_) => {
                 // 構造体宣言の所有権チェックは、フィールドの型チェックが主
                 // 今回は実装を省略
             },
-            DeclarationKind::TypeAlias(_) => {
+            DeclarationKind::TypeAliasDecl(_) => {
                 // 型エイリアスは所有権に影響しない
             },
-            DeclarationKind::Enum(_) => {
+            DeclarationKind::EnumDecl(_) => {
                 // 列挙型の所有権チェックは列挙値のチェックが主
                 // 今回は実装を省略
             },
-            DeclarationKind::Trait(_) => {
+            DeclarationKind::TraitDecl(_) => {
                 // トレイトの所有権チェックはメソッドのチェックが主
                 // 今回は実装を省略
             },
-            DeclarationKind::Implementation(impl_block) => {
+            DeclarationKind::ImplementationDecl(impl_block) => {
                 // 実装ブロックのメソッド所有権チェック
                 for method in &impl_block.methods {
                     self.check_function(method)?;
                 }
             },
-            DeclarationKind::Import(_) => {
+            DeclarationKind::ImportDecl(_) => {
                 // インポートは所有権に影響しない
             },
             // その他の宣言タイプは所有権に影響しないため省略
@@ -325,13 +325,13 @@ impl OwnershipChecker {
             StatementKind::Block(block) => {
                 self.check_block(block)?;
             },
-            StatementKind::Expression(expr) => {
+            StatementKind::ExpressionStmt(expr) => {
                 self.check_expression(expr)?;
             },
             StatementKind::VariableDeclaration(var_decl) => {
                 self.check_variable_declaration(var_decl)?;
             },
-            StatementKind::If { condition, then_branch, else_branch } => {
+            StatementKind::IfStmt { condition, then_branch, else_branch } => {
                 // 条件式をチェック
                 self.check_expression(condition)?;
                 
@@ -352,7 +352,7 @@ impl OwnershipChecker {
                 // then/elseの両方のパスでの所有権状態を統合
                 self.merge_ownership_states(&snapshot);
             },
-            StatementKind::While { condition, body } => {
+            StatementKind::WhileStmt { condition, body } => {
                 // 条件式をチェック
                 self.check_expression(condition)?;
                 
@@ -365,7 +365,7 @@ impl OwnershipChecker {
                 // ループを抜けた後の所有権状態を統合
                 self.merge_ownership_states(&snapshot);
             },
-            StatementKind::Return(expr_opt) => {
+            StatementKind::ReturnStmt(expr_opt) => {
                 if let Some(expr) = expr_opt {
                     // 戻り値式をチェック
                     self.check_expression(expr)?;
@@ -506,7 +506,7 @@ impl OwnershipChecker {
                 
                 // ブロック式の結果は最後の式の所有権状態
                 if let Some(last_stmt) = block.statements.last() {
-                    if let StatementKind::Expression(expr) = &last_stmt.kind {
+                    if let StatementKind::ExpressionStmt(expr) = &last_stmt.kind {
                         return self.check_expression(expr);
                     }
                 }

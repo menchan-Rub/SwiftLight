@@ -139,7 +139,7 @@ impl NameResolver {
     fn register_declarations(&mut self, declarations: &[Declaration]) -> Result<()> {
         for declaration in declarations {
             match &declaration.kind {
-                DeclarationKind::Variable(var) => {
+                DeclarationKind::VariableDecl(var) => {
                     // 変数宣言の場合
                     let name = &var.name.name;
                     
@@ -163,7 +163,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Constant(constant) => {
+                DeclarationKind::ConstantDecl(constant) => {
                     // 定数宣言の場合
                     let name = &constant.name.name;
                     
@@ -186,7 +186,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Function(function) => {
+                DeclarationKind::FunctionDecl(function) => {
                     // 関数宣言の場合
                     let name = &function.name.name;
                     
@@ -212,7 +212,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Struct(struct_decl) => {
+                DeclarationKind::StructDecl(struct_decl) => {
                     // 構造体宣言の場合
                     let name = &struct_decl.name.name;
                     
@@ -235,7 +235,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Enum(enum_decl) => {
+                DeclarationKind::EnumDecl(enum_decl) => {
                     // 列挙型宣言の場合
                     let name = &enum_decl.name.name;
                     
@@ -258,7 +258,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Trait(trait_decl) => {
+                DeclarationKind::TraitDecl(trait_decl) => {
                     // トレイト宣言の場合
                     let name = &trait_decl.name.name;
                     
@@ -281,7 +281,7 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::TypeAlias(alias) => {
+                DeclarationKind::TypeAliasDecl(alias) => {
                     // 型エイリアス宣言の場合
                     let name = &alias.name.name;
                     
@@ -304,11 +304,11 @@ impl NameResolver {
                     // シンボルを追加
                     self.scope_manager.add_symbol(symbol)?;
                 },
-                DeclarationKind::Import(import) => {
+                DeclarationKind::ImportDecl(import) => {
                     // インポート宣言の解決
                     self.resolve_import(import, declaration.location.clone())?;
                 },
-                DeclarationKind::Implementation(_) => {
+                DeclarationKind::ImplementationDecl(_) => {
                     // 実装宣言
                     // 実装自体はシンボルテーブルに登録しないが、中の関数は登録する
                     // この処理は別途行う
@@ -391,7 +391,7 @@ impl NameResolver {
     fn resolve_declarations(&mut self, declarations: &[Declaration]) -> Result<()> {
         for declaration in declarations {
             match &declaration.kind {
-                DeclarationKind::Variable(var) => {
+                DeclarationKind::VariableDecl(var) => {
                     // 変数宣言の型情報を解決
                     if let Some(type_ann) = &var.type_annotation {
                         self.resolve_type_annotation(type_ann)?;
@@ -402,7 +402,7 @@ impl NameResolver {
                         self.resolve_expression(init)?;
                     }
                 },
-                DeclarationKind::Constant(constant) => {
+                DeclarationKind::ConstantDecl(constant) => {
                     // 定数宣言の型情報を解決
                     if let Some(type_ann) = &constant.type_annotation {
                         self.resolve_type_annotation(type_ann)?;
@@ -411,7 +411,7 @@ impl NameResolver {
                     // 初期化式を解決（定数は必ず初期化式がある）
                     self.resolve_expression(&constant.initializer)?;
                 },
-                DeclarationKind::Function(function) => {
+                DeclarationKind::FunctionDecl(function) => {
                     // 関数のシグネチャを解決
                     self.resolve_function_signature(function)?;
                     
@@ -426,7 +426,7 @@ impl NameResolver {
                         Ok(())
                     })?;
                 },
-                DeclarationKind::Struct(struct_decl) => {
+                DeclarationKind::StructDecl(struct_decl) => {
                     // 構造体を解決
                     self.enter_type_scope(ScopeKind::Struct, |this| {
                         // フィールドを解決
@@ -437,7 +437,7 @@ impl NameResolver {
                         Ok(())
                     })?;
                 },
-                DeclarationKind::Enum(enum_decl) => {
+                DeclarationKind::EnumDecl(enum_decl) => {
                     // 列挙型を解決
                     self.enter_type_scope(ScopeKind::Enum, |this| {
                         // バリアントを解決
@@ -451,7 +451,7 @@ impl NameResolver {
                         Ok(())
                     })?;
                 },
-                DeclarationKind::Trait(trait_decl) => {
+                DeclarationKind::TraitDecl(trait_decl) => {
                     // トレイトを解決
                     self.enter_type_scope(ScopeKind::Trait, |this| {
                         // トレイトのメソッドシグネチャを解決
@@ -462,15 +462,15 @@ impl NameResolver {
                         Ok(())
                     })?;
                 },
-                DeclarationKind::TypeAlias(alias) => {
+                DeclarationKind::TypeAliasDecl(alias) => {
                     // 型エイリアスを解決
                     self.resolve_type_annotation(&alias.target_type)?;
                 },
-                DeclarationKind::Import(import) => {
+                DeclarationKind::ImportDecl(import) => {
                     // インポート宣言の解決
                     self.resolve_import(import, decl.location.clone())?;
                 },
-                DeclarationKind::Implementation(impl_decl) => {
+                DeclarationKind::ImplementationDecl(impl_decl) => {
                     // 実装宣言を解決
                     self.resolve_implementation(impl_decl)?;
                 },
@@ -621,8 +621,8 @@ impl NameResolver {
                 }
             },
             // 基本型はチェック不要
-            TypeKind::Int | TypeKind::Float | TypeKind::Bool |
-            TypeKind::String | TypeKind::Char | TypeKind::Void |
+            TypeKind::Primitive(PrimitiveType::Int) | TypeKind::Primitive(PrimitiveType::Float) | TypeKind::Primitive(PrimitiveType::Bool) |
+            TypeKind::Primitive(PrimitiveType::String) | TypeKind::Primitive(PrimitiveType::Char) | TypeKind::Primitive(PrimitiveType::Void) |
             TypeKind::Never | TypeKind::Any => {},
         }
         
@@ -827,11 +827,11 @@ impl NameResolver {
     /// 文を解決
     fn resolve_statement(&mut self, stmt: &Statement) -> Result<()> {
         match &stmt.kind {
-            StatementKind::Expression(expr) => {
+            StatementKind::ExpressionStmt(expr) => {
                 // 式文の解決
                 self.resolve_expression(expr)?;
             },
-            StatementKind::Declaration(decl) => {
+            StatementKind::DeclarationStmt(decl) => {
                 // 宣言文の解決
                 self.register_declarations(&[decl.clone()])?;
                 self.resolve_declarations(&[decl.clone()])?;
@@ -845,7 +845,7 @@ impl NameResolver {
                     Ok(())
                 })?;
             },
-            StatementKind::If(condition, then_branch, else_branch) => {
+            StatementKind::IfStmt(condition, then_branch, else_branch) => {
                 // if文の解決
                 self.resolve_expression(condition)?;
                 
@@ -863,7 +863,7 @@ impl NameResolver {
                     })?;
                 }
             },
-            StatementKind::While(condition, body) => {
+            StatementKind::WhileStmt(condition, body) => {
                 // while文の解決
                 self.resolve_expression(condition)?;
                 
@@ -873,7 +873,7 @@ impl NameResolver {
                     Ok(())
                 })?;
             },
-            StatementKind::For(initializer, condition, increment, body) => {
+            StatementKind::ForStmt(initializer, condition, increment, body) => {
                 // for文の解決
                 self.enter_scope(ScopeKind::Loop, |this| {
                     // 初期化部分を解決
@@ -897,7 +897,7 @@ impl NameResolver {
                     Ok(())
                 })?;
             },
-            StatementKind::ForEach(variable, iterable, body) => {
+            StatementKind::ForStmtEach(variable, iterable, body) => {
                 // forEach文の解決
                 self.enter_scope(ScopeKind::Loop, |this| {
                     // イテラブルを解決
@@ -922,16 +922,16 @@ impl NameResolver {
                     Ok(())
                 })?;
             },
-            StatementKind::Return(value) => {
+            StatementKind::ReturnStmt(value) => {
                 // return文の解決
                 if let Some(expr) = value {
                     self.resolve_expression(expr)?;
                 }
             },
-            StatementKind::Break => {
+            StatementKind::BreakStmt => {
                 // break文は特に解決不要
             },
-            StatementKind::Continue => {
+            StatementKind::ContinueStmt => {
                 // continue文は特に解決不要
             },
         }
@@ -1308,7 +1308,7 @@ impl NameResolver {
         
         for decl in &program.declarations {
             match &decl.kind {
-                ast::DeclarationKind::VariableDeclaration(var) => {
+                ast::DeclarationKind::VariableDeclDeclaration(var) => {
                     if self.is_public(&var.visibility) {
                         symbols.push(Symbol::variable(
                             var.name.name.clone(),
@@ -1321,7 +1321,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::ConstantDeclaration(constant) => {
+                ast::DeclarationKind::ConstantDeclDeclaration(constant) => {
                     if self.is_public(&constant.visibility) {
                         symbols.push(Symbol::constant(
                             constant.name.name.clone(),
@@ -1333,7 +1333,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::FunctionDeclaration(function) => {
+                ast::DeclarationKind::FunctionDeclDeclaration(function) => {
                     if self.is_public(&function.visibility) {
                         // 関数の型情報を構築
                         let type_info = self.create_function_type_annotation(function);
@@ -1348,7 +1348,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::StructDeclaration(struct_decl) => {
+                ast::DeclarationKind::StructDeclDeclaration(struct_decl) => {
                     if self.is_public(&struct_decl.visibility) {
                         symbols.push(Symbol::type_symbol(
                             struct_decl.name.name.clone(),
@@ -1360,7 +1360,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::EnumDeclaration(enum_decl) => {
+                ast::DeclarationKind::EnumDeclDeclaration(enum_decl) => {
                     if self.is_public(&enum_decl.visibility) {
                         symbols.push(Symbol::type_symbol(
                             enum_decl.name.name.clone(),
@@ -1372,7 +1372,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::TraitDeclaration(trait_decl) => {
+                ast::DeclarationKind::TraitDeclDeclaration(trait_decl) => {
                     if self.is_public(&trait_decl.visibility) {
                         symbols.push(Symbol::type_symbol(
                             trait_decl.name.name.clone(),
@@ -1384,7 +1384,7 @@ impl NameResolver {
                         ));
                     }
                 },
-                ast::DeclarationKind::TypeAliasDeclaration(alias) => {
+                ast::DeclarationKind::TypeAliasDeclDeclaration(alias) => {
                     if self.is_public(&alias.visibility) {
                         symbols.push(Symbol::type_symbol(
                             alias.name.name.clone(),
@@ -1764,7 +1764,7 @@ mod tests {
     fn create_variable_declaration(name: &str, id: NodeId, is_mutable: bool, initializer: Option<Expression>, visibility: ast::Visibility) -> Declaration {
         Declaration {
             id,
-            kind: DeclarationKind::VariableDeclaration(
+            kind: DeclarationKind::VariableDeclDeclaration(
                 VariableDeclaration {
                     name: create_identifier(name, id + 1),
                     type_annotation: None,
@@ -1792,7 +1792,7 @@ mod tests {
     fn create_struct_declaration(name: &str, id: NodeId, visibility: ast::Visibility) -> Declaration {
         Declaration {
             id,
-            kind: DeclarationKind::StructDeclaration(
+            kind: DeclarationKind::StructDeclDeclaration(
                 Struct {
                     name: create_identifier(name, id + 1),
                     type_parameters: Vec::new(),
@@ -1848,7 +1848,7 @@ mod tests {
         // 式文: x;
         let expr_stmt = Statement {
             id: 8,
-            kind: StatementKind::Expression(ref_expr),
+            kind: StatementKind::ExpressionStmt(ref_expr),
             location: None,
         };
         
@@ -1858,7 +1858,7 @@ mod tests {
         // シンプルな参照式として文を追加（本来は文のリストだが、テストでは宣言だけを使用）
         let expr_decl = Declaration {
             id: 9,
-            kind: DeclarationKind::VariableDeclaration(
+            kind: DeclarationKind::VariableDeclDeclaration(
                 VariableDeclaration {
                     name: create_identifier("_test", 10),
                     type_annotation: None,
@@ -1900,7 +1900,7 @@ mod tests {
         // 変数宣言: let p: Point = ...
         let var_decl = Declaration {
             id: 15,
-            kind: DeclarationKind::VariableDeclaration(
+            kind: DeclarationKind::VariableDeclDeclaration(
                 VariableDeclaration {
                     name: create_identifier("p", 16),
                     type_annotation: Some(TypeAnnotation {
@@ -1942,14 +1942,14 @@ mod tests {
         // 式文: z;
         let expr_stmt = Statement {
             id: 3,
-            kind: StatementKind::Expression(undeclared_ref),
+            kind: StatementKind::ExpressionStmt(undeclared_ref),
             location: None,
         };
         
         // 変数宣言で未宣言変数を使用: let y = z
         let var_decl = Declaration {
             id: 4,
-            kind: DeclarationKind::VariableDeclaration(
+            kind: DeclarationKind::VariableDeclDeclaration(
                 VariableDeclaration {
                     name: create_identifier("y", 5),
                     type_annotation: None,
@@ -2008,7 +2008,7 @@ mod tests {
         // 関数宣言: fn test() { ... }
         let function_decl = Declaration {
             id: 6,
-            kind: DeclarationKind::FunctionDeclaration(
+            kind: DeclarationKind::FunctionDeclDeclaration(
                 Function {
                     name: create_identifier("test", 7),
                     type_parameters: Vec::new(),
@@ -2020,10 +2020,10 @@ mod tests {
                             // ローカル変数宣言: let local = global
                             Statement {
                                 id: 9,
-                                kind: StatementKind::Declaration(
+                                kind: StatementKind::DeclarationStmt(
                                     Declaration {
                                         id: 10,
-                                        kind: DeclarationKind::VariableDeclaration(
+                                        kind: DeclarationKind::VariableDeclDeclaration(
                                             VariableDeclaration {
                                                 name: create_identifier("local", 11),
                                                 type_annotation: None,

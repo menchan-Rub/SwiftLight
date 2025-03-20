@@ -391,7 +391,7 @@ pub mod tests {
         
         // モジュール依存関係の収集
         for decl in &ast.declarations {
-            if let frontend::ast::DeclarationKind::Import(import) = &decl.kind {
+            if let frontend::ast::DeclarationKind::ImportDecl(import) = &decl.kind {
                 let importing_module = decl.module_id.unwrap_or(0);
                 let imported_module = import.module_id;
                 
@@ -454,25 +454,25 @@ pub mod tests {
         // 宣言された識別子の収集
         for decl in &ast.declarations {
             match &decl.kind {
-                frontend::ast::DeclarationKind::Variable(var) => {
+                frontend::ast::DeclarationKind::VariableDecl(var) => {
                     declared.insert(var.name.clone(), (decl.id, "変数".to_string(), decl.span.clone()));
                 },
-                frontend::ast::DeclarationKind::Constant(constant) => {
+                frontend::ast::DeclarationKind::ConstantDecl(constant) => {
                     declared.insert(constant.name.clone(), (decl.id, "定数".to_string(), decl.span.clone()));
                 },
-                frontend::ast::DeclarationKind::Function(func) => {
+                frontend::ast::DeclarationKind::FunctionDecl(func) => {
                     declared.insert(func.name.clone(), (decl.id, "関数".to_string(), decl.span.clone()));
                 },
-                frontend::ast::DeclarationKind::Struct(struct_decl) => {
+                frontend::ast::DeclarationKind::StructDecl(struct_decl) => {
                     declared.insert(struct_decl.name.clone(), (decl.id, "構造体".to_string(), decl.span.clone()));
                 },
-                frontend::ast::DeclarationKind::Enum(enum_decl) => {
+                frontend::ast::DeclarationKind::EnumDecl(enum_decl) => {
                     declared.insert(enum_decl.name.clone(), (decl.id, "列挙型".to_string(), decl.span.clone()));
                 },
                 frontend::ast::DeclarationKind::Interface(interface) => {
                     declared.insert(interface.name.clone(), (decl.id, "インターフェース".to_string(), decl.span.clone()));
                 },
-                frontend::ast::DeclarationKind::TypeAlias(alias) => {
+                frontend::ast::DeclarationKind::TypeAliasDecl(alias) => {
                     declared.insert(alias.name.clone(), (decl.id, "型エイリアス".to_string(), decl.span.clone()));
                 },
                 _ => {}
@@ -506,17 +506,17 @@ pub mod tests {
     fn is_public_symbol(name: &str, ast: &frontend::ast::Program) -> bool {
         for decl in &ast.declarations {
             match &decl.kind {
-                frontend::ast::DeclarationKind::Function(func) => {
+                frontend::ast::DeclarationKind::FunctionDecl(func) => {
                     if func.name == name && func.is_public {
                         return true;
                     }
                 },
-                frontend::ast::DeclarationKind::Struct(struct_decl) => {
+                frontend::ast::DeclarationKind::StructDecl(struct_decl) => {
                     if struct_decl.name == name && struct_decl.is_public {
                         return true;
                     }
                 },
-                frontend::ast::DeclarationKind::Enum(enum_decl) => {
+                frontend::ast::DeclarationKind::EnumDecl(enum_decl) => {
                     if enum_decl.name == name && enum_decl.is_public {
                         return true;
                     }
@@ -526,12 +526,12 @@ pub mod tests {
                         return true;
                     }
                 },
-                frontend::ast::DeclarationKind::Constant(constant) => {
+                frontend::ast::DeclarationKind::ConstantDecl(constant) => {
                     if constant.name == name && constant.is_public {
                         return true;
                     }
                 },
-                frontend::ast::DeclarationKind::Variable(var) => {
+                frontend::ast::DeclarationKind::VariableDecl(var) => {
                     if var.name == name && var.is_public {
                         return true;
                     }
@@ -550,7 +550,7 @@ pub mod tests {
         // 例示的な実装
         for stmt in &ast.statements {
             match &stmt.kind {
-                frontend::ast::StatementKind::Expression(expr) => {
+                frontend::ast::StatementKind::ExpressionStmt(expr) => {
                     collect_identifiers_from_expr(expr, used);
                 },
                 // 他の文タイプの処理

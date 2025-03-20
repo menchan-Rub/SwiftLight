@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
             
             expr = Expression::new(
                 ExpressionKind::Binary {
-                    op: BinaryOperator::LogicalOr,
+                    op: BinaryOperator::Or,
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
@@ -116,7 +116,7 @@ impl<'a> Parser<'a> {
             
             expr = Expression::new(
                 ExpressionKind::Binary {
-                    op: BinaryOperator::LogicalAnd,
+                    op: BinaryOperator::And,
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
@@ -172,8 +172,8 @@ impl<'a> Parser<'a> {
             let op = match operator_token.kind {
                 TokenKind::Less => BinaryOperator::LessThan,
                 TokenKind::Greater => BinaryOperator::GreaterThan,
-                TokenKind::LessEqual => BinaryOperator::LessThanEqual,
-                TokenKind::GreaterEqual => BinaryOperator::GreaterThanEqual,
+                TokenKind::LessEqual => BinaryOperator::LessEqual,
+                TokenKind::GreaterEqual => BinaryOperator::GreaterEqual,
                 _ => unreachable!(),
             };
             
@@ -206,7 +206,7 @@ impl<'a> Parser<'a> {
             
             expr = Expression::new(
                 ExpressionKind::Binary {
-                    op: BinaryOperator::BitwiseOr,
+                    op: BinaryOperator::BitOr,
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
@@ -230,7 +230,7 @@ impl<'a> Parser<'a> {
             
             expr = Expression::new(
                 ExpressionKind::Binary {
-                    op: BinaryOperator::BitwiseXor,
+                    op: BinaryOperator::BitXor,
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
@@ -254,7 +254,7 @@ impl<'a> Parser<'a> {
             
             expr = Expression::new(
                 ExpressionKind::Binary {
-                    op: BinaryOperator::BitwiseAnd,
+                    op: BinaryOperator::BitAnd,
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
@@ -396,7 +396,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Plus => UnaryOperator::Plus,
                 TokenKind::Minus => UnaryOperator::Minus,
                 TokenKind::Bang => UnaryOperator::Not,
-                TokenKind::Tilde => UnaryOperator::BitwiseNot,
+                TokenKind::Tilde => UnaryOperator::BitNot,
                 _ => unreachable!(),
             };
             

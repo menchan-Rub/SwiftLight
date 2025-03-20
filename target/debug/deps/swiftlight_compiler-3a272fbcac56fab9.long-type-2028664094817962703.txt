@@ -1,0 +1,1 @@
+std::result::Result<representation::Value, frontend::error::CompilerError>

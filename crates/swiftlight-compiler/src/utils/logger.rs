@@ -118,13 +118,54 @@ pub enum LogTarget {
 
 /// ロガーインターフェース
 pub trait Logger: Send + Sync {
-    /// ログメッセージを記録
-    fn log(&self, entry: LogEntry);
+    // 非ジェネリックメソッドのみ
     
-    /// トレースメッセージを記録
-    fn trace<M: Into<String>, S: Into<String>>(&self, module: M, message: S) {
-        self.log(LogEntry::new(LogLevel::Trace, module, message));
+    
+    // 文字列バージョン
+    fn debug_str(&self, message: &str);
+    fn info_str(&self, message: &str);
+    fn warn_str(&self, message: &str);
+    fn error_str(&self, message: &str);
+    fn trace_str(&self, message: &str);
+    fn critical_str(&self, message: &str);
+}
+
+// ジェネリックなロギング機能を提供するトレイト
+pub trait GenericLogger: Logger {
+    fn debug<M: fmt::Display>(&self, message: M);
+    fn info<M: fmt::Display>(&self, message: M);
+    fn warn<M: fmt::Display>(&self, message: M);
+    fn error<M: fmt::Display>(&self, message: M);
+    fn trace<M: fmt::Display>(&self, message: M);
+    fn critical<M: fmt::Display>(&self, message: M);
+}
+
+// GenericLoggerの基本実装
+impl<T: Logger> GenericLogger for T {
+    fn debug<M: fmt::Display>(&self, message: M) {
+        self.debug_str(&message.to_string());
     }
+    
+    fn info<M: fmt::Display>(&self, message: M) {
+        self.info_str(&message.to_string());
+    }
+    
+    fn warn<M: fmt::Display>(&self, message: M) {
+        self.warn_str(&message.to_string());
+    }
+    
+    fn error<M: fmt::Display>(&self, message: M) {
+        self.error_str(&message.to_string());
+    }
+    
+    fn trace<M: fmt::Display>(&self, message: M) {
+        self.trace_str(&message.to_string());
+    }
+    
+    fn critical<M: fmt::Display>(&self, message: M) {
+        self.critical_str(&message.to_string());
+    }
+}
     
     /// デバッグメッセージを記録
     fn debug<M: Into<String>, S: Into<String>>(&self, module: M, message: S) {
@@ -156,7 +197,6 @@ pub trait Logger: Send + Sync {
         let message = format!("Performance: {} took {:?}", operation.into(), duration);
         self.info(module, message);
     }
-}
 
 /// 複合ロガー（複数のロガーに出力）
 #[derive(Default)]

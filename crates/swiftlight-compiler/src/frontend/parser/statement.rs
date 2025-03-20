@@ -120,7 +120,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::If {
+            StatementKind::IfStmt {
                 condition,
                 then_branch: Box::new(then_branch),
                 else_branch,
@@ -152,7 +152,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::While {
+            StatementKind::WhileStmt {
                 condition,
                 body: Box::new(body),
             },
@@ -183,7 +183,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::For {
+            StatementKind::ForStmt {
                 variable,
                 iterable,
                 body: Box::new(body),
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
                 
                 let id = self.next_id();
                 Statement::new(
-                    StatementKind::Expression(expr.clone()),
+                    StatementKind::ExpressionStmt(expr.clone()),
                     id,
                     expr.location.clone(),
                 )
@@ -325,7 +325,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::Return(value),
+            StatementKind::ReturnStmt(value),
             id,
             Some(return_token.location.clone()),
         ))
@@ -340,7 +340,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::Break,
+            StatementKind::BreakStmt,
             id,
             Some(break_token.location.clone()),
         ))
@@ -355,7 +355,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::Continue,
+            StatementKind::ContinueStmt,
             id,
             Some(continue_token.location.clone()),
         ))
@@ -370,7 +370,7 @@ impl<'a> Parser<'a> {
         
         let id = self.next_id();
         Ok(Statement::new(
-            StatementKind::Expression(expr.clone()),
+            StatementKind::ExpressionStmt(expr.clone()),
             id,
             expr.location.clone(),
         ))
@@ -448,7 +448,7 @@ mod tests {
         
         let stmt = parser.parse_statement().unwrap();
         match &stmt.kind {
-            StatementKind::Expression(expr) => {
+            StatementKind::ExpressionStmt(expr) => {
                 match &expr.kind {
                     ExpressionKind::Literal(_) => {},
                     _ => panic!("Expected literal expression"),
@@ -481,7 +481,7 @@ mod tests {
         
         let stmt = parser.parse_statement().unwrap();
         match &stmt.kind {
-            StatementKind::If { condition: _, then_branch: _, else_branch } => {
+            StatementKind::IfStmt { condition: _, then_branch: _, else_branch } => {
                 assert!(else_branch.is_some());
             },
             _ => panic!("Expected if statement"),

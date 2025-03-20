@@ -57,7 +57,7 @@ impl<'a> CFGAnalysis<'a> {
     pub fn build(&mut self) -> Result<()> {
         // 関数が空の場合はエラー
         if self.function.blocks.is_empty() {
-            return Err(CompilerError::code_generation_error(
+            return Err(CompilerError::new(ErrorKind::CodeGeneration, 
                 format!("関数 '{}' にブロックがありません", self.function.name),
                 None,
             ));
@@ -170,7 +170,7 @@ impl<'a> CFGAnalysis<'a> {
                             }
                         } else {
                             // ブロックが見つからない場合は何らかのエラー
-                            return Err(CompilerError::code_generation_error(
+                            return Err(CompilerError::new(ErrorKind::CodeGeneration, 
                                 format!("CFG構築中にブロック '{}' が見つかりません", block_label),
                                 None,
                             ));
@@ -407,7 +407,7 @@ impl<'a, T: Clone + PartialEq> DataFlowAnalysis<'a, T> {
         }
         
         if iterations >= MAX_ITERATIONS {
-            return Err(CompilerError::code_generation_error(
+            return Err(CompilerError::new(ErrorKind::CodeGeneration, 
                 format!("データフロー解析が収束しませんでした（関数: {}）", self.cfg.function.name),
                 None,
             ));

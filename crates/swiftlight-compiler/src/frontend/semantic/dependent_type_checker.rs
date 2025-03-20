@@ -837,7 +837,7 @@ impl DependentTypeChecker {
                                 self.env.add_variable(var_decl.name.clone(), init_type);
                             }
                         },
-                        StatementKind::Expression(expr) => {
+                        StatementKind::ExpressionStmt(expr) => {
                             // 式を評価
                             self.check_expression(expr)?;
                         },
@@ -1037,7 +1037,7 @@ impl DependentTypeChecker {
             },
             
             // 論理演算子（&&, ||）
-            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => {
+            BinaryOperator::And | BinaryOperator::Or => {
                 // ブール型同士の演算
                 if self.is_boolean_type(lhs_type) && self.is_boolean_type(rhs_type) {
                     return Ok(Type::Basic("Bool".to_string()));
@@ -1053,7 +1053,7 @@ impl DependentTypeChecker {
             },
             
             // ビット演算子（&, |, ^, <<, >>）
-            BinaryOperator::BitwiseAnd | BinaryOperator::BitwiseOr | BinaryOperator::BitwiseXor => {
+            BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
                 // 整数型同士の演算
                 if self.is_numeric_type(lhs_type) && self.is_numeric_type(rhs_type) && 
                    !matches!(lhs_type, Type::Basic(name) if name == "Float" || name == "Double") &&
@@ -1150,7 +1150,7 @@ impl DependentTypeChecker {
             },
             
             // ビット反転（~）
-            UnaryOperator::BitwiseNot => {
+            UnaryOperator::BitNot => {
                 // 整数型のみ
                 if self.is_numeric_type(operand_type) && 
                    !matches!(operand_type, Type::Basic(name) if name == "Float" || name == "Double") {
@@ -1569,9 +1569,9 @@ fn operator_to_string(op: &BinaryOperator) -> String {
         BinaryOperator::GreaterThanOrEqual => ">=".to_string(),
         BinaryOperator::And => "&&".to_string(),
         BinaryOperator::Or => "||".to_string(),
-        BinaryOperator::BitwiseAnd => "&".to_string(),
-        BinaryOperator::BitwiseOr => "|".to_string(),
-        BinaryOperator::BitwiseXor => "^".to_string(),
+        BinaryOperator::BitAnd => "&".to_string(),
+        BinaryOperator::BitOr => "|".to_string(),
+        BinaryOperator::BitXor => "^".to_string(),
         BinaryOperator::LeftShift => "<<".to_string(),
         BinaryOperator::RightShift => ">>".to_string(),
         _ => format!("{:?}", op),
@@ -1583,7 +1583,7 @@ fn unary_operator_to_string(op: &UnaryOperator) -> String {
     match op {
         UnaryOperator::Negate => "-".to_string(),
         UnaryOperator::Not => "!".to_string(),
-        UnaryOperator::BitwiseNot => "~".to_string(),
+        UnaryOperator::BitNot => "~".to_string(),
         UnaryOperator::Dereference => "*".to_string(),
         UnaryOperator::Reference => "&".to_string(),
         _ => format!("{:?}", op),

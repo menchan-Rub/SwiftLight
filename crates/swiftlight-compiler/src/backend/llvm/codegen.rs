@@ -122,13 +122,13 @@ impl<'ctx> CodeGenerator<'ctx> {
         
         // 型の種類に応じてLLVM型を生成
         let llvm_type = match &ty.kind {
-            TypeKind::Void => self.context.void_type().into(),
-            TypeKind::Boolean => self.context.bool_type().into(),
-            TypeKind::Integer { bits, signed } => {
+            TypeKind::Primitive(PrimitiveType::Void) => self.context.void_type().into(),
+            TypeKind::Primitive(PrimitiveType::Boolean) => self.context.bool_type().into(),
+            TypeKind::Primitive(PrimitiveType::Integer { bits, signed }) => {
                 let int_type = self.context.custom_width_int_type(*bits as u32);
                 int_type.into()
             },
-            TypeKind::Float { bits } => {
+            TypeKind::Primitive(PrimitiveType::Float { bits }) => {
                 match *bits {
                     32 => self.context.f32_type().into(),
                     64 => self.context.f64_type().into(),
@@ -155,15 +155,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 };
                 
                 match pointee_type {
-                    AnyTypeEnum::ArrayType(arr_ty) => arr_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::FloatType(float_ty) => float_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::FunctionType(fn_ty) => fn_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::IntType(int_ty) => int_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::PointerType(ptr_ty) => ptr_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::StructType(struct_ty) => struct_ty.ptr_type(AddressSpace::Generic).into(),
-                    AnyTypeEnum::VectorType(vec_ty) => vec_ty.ptr_type(AddressSpace::Generic).into(),
+                    AnyTypeEnum::ArrayType(arr_ty) => arr_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::FloatType(float_ty) => float_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::FunctionType(fn_ty) => fn_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::IntType(int_ty) => int_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::PointerType(ptr_ty) => ptr_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::StructType(struct_ty) => struct_ty.ptr_type(AddressSpace::default()).into(),
+                    AnyTypeEnum::VectorType(vec_ty) => vec_ty.ptr_type(AddressSpace::default()).into(),
                     AnyTypeEnum::VoidType(_) => {
-                        self.context.i8_type().ptr_type(AddressSpace::Generic).into()
+                        self.context.i8_type().ptr_type(AddressSpace::default()).into()
                     }
                 }
             },
@@ -304,7 +304,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // 戻り値の型を関数型に適した形式に変換
                 let fn_return_type = match return_type {
                     AnyTypeEnum::VoidType(_) => self.context.void_type(),
-                    AnyTypeEnum::ArrayType(arr_ty) => return Ok(arr_ty.ptr_type(AddressSpace::Generic).into()),
+                    AnyTypeEnum::ArrayType(arr_ty) => return Ok(arr_ty.ptr_type(AddressSpace::default()).into()),
                     AnyTypeEnum::FloatType(float_ty) => return Ok(float_ty.fn_type(&[], false).into()),
                     AnyTypeEnum::IntType(int_ty) => return Ok(int_ty.fn_type(&[], false).into()),
                     AnyTypeEnum::PointerType(ptr_ty) => return Ok(ptr_ty.fn_type(&[], false).into()),
@@ -343,7 +343,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         // 戻り値の型を取得
         let return_type = self.get_type(signature.return_type_id)?;
         let return_type = match return_type {
-            AnyTypeEnum::VoidType(_) => self.context.void_type().into(),
+            AnyTypeEnum::VoidType(_) => self.context.void_type(),
             AnyTypeEnum::IntType(int_ty) => int_ty.into(),
             AnyTypeEnum::FloatType(float_ty) => float_ty.into(),
             AnyTypeEnum::PointerType(ptr_ty) => ptr_ty.into(),
@@ -972,23 +972,22 @@ impl<'ctx> CodeGenerator<'ctx> {
         } else {
             // 初期値がない場合はゼロで初期化
             let default_value = match global_var.as_pointer_value().get_type().get_element_type() {
-                BasicTypeEnum::IntType(int_ty) => int_ty.const_zero().into(),
-                BasicTypeEnum::FloatType(float_ty) => float_ty.const_zero().into(),
-                BasicTypeEnum::PointerType(ptr_ty) => ptr_ty.const_null().into(),
-                BasicTypeEnum::StructType(struct_ty) => struct_ty.const_zero().into(),
-                BasicTypeEnum::ArrayType(array_ty) => array_ty.const_zero().into(),
-                _ => {
+                AnyTypeEnum::IntType(int_ty) => int_ty.const_zero(),
+                AnyTypeEnum::FloatType(float_ty) => float_ty.const_zero(),
+                AnyTypeEnum::PointerType(ptr_ty) => ptr_ty.const_null(),
+                AnyTypeEnum::StructType(struct_ty) => struct_ty.const_zero(),
+                AnyTypeEnum::ArrayType(array_ty) => array_ty.const_zero(),
+                unsupported_type => {
                     return Err(CompilerError::new(
                         ErrorKind::CodeGen,
                         format!("サポートされていないグローバル変数型のデフォルト初期化: {:?}", 
-                            global_var.as_pointer_value().get_type().get_element_type()),
+                            unsupported_type),
                         None
                     ));
                 }
             };
             global_var.set_initializer(&default_value);
         }
-        
         // 変数をキャッシュに登録
         self.variables.insert(var_id, global_var.as_pointer_value());
         
@@ -1164,7 +1163,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     ))?;
                 
                 // 変数から値を読み込む
-                let load = self.builder.build_load(*var_ptr, name);
+                let load = self.builder.build_load(name, "load");
                 
                 // 結果を値マップに登録
                 self.values.insert(*result_id, load);
@@ -1976,7 +1975,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 };
                 
                 // mallocを呼び出す
-                let malloc_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+                let malloc_type = self.context.i8_type().ptr_type(AddressSpace::default());
                 let malloc_fn_type = self.context.i64_type().fn_type(&[self.context.i64_type().into()], false);
                 let module = self.module.as_ref().unwrap();
                 
@@ -2023,13 +2022,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // i8*にキャスト
                 let i8_ptr = self.builder.build_pointer_cast(
                     ptr_value,
-                    self.context.i8_type().ptr_type(AddressSpace::Generic),
+                    self.context.i8_type().ptr_type(AddressSpace::default()),
                     "free_cast"
                 );
                 
                 // freeを呼び出す
                 let free_fn_type = self.context.void_type().fn_type(
-                    &[self.context.i8_type().ptr_type(AddressSpace::Generic).into()],
+                    &[self.context.i8_type().ptr_type(AddressSpace::default()).into()],
                     false
                 );
                 let module = self.module.as_ref().unwrap();
@@ -2155,15 +2154,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let i32_type = self.context.i32_type();
                 let i64_type = self.context.i64_type();
                 let void_type = self.context.void_type();
-                let i8_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
-                let thread_id_type = i64_type.ptr_type(AddressSpace::Generic);
+                let i8_ptr_type = i8_type.ptr_type(AddressSpace::default());
+                let thread_id_type = i64_type.ptr_type(AddressSpace::default());
                 
                 // スレッド属性型の定義
                 let thread_attr_type = i8_ptr_type;
                 
                 // スレッド関数型の定義（void* (*)(void*)）
                 let thread_func_type = i8_type.fn_type(&[i8_ptr_type.into()], false);
-                let thread_func_ptr_type = thread_func_type.ptr_type(AddressSpace::Generic);
+                let thread_func_ptr_type = thread_func_type.ptr_type(AddressSpace::default());
                 
                 // 引数構造体の作成
                 let args_count = args.len();
@@ -2199,7 +2198,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         
                         // 構造体フィールドへのポインタを取得
                         let field_ptr = unsafe {
-                            self.builder.build_struct_gep(i as u32, &format!("arg_{}_ptr", i))
+                            self.builder.build_struct_gep(&format!("arg_{}_ptr", i))
                         }?;
                         
                         // フィールドに値を格納
@@ -2237,12 +2236,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let typed_args_ptr = if args_count > 0 {
                             self.builder.build_pointer_cast(
                                 args_ptr,
-                                args_struct_type.ptr_type(AddressSpace::Generic),
+                                args_struct_type.ptr_type(AddressSpace::default()),
                                 "typed_args_ptr"
                             )
                         } else {
                             // 引数がない場合はダミーポインタ
-                            args_struct_type.ptr_type(AddressSpace::Generic).const_null()
+                            args_struct_type.ptr_type(AddressSpace::default()).const_null()
                         };
                         
                         // 引数を抽出して関数を呼び出す
@@ -2250,7 +2249,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         if args_count > 0 {
                             for i in 0..args_count {
                                 let arg_ptr = unsafe {
-                                    self.builder.build_struct_gep(i as u32, &format!("arg_{}_ptr", i))
+                                    self.builder.build_struct_gep(&format!("arg_{}_ptr", i))
                                 }.unwrap();
                                 let arg = self.builder.build_load(&format!("arg_{}", i));
                                 call_args.push(arg);
@@ -2357,10 +2356,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 );
                 
                 // pthread_createの呼び出し
-                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
                 let create_result = self.builder.build_call(
-                    pthread_create,
-                    &[
+                    pthread_create, &[
                         thread_id.into(),
                         thread_attr_loaded.into(),
                         wrapper_func_ptr.into(),
@@ -2442,15 +2440,14 @@ impl<'ctx> CodeGenerator<'ctx> {
                     None => module.add_function("pthread_attr_destroy", pthread_attr_destroy_type, None),
                 };
                 
-                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
                 self.builder.build_call(
-                    pthread_attr_destroy,
-                    &[thread_attr_loaded.into()],
+                    pthread_attr_destroy, &[thread_attr_loaded.into()],
                     "attr_destroy_result"
                 );
                 
                 // スレッドIDを結果として保存
-                let thread_id_loaded = self.builder.build_load(thread_id, "thread_id_load");
+                let thread_id_loaded = self.builder.build_load("thread_id_load", "load");
                 self.values.insert(*result_id, thread_id_loaded);
                 
                 // スレッド管理テーブルに登録
@@ -2459,7 +2456,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // スレッドレジストリに新しいエントリを追加
                 let i64_type = self.context.i64_type();
                 let i32_type = self.context.i32_type();
-                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
                 
                 // スレッド状態の定数
                 let thread_state_created = i32_type.const_int(1, false); // 作成済み
@@ -2489,15 +2486,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // 実際の実装では、スレッドの状態管理やリソース追跡のためのテーブルを維持する
             },
             InstructionKind::CreateThread { entry_fn, args, result_id } => {
-                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
-                let thread_id_type = self.context.i64_type().ptr_type(AddressSpace::Generic);
+                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                let thread_id_type = self.context.i64_type().ptr_type(AddressSpace::default());
                 let thread_attr_type = i8_ptr_type;
                 let thread_func_type = self.context.i8_type().fn_type(&[i8_ptr_type.into()], false);
                 let pthread_create_type = self.context.i32_type().fn_type(
                     &[
                         thread_id_type.into(),
                         thread_attr_type.into(),
-                        thread_func_type.ptr_type(AddressSpace::Generic).into(),
+                        thread_func_type.ptr_type(AddressSpace::default()).into(),
                         i8_ptr_type.into()
                     ],
                     false
@@ -2538,10 +2535,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 
                 // PTHREAD_CREATE_JOINABLE = 0
                 let joinable = i32_type.const_int(0, false);
-                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
                 let attr_setdetach_result = self.builder.build_call(
-                    pthread_attr_setdetachstate,
-                    &[thread_attr_loaded.into(), joinable.into()],
+                    pthread_attr_setdetachstate, &[thread_attr_loaded.into(), joinable.into()],
                     "attr_setdetach_result"
                 );
                 
@@ -2554,10 +2550,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 
                 // デフォルトスタックサイズ: 8MB
                 let default_stack_size = self.context.i64_type().const_int(8 * 1024 * 1024, false);
-                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
                 let attr_setstack_result = self.builder.build_call(
-                    pthread_attr_setstacksize,
-                    &[thread_attr_loaded.into(), default_stack_size.into()],
+                    pthread_attr_setstacksize, &[thread_attr_loaded.into(), default_stack_size.into()],
                     "attr_setstack_result"
                 );
                 
@@ -2574,7 +2569,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // スレッド関数ポインタの準備
                 let func_ptr = self.builder.build_pointer_cast(
                     thread_func.as_global_value().as_pointer_value(),
-                    thread_func_type.ptr_type(AddressSpace::Generic),
+                    thread_func_type.ptr_type(AddressSpace::default()),
                     "thread_func"
                 );
                 
@@ -2590,10 +2585,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder.position_at_end(create_block);
                 
                 // pthread_createの呼び出し
-                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
                 let create_result = self.builder.build_call(
-                    pthread_create,
-                    &[
+                    pthread_create, &[
                         thread_id.into(),
                         thread_attr_loaded.into(),
                         func_ptr.into(),
@@ -2646,7 +2640,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     }
                 };
                 
-                let stderr_ptr = self.builder.build_load(stderr_global.as_pointer_value(), "stderr");
+                let stderr_ptr = self.builder.build_load("stderr", "load");
                 
                 // エラーメッセージフォーマット文字列
                 let error_format = self.builder.build_global_string_ptr("スレッド作成エラー: %s\n", "error_format");
@@ -2667,7 +2661,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 
                 self.builder.build_unconditional_branch(continue_block);
                 // スレッドIDを結果として保存
-                let thread_id_loaded = self.builder.build_load(thread_id, "thread_id_load");
+                let thread_id_loaded = self.builder.build_load("thread_id_load", "load");
                 self.values.insert(*result_id, thread_id_loaded);
             },
             
@@ -2687,7 +2681,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // pthread_joinをインポート
                 let module = self.module.as_ref().unwrap();
                 
-                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::Generic);
+                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
                 let thread_id_type = self.context.i64_type();
                 
                 // 高度なスレッド待機機能の実装
@@ -2705,7 +2699,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let pthread_join_type = self.context.i32_type().fn_type(
                     &[
                         thread_id_type.into(),
-                        i8_ptr_type.ptr_type(AddressSpace::Generic).into()
+                        i8_ptr_type.ptr_type(AddressSpace::default()).into()
                     ],
                     false
                 );
@@ -2729,8 +2723,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let pthread_timedjoin_np_type = self.context.i32_type().fn_type(
                     &[
                         thread_id_type.into(),
-                        i8_ptr_type.ptr_type(AddressSpace::Generic).into(),
-                        timespec_type.ptr_type(AddressSpace::Generic).into()
+                        i8_ptr_type.ptr_type(AddressSpace::default()).into(),
+                        timespec_type.ptr_type(AddressSpace::default()).into()
                     ],
                     false
                 );
@@ -2743,8 +2737,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // macOS: pthread_join + timeout simulation
                 let nanosleep_type = self.context.i32_type().fn_type(
                     &[
-                        timespec_type.ptr_type(AddressSpace::Generic).into(),
-                        timespec_type.ptr_type(AddressSpace::Generic).into()
+                        timespec_type.ptr_type(AddressSpace::default()).into(),
+                        timespec_type.ptr_type(AddressSpace::default()).into()
                     ],
                     false
                 );
@@ -2770,7 +2764,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 
                 // スレッド実行結果を格納するためのメモリ領域を確保
                 // 高度なメモリ安全性のために、適切なアライメントと型情報を保持
-                let result_ptr_type = i8_ptr_type.ptr_type(AddressSpace::Generic);
+                let result_ptr_type = i8_ptr_type.ptr_type(AddressSpace::default());
                 let result_ptr = self.builder.build_alloca(result_ptr_type, "thread_result_ptr");
                 
                 // 結果ポインタの初期化（NULL）
@@ -2817,7 +2811,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let type_info_ptr = self.builder.build_alloca(type_info_type, "result_type_info");
                 let type_id_ptr = self.builder.build_struct_gep(type_info_ptr, 0, "type_id_ptr").unwrap();
                 let type_name_ptr = self.builder.build_struct_gep(type_info_ptr, 1, "type_name_ptr").unwrap();
-                let type_size_ptr = self.builder.build_struct_gep(type_info_ptr, 2, "type_size_ptr").unwrap();
+                let type_size_ptr = self.builder.build_struct_gep(2, "type_size_ptr").unwrap();
                 
                 // デフォルトの型情報を設定
                 self.builder.build_store(type_id_ptr, self.context.i32_type().const_int(0, false));
@@ -2836,12 +2830,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // タイムアウト値の設定（デフォルト5秒）
                 let timespec_ptr = self.builder.build_alloca(timespec_type, "timespec");
                 let tv_sec_ptr = self.builder.build_struct_gep(timespec_ptr, 0, "tv_sec_ptr").unwrap();
-                let tv_nsec_ptr = self.builder.build_struct_gep(timespec_ptr, 1, "tv_nsec_ptr").unwrap();
+                let tv_nsec_ptr = self.builder.build_struct_gep(1, "tv_nsec_ptr").unwrap();
                 
                 // タイムアウト値を動的に設定できるようにする
                 let timeout_config_fn = match module.get_function("swiftlight_get_thread_timeout") {
-                    Some(f) => f,
-                    None => {
+                    Some(f) => f, None => {
                         let timeout_fn_type = self.context.i64_type().fn_type(&[], false);
                         module.add_function("swiftlight_get_thread_timeout", timeout_fn_type, None)
                     }
@@ -2877,7 +2870,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     match module.get_function("swiftlight_get_thread_metrics") {
                         Some(f) => f,
                         None => {
-                            let metrics_fn_type = i8_ptr_type.ptr_type(AddressSpace::Generic).fn_type(&[thread_id_type.into()], false);
+                            let metrics_fn_type = i8_ptr_type.ptr_type(AddressSpace::default()).fn_type(&[thread_id_type.into()], false);
                             module.add_function("swiftlight_get_thread_metrics", metrics_fn_type, None)
                         }
                     },
@@ -2901,7 +2894,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // 優先度に基づいたタイムアウト調整
                 let priority_adjusted_timeout = self.builder.build_alloca(timespec_type, "priority_adjusted_timespec");
                 let adj_tv_sec_ptr = self.builder.build_struct_gep(priority_adjusted_timeout, 0, "adj_tv_sec_ptr").unwrap();
-                let adj_tv_nsec_ptr = self.builder.build_struct_gep(priority_adjusted_timeout, 1, "adj_tv_nsec_ptr").unwrap();
+                let adj_tv_nsec_ptr = self.builder.build_struct_gep(1, "adj_tv_nsec_ptr").unwrap();
                 
                 // 高優先度スレッドは長めのタイムアウトを設定
                 let high_priority = self.context.i32_type().const_int(10, false);
@@ -2933,7 +2926,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     match module.get_function("swiftlight_get_current_time") {
                         Some(f) => f,
                         None => {
-                            let time_fn_type = timespec_type.ptr_type(AddressSpace::Generic).fn_type(&[], false);
+                            let time_fn_type = timespec_type.ptr_type(AddressSpace::default()).fn_type(&[], false);
                             module.add_function("swiftlight_get_current_time", time_fn_type, None)
                         }
                     },
@@ -3022,14 +3015,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                     }
                 };
                 
-                let stderr_ptr = self.builder.build_load(stderr_global.as_pointer_value(), "stderr");
+                let stderr_ptr = self.builder.build_load("stderr", "load");
                 
                 // fprintfの取得
                 let fprintf_type = self.context.i32_type().fn_type(
                     &[
-                        i8_ptr_type.into(),
-                        i8_ptr_type.into(),
-                        self.context.i8_type().ptr_type(AddressSpace::Generic).into()
+                        i8_ptr_type.into(), i8_ptr_type.into(),
+                        self.context.i8_type().ptr_type(AddressSpace::default()).into()
                     ],
                     true
                 );
@@ -3128,7 +3120,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let type_registry_fn = match module.get_function("swiftlight_get_type_registry") {
                             Some(f) => f,
                             None => {
-                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[], false);
+                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(&[], false);
                                 module.add_function("swiftlight_get_type_registry", registry_fn_type, None)
                             }
                         };
@@ -3141,7 +3133,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let type_id_fn = match module.get_function("swiftlight_extract_type_id") {
                             Some(f) => f,
                             None => {
-                                let type_id_fn_type = self.context.i64_type().fn_type(&[self.context.i8_type().ptr_type(AddressSpace::Generic).into()], false);
+                                let type_id_fn_type = self.context.i64_type().fn_type(&[self.context.i8_type().ptr_type(AddressSpace::default()).into()], false);
                                 module.add_function("swiftlight_extract_type_id", type_id_fn_type, None)
                             }
                         };
@@ -3157,7 +3149,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         };
                         
                         // 型IDの取得
-                        let type_id_args = &[self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "target_i8ptr").into()];
+                        let type_id_args = &[self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "target_i8ptr").into()];
                         let type_id = self.builder.build_call(type_id_fn, type_id_args, "type_id");
                         let type_id_val = type_id.try_as_basic_value().left().unwrap().into_int_value();
                         
@@ -3165,9 +3157,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_type_info_fn = match module.get_function("swiftlight_get_type_info") {
                             Some(f) => f,
                             None => {
-                                let type_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
+                                let type_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
                                     &[
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into(),
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into(),
                                         self.context.i64_type().into()
                                     ], 
                                     false
@@ -3187,7 +3179,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let func_registry_fn = match module.get_function("swiftlight_get_function_registry") {
                             Some(f) => f,
                             None => {
-                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[], false);
+                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(&[], false);
                                 module.add_function("swiftlight_get_function_registry", registry_fn_type, None)
                             }
                         };
@@ -3200,10 +3192,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_func_info_fn = match module.get_function("swiftlight_get_function_info") {
                             Some(f) => f,
                             None => {
-                                let func_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
+                                let func_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
                                     &[
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into(),
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into()
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into(),
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into()
                                     ], 
                                     false
                                 );
@@ -3222,7 +3214,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         
                         let func_info_args = &[
                             func_registry_ptr.into(), 
-                            self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "func_i8ptr").into()
+                            self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "func_i8ptr").into()
                         ];
                         let func_info = self.builder.build_call(get_func_info_fn, func_info_args, "func_info");
                         let func_info_ptr = func_info.try_as_basic_value().left().unwrap().into_pointer_value();
@@ -3234,7 +3226,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let module_registry_fn = match module.get_function("swiftlight_get_module_registry") {
                             Some(f) => f,
                             None => {
-                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[], false);
+                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(&[], false);
                                 module.add_function("swiftlight_get_module_registry", registry_fn_type, None)
                             }
                         };
@@ -3256,10 +3248,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_module_info_fn = match module.get_function("swiftlight_get_module_info") {
                             Some(f) => f,
                             None => {
-                                let module_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
+                                let module_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
                                     &[
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into(),
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into()
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into(),
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into()
                                     ], 
                                     false
                                 );
@@ -3269,7 +3261,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         
                         let module_info_args = &[
                             module_registry_ptr.into(), 
-                            self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "module_name_ptr").into()
+                            self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "module_name_ptr").into()
                         ];
                         let module_info = self.builder.build_call(get_module_info_fn, module_info_args, "module_info");
                         let module_info_ptr = module_info.try_as_basic_value().left().unwrap().into_pointer_value();
@@ -3291,15 +3283,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_field_info_fn = match module.get_function("swiftlight_get_field_info") {
                             Some(f) => f,
                             None => {
-                                let field_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
-                                    &[self.context.i8_type().ptr_type(AddressSpace::Generic).into()], 
+                                let field_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
+                                    &[self.context.i8_type().ptr_type(AddressSpace::default()).into()], 
                                     false
                                 );
                                 module.add_function("swiftlight_get_field_info", field_info_fn_type, None)
                             }
                         };
                         
-                        let field_info_args = &[self.builder.build_bitcast(struct_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "struct_i8ptr").into()];
+                        let field_info_args = &[self.builder.build_bitcast(struct_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "struct_i8ptr").into()];
                         let field_info = self.builder.build_call(get_field_info_fn, field_info_args, "field_info");
                         let field_info_ptr = field_info.try_as_basic_value().left().unwrap().into_pointer_value();
                         
@@ -3321,15 +3313,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_variant_info_fn = match module.get_function("swiftlight_get_variant_info") {
                             Some(f) => f,
                             None => {
-                                let variant_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
-                                    &[self.context.i8_type().ptr_type(AddressSpace::Generic).into()], 
+                                let variant_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
+                                    &[self.context.i8_type().ptr_type(AddressSpace::default()).into()], 
                                     false
                                 );
                                 module.add_function("swiftlight_get_variant_info", variant_info_fn_type, None)
                             }
                         };
                         
-                        let variant_info_args = &[self.builder.build_bitcast(enum_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "enum_i8ptr").into()];
+                        let variant_info_args = &[self.builder.build_bitcast(enum_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "enum_i8ptr").into()];
                         let variant_info = self.builder.build_call(get_variant_info_fn, variant_info_args, "variant_info");
                         let variant_info_ptr = variant_info.try_as_basic_value().left().unwrap().into_pointer_value();
                         
@@ -3340,7 +3332,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let meta_registry_fn = match module.get_function("swiftlight_get_meta_registry") {
                             Some(f) => f,
                             None => {
-                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[], false);
+                                let registry_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(&[], false);
                                 module.add_function("swiftlight_get_meta_registry", registry_fn_type, None)
                             }
                         };
@@ -3353,7 +3345,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let meta_id_fn = match module.get_function("swiftlight_extract_meta_id") {
                             Some(f) => f,
                             None => {
-                                let meta_id_fn_type = self.context.i64_type().fn_type(&[self.context.i8_type().ptr_type(AddressSpace::Generic).into()], false);
+                                let meta_id_fn_type = self.context.i64_type().fn_type(&[self.context.i8_type().ptr_type(AddressSpace::default()).into()], false);
                                 module.add_function("swiftlight_extract_meta_id", meta_id_fn_type, None)
                             }
                         };
@@ -3368,7 +3360,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                             }
                         };
                         
-                        let meta_id_args = &[self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::Generic), "meta_target_i8ptr").into()];
+                        let meta_id_args = &[self.builder.build_bitcast(target_ptr, self.context.i8_type().ptr_type(AddressSpace::default()), "meta_target_i8ptr").into()];
                         let meta_id = self.builder.build_call(meta_id_fn, meta_id_args, "meta_id");
                         let meta_id_val = meta_id.try_as_basic_value().left().unwrap().into_int_value();
                         
@@ -3376,9 +3368,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let get_meta_info_fn = match module.get_function("swiftlight_get_meta_info") {
                             Some(f) => f,
                             None => {
-                                let meta_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::Generic).fn_type(
+                                let meta_info_fn_type = self.context.i8_type().ptr_type(AddressSpace::default()).fn_type(
                                     &[
-                                        self.context.i8_type().ptr_type(AddressSpace::Generic).into(),
+                                        self.context.i8_type().ptr_type(AddressSpace::default()).into(),
                                         self.context.i64_type().into()
                                     ], 
                                     false
@@ -3535,7 +3527,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         
         // グローバル変数の参照
         if let Some(global) = module.get_global(name) {
-            return Ok(self.builder.build_load(global.as_pointer_value(), name).map_err(|e| {
+            return Ok(self.builder.build_load(global.as_pointer_value(), "load", name).map_err(|e| {
                 CompilerError::new(
                     ErrorKind::CodegenError,
                     format!("LLVM load error for global {}: {}", name, e),
@@ -3555,7 +3547,7 @@ impl<'ctx> CodeGenerator<'ctx> {
     fn generate_cast(&mut self, value: BasicValueEnum<'ctx>, from_type: &Type, to_type: &Type, name: &str) -> Result<BasicValueEnum<'ctx>> {
         match (from_type.kind, to_type.kind) {
             // 整数→整数キャスト
-            (TypeKind::Int(from_bits), TypeKind::Int(to_bits)) => {
+            (TypeKind::Primitive(PrimitiveType::Integer { bits: from_bits, signed: true }), TypeKind::Primitive(PrimitiveType::Integer { bits: to_bits, signed: true })) => {
                 let value = value.into_int_value();
                 if from_bits < to_bits {
                     Ok(self.builder.build_int_s_extend(value, self.context.custom_width_int_type(to_bits as u32), name).unwrap().into())
@@ -3567,7 +3559,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
             
             // 浮動小数点→浮動小数点キャスト
-            (TypeKind::Float(from_kind), TypeKind::Float(to_kind)) => {
+            (TypeKind::Primitive(PrimitiveType::Float { bits: from_kind }), TypeKind::Primitive(PrimitiveType::Float { bits: to_kind })) => {
                 let value = value.into_float_value();
                 match (from_kind, to_kind) {
                     (swift_ir::FloatKind::F32, swift_ir::FloatKind::F64) => {
@@ -3581,7 +3573,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
             
             // 整数→浮動小数点キャスト
-            (TypeKind::Int(_), TypeKind::Float(float_kind)) => {
+            (TypeKind::Primitive(PrimitiveType::Integer { bits: _, signed: true }), TypeKind::Primitive(PrimitiveType::Float { bits: float_kind })) => {
                 let int_value = value.into_int_value();
                 let float_type = match float_kind {
                     swift_ir::FloatKind::F32 => self.context.f32_type(),
@@ -3592,7 +3584,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             },
             
             // 浮動小数点→整数キャスト
-            (TypeKind::Float(_), TypeKind::Int(int_bits)) => {
+            (TypeKind::Primitive(PrimitiveType::Float { bits: _ }), TypeKind::Primitive(PrimitiveType::Integer { bits: int_bits, signed: true })) => {
                 let float_value = value.into_float_value();
                 let int_type = self.context.custom_width_int_type(int_bits as u32);
                 

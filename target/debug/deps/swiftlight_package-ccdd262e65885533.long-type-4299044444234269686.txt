@@ -1,2 +1,0 @@
-impl Future<Output = result::Result<reqwest::async_impl::response::Response, reqwest::error::Error>>
-impl Future<Output = std::result::Result<reqwest::Response, reqwest::Error>>

@@ -650,7 +650,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::If {
+            kind: StatementKind::IfStmt {
                 condition,
                 then_branch,
                 else_branch,
@@ -673,7 +673,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::While {
+            kind: StatementKind::WhileStmt {
                 condition,
                 body,
             },
@@ -708,7 +708,7 @@ impl<'a> Parser<'a> {
                     Some(Box::new(Statement {
                         id: self.next_id(),
                         location: expr.location.clone(),
-                        kind: StatementKind::Expression {
+                        kind: StatementKind::ExpressionStmt {
                             expression: Box::new(expr),
                         },
                     }))
@@ -745,7 +745,7 @@ impl<'a> Parser<'a> {
             Ok(Statement {
                 id: node_id,
                 location,
-                kind: StatementKind::For {
+                kind: StatementKind::ForStmt {
                     initializer,
                     condition,
                     increment,
@@ -791,7 +791,7 @@ impl<'a> Parser<'a> {
             Ok(Statement {
                 id: node_id,
                 location,
-                kind: StatementKind::ForEach {
+                kind: StatementKind::ForStmtEach {
                     variable: ast::VariableDeclaration {
                         id: self.next_id(),
                         name: variable,
@@ -827,7 +827,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::Return {
+            kind: StatementKind::ReturnStmt {
                 expression: expr,
             },
         })
@@ -846,7 +846,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::Break,
+            kind: StatementKind::BreakStmt,
         })
     }
     
@@ -863,7 +863,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::Continue,
+            kind: StatementKind::ContinueStmt,
         })
     }
     
@@ -878,7 +878,7 @@ impl<'a> Parser<'a> {
         Ok(Statement {
             id: node_id,
             location,
-            kind: StatementKind::Expression {
+            kind: StatementKind::ExpressionStmt {
                 expression: Box::new(expr),
             },
         })
@@ -963,7 +963,7 @@ impl<'a> Parser<'a> {
                         TokenKind::Plus => UnaryOperator::Plus,
                         TokenKind::Minus => UnaryOperator::Minus,
                         TokenKind::Not => UnaryOperator::Not,
-                        TokenKind::BitwiseNot => UnaryOperator::BitwiseNot,
+                        TokenKind::BitwiseNot => UnaryOperator::BitNot,
                         _ => unreachable!(),
                     };
                     
@@ -1267,7 +1267,7 @@ impl<'a> Parser<'a> {
     fn parse_if_expression(&mut self) -> Result<Expression> {
         let if_stmt = self.parse_if_statement()?;
         
-        if let StatementKind::If { condition, then_branch, else_branch } = if_stmt.kind {
+        if let StatementKind::IfStmt { condition, then_branch, else_branch } = if_stmt.kind {
             Ok(Expression {
                 id: self.next_id(),
                 location: if_stmt.location.clone(),
