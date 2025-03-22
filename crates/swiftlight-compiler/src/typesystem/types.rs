@@ -38,17 +38,106 @@ use super::RegionId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub u32);
 
+impl TypeId {
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+    
+    pub const VOID: Self = TypeId(0);
+}
+
+impl std::fmt::Display for TypeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Type({})", self.0)
+    }
+}
+
 // 型エイリアスと仮定義（コンパイルを通すため）
 // 実際のプロジェクト実装時に適切に置き換える
 pub type SourceLocation = (usize, usize);
 
-// 前方宣言（後で詳細に定義されるため、ここでは簡略型を使用）
-#[derive(Debug, Clone)]
+/// 型システムの中核となる型表現
+/// メモリ安全性、並行処理、メタプログラミング、コンパイル時計算を考慮した高度な型定義
+#[derive(Debug, Clone, PartialEq)]
 pub struct Type {
+    /// 型の一意識別子（型推論後の正規化された表現）
     pub id: TypeId,
-    pub name: String,
+    
+    /// 型の完全修飾名（パッケージパスを含む）
+    pub canonical_name: Arc<str>,
+    
+    /// 型の分類と特性フラグ（ビットフラグで効率的に管理）
     pub flags: TypeFlags,
-    // kind: TypeKindは型の詳細定義で使用（ファイル後半に定義）
+    
+    /// メモリレイアウト情報（サイズ、アライメント、オフセット）
+    pub layout: TypeLayout,
+    
+    /// 並行処理安全性フラグ（Send/Sync特性）
+    pub concurrency_flags: ConcurrencySafety,
+    
+    /// 型の種類（構造体/列挙型/関数型など）
+    pub kind: TypeKind,
+    
+    /// ジェネリック型パラメータ（存在量化と全称量化をサポート）
+    pub generics: Vec<GenericParameter>,
+    
+    /// 定数ジェネリックパラメータ（コンパイル時計算用）
+    pub const_generics: Vec<ConstGeneric>,
+    
+    /// トレイト境界（where句で指定される制約）
+    pub trait_bounds: Vec<TraitBound>,
+    
+    /// 型の不変条件（依存型の制約）
+    pub invariants: Vec<TypeInvariant>,
+    
+    /// メモリ管理戦略（所有権/借用/GC/アリーナなど）
+    pub memory_strategy: MemoryManagementStrategy,
+    
+    /// エフェクトシステム（I/O、例外、メモリ操作などの副作用）
+    pub effects: EffectSet,
+    
+    /// ライフタイムとリージョン情報（借用チェッカー用）
+    pub lifetimes: Vec<RegionId>,
+    
+    /// 型のバリアンス（共変/反変/不変）
+    pub variance: Variance,
+    
+    /// メタプログラミング用アノテーション
+    pub meta_attributes: Vec<MetaAttribute>,
+    
+    /// デバッグ用ソース位置情報
+    pub source_span: Option<SourceSpan>,
+    
+    /// コンパイル時計算用キャッシュ（型レベルの計算結果）
+    pub compile_time_cache: TypeCache,
+    
+    /// ランタイム表現用の仮想関数テーブル
+    pub vtable: Option<Arc<VTable>>,
+    
+    /// 型のドキュメント文字列
+    pub documentation: Arc<str>,
+}
+
+/// 型レイアウト情報（メモリ最適化とABI互換性のため）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeLayout {
+    pub size: u64,
+    pub alignment: u64,
+    pub offsets: HashMap<Symbol, u64>,
+    pub has_padding: bool,
+    pub layout_hash: u64,  // 高速比較用
+}
+
+/// 並行処理安全性フラグ（bitflags使用）
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct ConcurrencySafety: u32 {
+        const SEND = 1 << 0;
+        const SYNC = 1 << 1;
+        const ATOMIC = 1 << 2;
+        const LOCK_PROTECTED = 1 << 3;
+        const THREAD_LOCAL = 1 << 4;
+    }
 }
 
 // 存在しないか、別のファイルで定義すべき型の一時的な定義
@@ -62,6 +151,8 @@ pub struct TypeError {
 pub struct TraitBound {
     pub trait_id: TypeId,
     pub parameters: Vec<TypeId>,
+    pub(crate) target_type: TypeId,
+    pub(crate) is_for_self: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,12 +172,12 @@ pub enum Variance {
     Invariant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EffectSet {
     pub effects: Vec<Effect>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
     IO,
     Memory(MemoryEffect),
@@ -94,7 +185,7 @@ pub enum Effect {
     // 他のエフェクト
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryEffect {
     Read,
     Write,
@@ -211,8 +302,9 @@ impl TypeFlags {
     }
     
     /// フラグの和集合を取得
-    pub fn union(self, other: Self) -> Self {
-        TypeFlags(self.0 | other.0)
+    #[inline]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
     
     /// フラグの積集合を取得

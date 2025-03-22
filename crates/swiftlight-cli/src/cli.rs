@@ -193,6 +193,218 @@ pub struct FormatArgs {
     /// 再帰的に処理
     #[arg(short, long, default_value = "false")]
     pub recursive: bool,
+    
+    /// 特定のコード構造のみをフォーマット（例: imports,functions,all）
+    #[arg(short, long, value_enum, default_value = "all")]
+    pub scope: FormatScope,
+    
+    /// フォーマットルールの設定ファイル
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
+    
+    /// 並列処理の最大スレッド数（0は自動的にCPUコア数を使用）
+    #[arg(short, long, default_value = "0")]
+    pub jobs: usize,
+    
+    /// フォーマット前後の差分を表示
+    #[arg(short, long, default_value = "false")]
+    pub diff: bool,
+    
+    /// 特定のパターンに一致するファイルを除外
+    #[arg(short, long, value_delimiter = ',')]
+    pub exclude: Option<Vec<String>>,
+    
+    /// 特定のパターンに一致するファイルのみを処理
+    #[arg(short = 'i', long, value_delimiter = ',')]
+    pub include: Option<Vec<String>>,
+    
+    /// フォーマットの詳細ログを出力
+    #[arg(short = 'v', long, default_value = "false")]
+    pub verbose_format: bool,
+    
+    /// 自動修正の提案を表示
+    #[arg(long, default_value = "false")]
+    pub suggest_fixes: bool,
+    
+    /// コードスタイルプリセット
+    #[arg(long, value_enum, default_value = "standard")]
+    pub style: FormatStyle,
+    
+    /// フォーマット後に静的解析を実行
+    #[arg(long, default_value = "false")]
+    pub analyze: bool,
+    
+    /// フォーマット時にコメントの文法チェックを行う
+    #[arg(long, default_value = "false")]
+    pub check_comments: bool,
+    
+    /// フォーマット時にドキュメンテーションコメントの完全性を検証
+    #[arg(long, default_value = "false")]
+    pub verify_docs: bool,
+    
+    /// フォーマット時にコードの複雑さメトリクスを計算して表示
+    #[arg(long, default_value = "false")]
+    pub metrics: bool,
+    
+    /// フォーマット時に未使用のインポートや変数を削除
+    #[arg(long, default_value = "false")]
+    pub fix_unused: bool,
+    
+    /// フォーマット時にコードの最適化提案を表示
+    #[arg(long, default_value = "false")]
+    pub suggest_optimizations: bool,
+    
+    /// フォーマット結果をキャッシュして次回の実行を高速化
+    #[arg(long, default_value = "true")]
+    pub cache: bool,
+    
+    /// フォーマット前にバックアップを作成
+    #[arg(long, default_value = "false")]
+    pub backup: bool,
+    
+    /// フォーマット時にコードの一貫性を検証
+    #[arg(long, default_value = "false")]
+    pub verify_consistency: bool,
+    
+    /// フォーマット時に型の整合性を検証
+    #[arg(long, default_value = "false")]
+    pub verify_types: bool,
+    
+    /// フォーマット時にセキュリティの問題を検出
+    #[arg(long, default_value = "false")]
+    pub security_check: bool,
+    
+    /// フォーマット時にパフォーマンスの問題を検出
+    #[arg(long, default_value = "false")]
+    pub performance_check: bool,
+    
+    /// フォーマット時にメモリ安全性の問題を検出
+    #[arg(long, default_value = "false")]
+    pub memory_safety_check: bool,
+    
+    /// フォーマット時に並行処理の問題を検出
+    #[arg(long, default_value = "false")]
+    pub concurrency_check: bool,
+    
+    /// フォーマット時にコードの可読性スコアを計算して表示
+    #[arg(long, default_value = "false")]
+    pub readability_score: bool,
+    
+    /// フォーマット時にコードの保守性スコアを計算して表示
+    #[arg(long, default_value = "false")]
+    pub maintainability_score: bool,
+    
+    /// フォーマット時にコードの再利用性スコアを計算して表示
+    #[arg(long, default_value = "false")]
+    pub reusability_score: bool,
+    
+    /// フォーマット時にコードの品質レポートを生成
+    #[arg(long)]
+    pub quality_report: Option<PathBuf>,
+    
+    /// フォーマット時にコードの変更履歴を考慮
+    #[arg(long, default_value = "false")]
+    pub consider_history: bool,
+    
+    /// フォーマット時にチーム固有のコーディング規約を適用
+    #[arg(long)]
+    pub team_rules: Option<PathBuf>,
+    
+    /// フォーマット時にAIによるコード改善提案を表示
+    #[arg(long, default_value = "false")]
+    pub ai_suggestions: bool,
+}
+
+/// フォーマット対象のスコープ
+#[derive(Clone, Debug, ValueEnum)]
+pub enum FormatScope {
+    /// すべての要素をフォーマット
+    All,
+    /// インポート文のみをフォーマット
+    Imports,
+    /// 関数定義のみをフォーマット
+    Functions,
+    /// 型定義のみをフォーマット
+    Types,
+    /// コメントのみをフォーマット
+    Comments,
+    /// 空白行と字下げのみをフォーマット
+    Whitespace,
+    /// 変数宣言のみをフォーマット
+    Variables,
+    /// 制御構造のみをフォーマット
+    ControlFlow,
+    /// エラー処理のみをフォーマット
+    ErrorHandling,
+    /// 並行処理コードのみをフォーマット
+    Concurrency,
+    /// メタプログラミングコードのみをフォーマット
+    Metaprogramming,
+    /// 依存型関連コードのみをフォーマット
+    DependentTypes,
+    /// マクロのみをフォーマット
+    Macros,
+    /// ドキュメンテーションコメントのみをフォーマット
+    Documentation,
+    /// テストコードのみをフォーマット
+    Tests,
+    /// 特定のモジュールのみをフォーマット（パスと組み合わせて使用）
+    Module,
+    /// 特定のトレイト実装のみをフォーマット
+    Traits,
+    /// 特定のパターンマッチングのみをフォーマット
+    PatternMatching,
+    /// 特定のメモリ管理コードのみをフォーマット
+    MemoryManagement,
+    /// 特定のunsafeブロックのみをフォーマット
+    UnsafeBlocks,
+    /// 特定の最適化アノテーションのみをフォーマット
+    OptimizationHints,
+}
+
+/// フォーマットスタイルのプリセット
+#[derive(Clone, Debug, ValueEnum)]
+pub enum FormatStyle {
+    /// 最小限の変更のみ適用
+    Minimal,
+    /// 標準的なコードスタイルを適用
+    Standard,
+    /// 包括的なコードスタイルを適用
+    Comprehensive,
+    /// プロジェクト固有の設定を使用
+    Custom,
+    /// 高度な読みやすさを重視したスタイル
+    Readable,
+    /// コードの簡潔さを重視したスタイル
+    Compact,
+    /// 学術的なコードスタイル（数学的表記に近い）
+    Academic,
+    /// 企業向けの厳格なコードスタイル
+    Enterprise,
+    /// オープンソースプロジェクト向けのコードスタイル
+    OpenSource,
+    /// 教育目的のコードスタイル（詳細なコメント付き）
+    Educational,
+    /// パフォーマンス重視のコードスタイル
+    Performance,
+    /// メモリ効率重視のコードスタイル
+    MemoryEfficient,
+    /// 並行処理に最適化されたコードスタイル
+    ConcurrencyOptimized,
+    /// セキュリティを重視したコードスタイル
+    SecurityFocused,
+    /// 保守性を重視したコードスタイル
+    Maintainable,
+    /// 特定のドメイン向けにカスタマイズされたスタイル
+    DomainSpecific,
+    /// 最新の言語機能を活用したモダンなスタイル
+    Modern,
+    /// 従来の言語との互換性を重視したスタイル
+    Compatible,
+    /// AIによる自動最適化スタイル
+    AIOptimized,
+    /// チーム固有のスタイル（team_rulesと組み合わせて使用）
+    Team,
 }
 
 /// CLIからコンパイル処理を実行

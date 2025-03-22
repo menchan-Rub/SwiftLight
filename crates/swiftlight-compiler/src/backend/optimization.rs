@@ -5,22 +5,40 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use std::ops::ControlFlow;
 use log::{debug, info, trace, warn};
 
 use crate::frontend::error::{Result, CompilerError};
-use crate::middleend::ir::representation::{Module, Function, BasicBlock, Instruction, Value, Type, ControlFlow};
-use crate::middleend::OptimizationLevel;
-use crate::middleend::analysis::{
-    ControlFlowGraph, 
-    DominatorTree, 
-    CallGraph, 
+use crate::middleend::ir::representation::{Module, Function, BasicBlock, Instruction, Value, Type};
+
+// 解析関連の構造体
+use crate::backend::analysis::{
+    AnalysisKind,
     DataFlowAnalysis, 
-    AliasAnalysis,
-    LoopAnalysis,
-    DependenceAnalysis
+    ControlFlowAnalysis, 
+    AliasAnalysis
 };
-use crate::utils::profiler::{Profiler, OptimizationMetrics};
+
+// プロファイラーとその関連構造体
+use crate::utils::profiler::{Profiler, ProfilingEvent};
 use crate::config::CompilerConfig;
+
+/// 最適化メトリクス
+#[derive(Debug, Default, Clone)]
+pub struct OptimizationMetrics {
+    /// 最適化された命令数
+    pub instructions_optimized: usize,
+    /// 削除された命令数
+    pub instructions_removed: usize,
+    /// 追加された命令数
+    pub instructions_added: usize,
+    /// 最適化された関数数
+    pub functions_optimized: usize,
+    /// 各パスが削除した命令数
+    pub instructions_removed_by_pass: HashMap<String, usize>,
+    /// 各パスの実行時間
+    pub pass_execution_time: HashMap<String, Duration>,
+}
 
 /// 最適化レベル
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2198,7 +2198,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         
                         // 構造体フィールドへのポインタを取得
                         let field_ptr = unsafe {
-                            self.builder.build_struct_gep(&format!("arg_{}_ptr", i))
+                            self.builder.build_struct_gep(alloca, i as u32, &format!("arg_{}_ptr", i))
                         }?;
                         
                         // フィールドに値を格納

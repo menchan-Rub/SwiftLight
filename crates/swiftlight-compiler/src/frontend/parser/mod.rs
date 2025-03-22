@@ -6,6 +6,9 @@
 
 use std::iter::Peekable;
 use std::slice::Iter;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::frontend::ast::{
     self, BinaryOperator, EnumVariant, Expression, ExpressionKind,
@@ -14,7 +17,8 @@ use crate::frontend::ast::{
     UnaryOperator,
 };
 use crate::frontend::error::{CompilerError, ErrorKind, Result, SourceLocation};
-use crate::frontend::lexer::{Token, TokenKind};
+use crate::frontend::lexer::{Token, TokenKind, Lexer};
+use crate::frontend::source_map::SourceMap;
 
 pub mod error;
 pub mod expression;
@@ -22,36 +26,308 @@ pub mod statement;
 pub mod declaration;
 pub mod types;
 pub mod ast;
+pub mod error_recovery;
+pub mod grammar;
 
-/// 構文解析器（Parser）
-pub struct Parser<'a> {
-    /// トークン列
-    tokens: Peekable<Iter<'a, Token>>,
-    /// 現在の位置（インデックス）
-    position: usize,
-    /// 終了位置（トークン列の長さ）
-    end: usize,
-    /// プログラム（構築中のAST）
-    program: Program,
-    /// 解析中に発生したエラー
-    errors: Vec<CompilerError>,
-    /// パニックモード（エラー回復用）
-    panic_mode: bool,
+/// インクリメンタルパースのための差分情報
+#[derive(Debug, Clone)]
+pub struct SourceDiff {
+    /// 変更開始位置（バイトオフセット）
+    pub start: usize,
+    /// 変更前の長さ
+    pub old_len: usize,
+    /// 変更後の長さ
+    pub new_len: usize,
+    /// 変更されたテキスト
+    pub new_text: String,
 }
 
-impl<'a> Parser<'a> {
-    /// 新しい構文解析器を作成
-    pub fn new(tokens: &'a [Token], file_name: &str) -> Self {
+/// パースキャッシュ
+#[derive(Debug, Default)]
+pub struct ParseCache {
+    /// 前回のパース結果
+    ast_cache: HashMap<String, Arc<ast::Program>>,
+    /// ファイルごとのトークンキャッシュ
+    token_cache: HashMap<String, Vec<Token>>,
+    /// パース時間の統計
+    parse_times: HashMap<String, std::time::Duration>,
+}
+
+impl ParseCache {
+    /// 新しいパースキャッシュを作成
+    pub fn new() -> Self {
         Self {
-            tokens: tokens.iter().peekable(),
-            position: 0,
-            end: tokens.len(),
-            program: Program::new(file_name),
-            errors: Vec::new(),
-            panic_mode: false,
+            ast_cache: HashMap::new(),
+            token_cache: HashMap::new(),
+            parse_times: HashMap::new(),
         }
     }
-    
+
+    /// ASTをキャッシュに保存
+    pub fn cache_ast(&mut self, file_path: &str, ast: Arc<ast::Program>) {
+        self.ast_cache.insert(file_path.to_string(), ast);
+    }
+
+    /// トークンをキャッシュに保存
+    pub fn cache_tokens(&mut self, file_path: &str, tokens: Vec<Token>) {
+        self.token_cache.insert(file_path.to_string(), tokens);
+    }
+
+    /// パース時間を記録
+    pub fn record_parse_time(&mut self, file_path: &str, duration: std::time::Duration) {
+        self.parse_times.insert(file_path.to_string(), duration);
+    }
+
+    /// キャッシュ済みのASTを取得
+    pub fn get_cached_ast(&self, file_path: &str) -> Option<Arc<ast::Program>> {
+        self.ast_cache.get(file_path).cloned()
+    }
+
+    /// キャッシュ済みのトークンを取得
+    pub fn get_cached_tokens(&self, file_path: &str) -> Option<&Vec<Token>> {
+        self.token_cache.get(file_path)
+    }
+
+    /// パース時間の統計を取得
+    pub fn get_parse_times(&self) -> &HashMap<String, std::time::Duration> {
+        &self.parse_times
+    }
+
+    /// キャッシュをクリア
+    pub fn clear(&mut self) {
+        self.ast_cache.clear();
+        self.token_cache.clear();
+        // 統計情報は残す
+    }
+
+    /// 特定のファイルのキャッシュをクリア
+    pub fn invalidate(&mut self, file_path: &str) {
+        self.ast_cache.remove(file_path);
+        self.token_cache.remove(file_path);
+    }
+}
+
+/// パーサー
+pub struct Parser {
+    /// トークン列
+    tokens: Vec<Token>,
+    /// 現在のトークンインデックス
+    current: usize,
+    /// パースエラーの収集
+    errors: Vec<CompilerError>,
+    /// エラー回復モード
+    panic_mode: bool,
+    /// パニックモード中にスキップされたトークン数
+    skipped_tokens: usize,
+    /// キャッシュ
+    cache: Arc<Mutex<ParseCache>>,
+    /// 最後にパースしたファイルパス
+    last_file_path: Option<String>,
+}
+
+impl Parser {
+    /// 新しいパーサーを作成
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            current: 0,
+            errors: Vec::new(),
+            panic_mode: false,
+            skipped_tokens: 0,
+            cache: Arc::new(Mutex::new(ParseCache::new())),
+            last_file_path: None,
+        }
+    }
+
+    /// キャッシュ付きパーサーを作成
+    pub fn with_cache(tokens: Vec<Token>, cache: Arc<Mutex<ParseCache>>) -> Self {
+        Self {
+            tokens,
+            current: 0,
+            errors: Vec::new(),
+            panic_mode: false,
+            skipped_tokens: 0,
+            cache,
+            last_file_path: None,
+        }
+    }
+
+    /// インクリメンタルパースを行う
+    pub fn parse_incremental(&mut self, source: &str, file_path: &str, diff: &SourceDiff) -> Result<Arc<ast::Program>> {
+        let start_time = Instant::now();
+        self.last_file_path = Some(file_path.to_string());
+
+        // キャッシュからトークンと前回のASTを取得
+        let cached_tokens = {
+            let cache = self.cache.lock().unwrap();
+            cache.get_cached_tokens(file_path).cloned()
+        };
+        
+        // トークンの再利用または新規生成
+        let tokens = if let Some(cached_tokens) = cached_tokens {
+            // 差分に基づいてトークンを更新
+            self.update_tokens(source, file_path, cached_tokens, diff)?
+        } else {
+            // 初回パースまたはキャッシュミスの場合は全体をトークナイズ
+            let lexer = Lexer::new(source, file_path);
+            lexer.collect::<Result<Vec<_>>>()?
+        };
+        
+        // トークンをキャッシュに保存
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.cache_tokens(file_path, tokens.clone());
+        }
+        
+        // トークンをパーサーにセット
+        self.tokens = tokens;
+        self.current = 0;
+        self.errors.clear();
+        self.panic_mode = false;
+        self.skipped_tokens = 0;
+        
+        // プログラムをパース
+        let program = self.parse_program()?;
+        let ast = Arc::new(program);
+        
+        // パース結果と時間をキャッシュに保存
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.cache_ast(file_path, ast.clone());
+            cache.record_parse_time(file_path, start_time.elapsed());
+        }
+        
+        Ok(ast)
+    }
+
+    /// 差分に基づいてトークンを更新
+    fn update_tokens(&self, source: &str, file_path: &str, old_tokens: Vec<Token>, diff: &SourceDiff) -> Result<Vec<Token>> {
+        // 差分がない場合は古いトークンをそのまま返す
+        if diff.old_len == 0 && diff.new_len == 0 {
+            return Ok(old_tokens);
+        }
+        
+        // 変更された範囲に関連するトークンを特定
+        let start_token_idx = self.find_token_at_position(&old_tokens, diff.start);
+        let end_token_idx = self.find_token_at_position(&old_tokens, diff.start + diff.old_len);
+        
+        // 変更領域の前のトークン
+        let prefix_tokens = old_tokens.iter().take(start_token_idx).cloned().collect::<Vec<_>>();
+        
+        // 変更領域のテキストを解析
+        let changed_source = &source[diff.start..diff.start + diff.new_len];
+        let lexer = Lexer::new(changed_source, file_path);
+        let mut new_tokens = lexer.collect::<Result<Vec<_>>>()?;
+        
+        // 位置情報を修正
+        self.adjust_token_locations(&mut new_tokens, diff.start);
+        
+        // 変更領域の後のトークン
+        let mut suffix_tokens = old_tokens.iter().skip(end_token_idx).cloned().collect::<Vec<_>>();
+        
+        // 位置情報を修正（変更によるオフセット）
+        let offset = diff.new_len as isize - diff.old_len as isize;
+        if offset != 0 {
+            self.adjust_token_locations_with_offset(&mut suffix_tokens, offset);
+        }
+        
+        // 全てのトークンを結合
+        let mut result = Vec::new();
+        result.extend(prefix_tokens);
+        result.extend(new_tokens);
+        result.extend(suffix_tokens);
+        
+        Ok(result)
+    }
+
+    /// 指定位置を含むトークンのインデックスを検索
+    fn find_token_at_position(&self, tokens: &[Token], position: usize) -> usize {
+        for (i, token) in tokens.iter().enumerate() {
+            let start = token.location.start;
+            let end = token.location.end;
+            
+            if position >= start && position <= end {
+                return i;
+            }
+            
+            // 位置がトークンの終端を超えた場合、次のトークンを検索
+            if position < start {
+                return i;
+            }
+        }
+        
+        // 位置がすべてのトークンの後にある場合
+        tokens.len()
+    }
+
+    /// トークンの位置情報を調整（絶対位置）
+    fn adjust_token_locations(&self, tokens: &mut [Token], base_offset: usize) {
+        for token in tokens {
+            let start = token.location.start + base_offset;
+            let end = token.location.end + base_offset;
+            
+            // 新しい位置情報でトークンを更新
+            token.location.start = start;
+            token.location.end = end;
+            // 注意: 行と列の情報は正確でない可能性があるが、
+            // 多くの操作ではスタート位置のバイトオフセットが重要
+        }
+    }
+
+    /// トークンの位置情報を調整（相対オフセット）
+    fn adjust_token_locations_with_offset(&self, tokens: &mut [Token], offset: isize) {
+        for token in tokens {
+            if offset > 0 {
+                token.location.start = token.location.start.checked_add(offset as usize).unwrap_or(token.location.start);
+                token.location.end = token.location.end.checked_add(offset as usize).unwrap_or(token.location.end);
+            } else if offset < 0 {
+                let abs_offset = offset.abs() as usize;
+                token.location.start = token.location.start.checked_sub(abs_offset).unwrap_or(token.location.start);
+                token.location.end = token.location.end.checked_sub(abs_offset).unwrap_or(token.location.end);
+            }
+        }
+    }
+
+    /// パース結果の統計情報を取得
+    pub fn get_statistics(&self) -> HashMap<String, String> {
+        let mut stats = HashMap::new();
+        
+        if let Ok(cache) = self.cache.lock() {
+            // パース時間の統計
+            for (file, duration) in cache.get_parse_times() {
+                stats.insert(
+                    format!("parse_time:{}", file),
+                    format!("{:.2?}", duration)
+                );
+            }
+            
+            // ファイルごとのAST統計
+            for (file, ast) in &cache.ast_cache {
+                stats.insert(
+                    format!("ast_nodes:{}", file),
+                    format!("{}", self.count_ast_nodes(ast))
+                );
+            }
+            
+            // トークン数
+            for (file, tokens) in &cache.token_cache {
+                stats.insert(
+                    format!("tokens:{}", file),
+                    format!("{}", tokens.len())
+                );
+            }
+        }
+        
+        stats
+    }
+
+    /// AST内のノード数をカウント（簡易実装）
+    fn count_ast_nodes(&self, program: &ast::Program) -> usize {
+        // 実際にはASTをトラバースしてすべてのノードをカウントする必要がある
+        // ここでは簡易的に宣言の数を返す
+        program.declarations.len()
+    }
+
     /// プログラム（複数の文）を解析
     pub fn parse_program(&mut self) -> Result<Program> {
         // ファイルの終端に達するまで文をパース

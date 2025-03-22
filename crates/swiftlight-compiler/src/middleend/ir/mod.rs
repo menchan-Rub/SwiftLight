@@ -23,7 +23,8 @@ use crate::frontend::ast::*;
 use crate::frontend::semantic::{TypeCheckResult, TypeKind};
 use crate::utils::logger::{Logger, LogLevel};
 
-use self::representation::{
+// 公開リエクスポート - 他のモジュールからアクセス可能
+pub use self::representation::{
     BasicBlock, Function, Global, Module, StructField, Type, Value, FunctionAttribute,
     LinkageType, CallingConv, DebugInfo
 };

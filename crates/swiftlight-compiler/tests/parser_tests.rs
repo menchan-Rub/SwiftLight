@@ -3,6 +3,8 @@ use swiftlight_compiler::frontend::{
     parser::{Parser, ast::{Expression, Statement, Declaration, Type}},
     error::SourceLocation,
 };
+use swiftlight_compiler::frontend::parser::{self, ast};
+use swiftlight_compiler::frontend::source_map::SourceMap;
 
 #[test]
 fn test_parser_basic_expressions() {
@@ -274,5 +276,257 @@ fn test_parser_trait_declaration() {
             assert!(methods[1].return_type.is_some());
         },
         _ => panic!("Expected Trait declaration, got: {:?}", decl),
+    }
+}
+
+#[test]
+fn test_parse_variable_declaration() {
+    let source = "let x: Int = 42;";
+    let source_map = SourceMap::new();
+    let file_id = source_map.add_file("test.swl", source.to_string());
+    
+    let result = parser::parse(file_id, source, &source_map);
+    assert!(result.is_ok(), "パースエラー: {:?}", result.err());
+    
+    let ast = result.unwrap();
+    
+    // 変数宣言を検証
+    if let Some(ast::Stmt::VarDecl(var_decl)) = ast.items.first() {
+        assert_eq!(var_decl.name.name, "x");
+        
+        // 型アノテーションを検証
+        if let Some(type_ann) = &var_decl.type_ann {
+            if let ast::Type::Named(named_type) = &**type_ann {
+                assert_eq!(named_type.name.name, "Int");
+            } else {
+                panic!("期待された型アノテーションではありません");
+            }
+        } else {
+            panic!("型アノテーションがありません");
+        }
+        
+        // 初期化式を検証
+        if let Some(ast::Expr::Literal(ast::Literal::Integer(value))) = &var_decl.initializer {
+            assert_eq!(*value, 42);
+        } else {
+            panic!("期待された初期化式ではありません");
+        }
+    } else {
+        panic!("変数宣言がパースされていません");
+    }
+}
+
+#[test]
+fn test_parse_function_declaration() {
+    let source = "fn add(a: Int, b: Int) -> Int { return a + b; }";
+    let source_map = SourceMap::new();
+    let file_id = source_map.add_file("test.swl", source.to_string());
+    
+    let result = parser::parse(file_id, source, &source_map);
+    assert!(result.is_ok(), "パースエラー: {:?}", result.err());
+    
+    let ast = result.unwrap();
+    
+    // 関数宣言を検証
+    if let Some(ast::Stmt::FnDecl(fn_decl)) = ast.items.first() {
+        assert_eq!(fn_decl.name.name, "add");
+        
+        // パラメータを検証
+        assert_eq!(fn_decl.params.len(), 2);
+        assert_eq!(fn_decl.params[0].name.name, "a");
+        assert_eq!(fn_decl.params[1].name.name, "b");
+        
+        // 戻り値の型を検証
+        if let Some(return_type) = &fn_decl.return_type {
+            if let ast::Type::Named(named_type) = &**return_type {
+                assert_eq!(named_type.name.name, "Int");
+            } else {
+                panic!("期待された戻り値の型ではありません");
+            }
+        } else {
+            panic!("戻り値の型がありません");
+        }
+        
+        // 関数本体を検証
+        assert_eq!(fn_decl.body.stmts.len(), 1);
+        if let ast::Stmt::Return(return_stmt) = &fn_decl.body.stmts[0] {
+            if let Some(ast::Expr::Binary(binary_expr)) = &return_stmt.value {
+                assert_eq!(binary_expr.op, ast::BinaryOp::Add);
+                
+                if let ast::Expr::Ident(left_ident) = &*binary_expr.left {
+                    assert_eq!(left_ident.name, "a");
+                } else {
+                    panic!("期待された左辺の式ではありません");
+                }
+                
+                if let ast::Expr::Ident(right_ident) = &*binary_expr.right {
+                    assert_eq!(right_ident.name, "b");
+                } else {
+                    panic!("期待された右辺の式ではありません");
+                }
+            } else {
+                panic!("期待された二項演算式ではありません");
+            }
+        } else {
+            panic!("期待されたreturn文ではありません");
+        }
+    } else {
+        panic!("関数宣言がパースされていません");
+    }
+}
+
+#[test]
+fn test_parse_if_statement() {
+    let source = "
+        fn test() {
+            if x > 10 {
+                println(\"Large\");
+            } else if x > 5 {
+                println(\"Medium\");
+            } else {
+                println(\"Small\");
+            }
+        }
+    ";
+    
+    let source_map = SourceMap::new();
+    let file_id = source_map.add_file("test.swl", source.to_string());
+    
+    let result = parser::parse(file_id, source, &source_map);
+    assert!(result.is_ok(), "パースエラー: {:?}", result.err());
+    
+    let ast = result.unwrap();
+    
+    // 関数宣言を検証
+    if let Some(ast::Stmt::FnDecl(fn_decl)) = ast.items.first() {
+        assert_eq!(fn_decl.name.name, "test");
+        
+        // if文を検証
+        assert_eq!(fn_decl.body.stmts.len(), 1);
+        if let ast::Stmt::If(if_stmt) = &fn_decl.body.stmts[0] {
+            // 条件式を検証
+            if let ast::Expr::Binary(cond_expr) = &*if_stmt.condition {
+                assert_eq!(cond_expr.op, ast::BinaryOp::Gt);
+            } else {
+                panic!("期待された条件式ではありません");
+            }
+            
+            // else-if部分を検証
+            if let Some(ast::Stmt::If(else_if_stmt)) = if_stmt.else_branch.as_ref().map(|b| &**b) {
+                if let ast::Expr::Binary(cond_expr) = &*else_if_stmt.condition {
+                    assert_eq!(cond_expr.op, ast::BinaryOp::Gt);
+                } else {
+                    panic!("期待されたelse-if条件式ではありません");
+                }
+                
+                // else部分を検証
+                assert!(else_if_stmt.else_branch.is_some());
+            } else {
+                panic!("期待されたelse-if文ではありません");
+            }
+        } else {
+            panic!("期待されたif文ではありません");
+        }
+    } else {
+        panic!("関数宣言がパースされていません");
+    }
+}
+
+#[test]
+fn test_parse_for_loop() {
+    let source = "
+        fn test() {
+            for i in 0..10 {
+                println(i);
+            }
+        }
+    ";
+    
+    let source_map = SourceMap::new();
+    let file_id = source_map.add_file("test.swl", source.to_string());
+    
+    let result = parser::parse(file_id, source, &source_map);
+    assert!(result.is_ok(), "パースエラー: {:?}", result.err());
+    
+    let ast = result.unwrap();
+    
+    // for文を検証
+    if let Some(ast::Stmt::FnDecl(fn_decl)) = ast.items.first() {
+        assert_eq!(fn_decl.body.stmts.len(), 1);
+        if let ast::Stmt::ForIn(for_stmt) = &fn_decl.body.stmts[0] {
+            assert_eq!(for_stmt.binding.name, "i");
+            
+            // イテレータ式を検証
+            if let ast::Expr::Range(range_expr) = &*for_stmt.iterator {
+                if let ast::Expr::Literal(ast::Literal::Integer(start)) = &*range_expr.start {
+                    assert_eq!(*start, 0);
+                } else {
+                    panic!("期待された範囲開始式ではありません");
+                }
+                
+                if let ast::Expr::Literal(ast::Literal::Integer(end)) = &*range_expr.end {
+                    assert_eq!(*end, 10);
+                } else {
+                    panic!("期待された範囲終了式ではありません");
+                }
+            } else {
+                panic!("期待された範囲式ではありません");
+            }
+            
+            // 本体を検証
+            assert_eq!(for_stmt.body.stmts.len(), 1);
+        } else {
+            panic!("期待されたfor文ではありません");
+        }
+    } else {
+        panic!("関数宣言がパースされていません");
+    }
+}
+
+#[test]
+fn test_parse_error_recovery() {
+    let source = "
+        fn test() {
+            let x = 10;
+            let y = ;  // 構文エラー
+            let z = 30;
+        }
+    ";
+    
+    let source_map = SourceMap::new();
+    let file_id = source_map.add_file("test.swl", source.to_string());
+    
+    let result = parser::parse(file_id, source, &source_map);
+    
+    // エラーを含むが、リカバリーしてパースは続行できるはず
+    assert!(result.is_ok(), "パースエラーリカバリーに失敗: {:?}", result.err());
+    
+    let ast = result.unwrap();
+    let diagnostics = ast.diagnostics;
+    
+    // エラーが検出されているはず
+    assert!(!diagnostics.is_empty(), "エラーが検出されていません");
+    
+    // 関数宣言の本体を検証
+    if let Some(ast::Stmt::FnDecl(fn_decl)) = ast.items.first() {
+        // xとzの宣言は正しく解析されているはず
+        assert!(fn_decl.body.stmts.len() >= 2, "リカバリー後の文の数が少なすぎます");
+        
+        // 最初の変数宣言を検証
+        if let ast::Stmt::VarDecl(var_decl) = &fn_decl.body.stmts[0] {
+            assert_eq!(var_decl.name.name, "x");
+        } else {
+            panic!("最初の変数宣言がパースされていません");
+        }
+        
+        // 最後の変数宣言を検証（インデックスは実装によって異なる可能性がある）
+        let last_stmt_idx = fn_decl.body.stmts.len() - 1;
+        if let ast::Stmt::VarDecl(var_decl) = &fn_decl.body.stmts[last_stmt_idx] {
+            assert_eq!(var_decl.name.name, "z");
+        } else {
+            panic!("最後の変数宣言がパースされていません");
+        }
+    } else {
+        panic!("関数宣言がパースされていません");
     }
 }

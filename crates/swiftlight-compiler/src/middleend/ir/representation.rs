@@ -698,15 +698,58 @@ impl fmt::Display for Type {
             Type::Meta(inner) => write!(f, "type<{}>", inner),
             Type::Optional(inner) => write!(f, "{}?", inner),
             Type::Unknown => write!(f, "unknown"),
-Type::Result(_, _) => todo!(),
-            Type::Tuple(items) => todo!(),
-            Type::Trait(_) => todo!(),
-            Type::Existential(_, items) => todo!(),
-            Type::Dependent(_, _) => todo!(),
-            Type::TypeVar(_) => todo!(),
-            Type::Constrained(_, type_constraints) => todo!(),
-            Type::Recursive(_, _) => todo!(),
-            Type::Error => todo!(),
+            Type::Result(ok_type, err_type) => write!(f, "Result<{}, {}>", ok_type, err_type),
+            Type::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            },
+            Type::Trait(name) => write!(f, "dyn {}", name),
+            Type::Existential(base, items) => {
+                write!(f, "impl {} + ", base)?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " + ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                Ok(())
+            },
+            Type::Dependent(name, expr) => write!(f, "{}[{}]", name, expr),
+            Type::TypeVar(name) => write!(f, "{}", name),
+            Type::Constrained(base_type, type_constraints) => {
+                write!(f, "{} where ", base_type)?;
+                for (i, constraint) in type_constraints.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match constraint {
+                        TypeConstraint::TraitBound(trait_name) => write!(f, ": {}", trait_name)?,
+                        TypeConstraint::Equals(ty) => write!(f, "= {}", ty)?,
+                        TypeConstraint::SubType(ty) => write!(f, "<: {}", ty)?,
+                        TypeConstraint::SuperType(ty) => write!(f, ">: {}", ty)?,
+                        TypeConstraint::ValueConstraint(expr) => write!(f, "| {}", expr)?,
+                        TypeConstraint::Structural(fields) => {
+                            write!(f, "{{ ")?;
+                            for (j, field) in fields.iter().enumerate() {
+                                if j > 0 {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{}", field)?;
+                            }
+                            write!(f, " }}")?;
+                        }
+                    }
+                }
+                Ok(())
+            },
+            Type::Recursive(name, inner_type) => write!(f, "rec {}. {}", name, inner_type),
+            Type::Error => write!(f, "<error-type>"),
         }
     }
 }

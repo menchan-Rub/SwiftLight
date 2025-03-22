@@ -5,10 +5,11 @@
 
 use crate::frontend::ast::{
     EnumVariant, Parameter, Statement, StatementKind,
-    StructField, TraitMethod,
+    StructField,
 };
+use crate::parser::TraitMethod;
 use crate::frontend::error::Result;
-use crate::frontend::lexer::TokenKind;
+use super::TokenKind;
 
 use super::Parser;
 use super::error;

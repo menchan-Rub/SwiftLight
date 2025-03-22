@@ -1,0 +1,13 @@
+/home/menchan/Programming/SwiftLight/target/debug/deps/libtoml-4da4738e098e7848.rmeta: /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/lib.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/map.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/value.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/de.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/ser.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/macros.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/edit.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/fmt.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/table.rs
+
+/home/menchan/Programming/SwiftLight/target/debug/deps/toml-4da4738e098e7848.d: /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/lib.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/map.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/value.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/de.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/ser.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/macros.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/edit.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/fmt.rs /home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/table.rs
+
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/lib.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/map.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/value.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/de.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/ser.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/macros.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/edit.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/fmt.rs:
+/home/menchan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml-0.7.8/src/table.rs:

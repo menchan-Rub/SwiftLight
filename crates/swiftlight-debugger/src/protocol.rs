@@ -28,8 +28,14 @@ use pest_derive::Parser;
 use serde_json::Map;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc::Sender, oneshot};
+use addr2line;
+use goblin;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
-use crate::engine::{DebugCommand, ExecutionMode};
+use crate::engine::{DebugCommand, ExecutionMode, ExecutionSnapshot};
 
 /// 式パーサー
 #[derive(Parser)]
@@ -607,12 +613,12 @@ impl DebugSession {
             source_path: source_path.to_path_buf(),
             line,
             column,
-            condition,
+            condition: condition,
             hit_condition: None,
             log_message: None,
             address: None,
             original_byte: None,
-            temporary: true,
+            temporary: false,
         };
         
         self.breakpoints.insert(id, breakpoint.clone());
@@ -759,33 +765,32 @@ impl DebugSession {
     /// スナップショットを追加する
     pub fn add_snapshot(&mut self, snapshot: crate::engine::ExecutionSnapshot) {
         // スナップショットの基本情報をリストに追加
-        let description = if let Some(annotation) = &snapshot.annotation {
-            format!("{} @ {}", annotation, snapshot.function_name)
+        let description = if let Some(annotation) = snapshot.annotation() {
+            format!("{} @ {}", annotation, snapshot.function_name())
         } else {
-            format!("{} @ {}", snapshot.source_location.0.to_string_lossy(), snapshot.function_name)
+            format!("{} @ {}", snapshot.source_location().0.to_string_lossy(), snapshot.function_name())
         };
         
-        self.snapshots.push((snapshot.id, description, snapshot.timestamp));
+        self.snapshots.push((snapshot.id(), description, snapshot.timestamp()));
         
         // 現在のスナップショットIDを設定
-        self.current_snapshot_id = Some(snapshot.id);
+        self.current_snapshot_id = Some(snapshot.id());
         
         // スタックフレームを設定
-        if !snapshot.stack_frames.is_empty() && self.current_thread_id.is_some() {
+        if !snapshot.stack_frames().is_empty() && self.current_thread_id.is_some() {
             let thread_id = self.current_thread_id.unwrap();
-            self.stack_frames.insert(thread_id, snapshot.stack_frames.clone());
+            self.stack_frames.insert(thread_id, snapshot.stack_frames().clone());
         }
         
         // 変数情報を設定
-        if !snapshot.variables.is_empty() {
-            let variables = snapshot.variables.values().cloned().collect::<Vec<_>>();
+        if !snapshot.variables().is_empty() {
+            let variables = snapshot.variables().values().cloned().collect::<Vec<_>>();
             self.add_variables(variables);
         }
         
         debug!("スナップショットを追加しました: ID={}, 時刻={}, 説明={}", 
-              snapshot.id, snapshot.timestamp, description);
+              snapshot.id(), snapshot.timestamp(), description);
     }
-    
     /// スナップショットに注釈を追加
     pub fn annotate_snapshot(&mut self, snapshot_id: usize, annotation: String) -> Result<(), DebugError> {
         // スナップショットが存在するか確認
@@ -1106,6 +1111,9 @@ impl DebugSession {
             address: Some(address),
             original_byte: Some(original_byte),
             temporary: true,
+            condition: todo!(),
+            hit_condition: todo!(),
+            log_message: todo!(),
         });
         
         Ok(bp_id)
@@ -1311,1237 +1319,6 @@ impl DebugSession {
     /// ステップアウト実行
     pub fn step_out(&mut self, thread_id: usize) -> Result<(), DebugError> {
         if self.status != ProcessStatus::Stopped {
-/*
- * SwiftLight デバッガー - デバッグプロトコル
- *
- * このモジュールは、Debug Adapter Protocol (DAP) の実装と、
- * SwiftLightのデバッグ情報をやり取りするためのデータ構造を提供します。
- */
-
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use anyhow::{Result, Context, anyhow};
-use log::{debug, info, warn, error};
-use thiserror::Error;
-use serde_json::json;
-use base64;
-use gimli::{Dwarf, EndianSlice, RunTimeEndian};
-use object::{Object, ObjectSection};
-use memmap2::Mmap;
-use nix::sys::ptrace;
-use nix::unistd::Pid;
-use nix::sys::signal::{Signal, kill};
-use nix::sys::wait::{waitpid, WaitStatus};
-use pest::Parser;
-use pest::iterators::Pair;
-use pest_derive::Parser;
-use serde_json::Map;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc::Sender, oneshot};
-
-use crate::engine::{DebugCommand, ExecutionMode};
-
-/// 式パーサー
-#[derive(Parser)]
-#[grammar = "expression.pest"]
-pub struct ExpressionParser;
-
-/// パーサールール
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Rule {
-    // 全体の式
-    expression,
-    // 二項演算式
-    binary_expr,
-    binary_op,
-    // 算術演算子
-    add,
-    subtract,
-    multiply,
-    divide,
-    modulo,
-    // 比較演算子
-    equal,
-    not_equal,
-    less_than,
-    less_equal,
-    greater_than,
-    greater_equal,
-    // ビット演算子
-    bit_and,
-    bit_or,
-    bit_xor,
-    shift_left,
-    shift_right,
-    // 論理演算子
-    and,
-    or,
-    // 単項演算式
-    unary_expr,
-    unary_op,
-    negate,
-    not,
-    bit_not,
-    deref,
-    addr_of,
-    // 基本式
-    primary_expr,
-    // リテラル
-    literal,
-    null,
-    boolean,
-    integer,
-    float,
-    string,
-    char,
-    // 変数参照
-    variable,
-    // 関数呼び出し
-    function_call,
-    // メンバーアクセス
-    member_access,
-    // インデックスアクセス
-    index_access,
-    // 条件演算子
-    conditional,
-    // キャスト式
-    cast,
-    // 型名
-    type_name,
-}
-
-/// 二項演算子
-#[derive(Debug, Clone, PartialEq)]
-pub enum BinaryOperator {
-    // 算術演算子
-    Add,        // +
-    Subtract,   // -
-    Multiply,   // *
-    Divide,     // /
-    Modulo,     // %
-    
-    // 比較演算子
-    Equal,          // ==
-    NotEqual,       // !=
-    LessThan,       // <
-    LessEqual,      // <=
-    GreaterThan,    // >
-    GreaterEqual,   // >=
-    
-    // ビット演算子
-    BitAnd,     // &
-    BitOr,      // |
-    BitXor,     // ^
-    ShiftLeft,  // <<
-    ShiftRight, // >>
-    
-    // 論理演算子
-    And,        // &&
-    Or,         // ||
-}
-
-/// 単項演算子
-#[derive(Debug, Clone, PartialEq)]
-pub enum UnaryOperator {
-    Negate,     // -
-    Not,        // !
-    BitNot,     // ~
-    Deref,      // *
-    AddrOf,     // &
-}
-
-/// リテラル値
-#[derive(Debug, Clone, PartialEq)]
-pub enum Literal {
-    Null,
-    Boolean(bool),
-    Integer(i64),
-    Float(f64),
-    String(String),
-    Char(char),
-}
-
-/// 式の抽象構文木
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expression {
-    /// リテラル値
-    Literal(Literal),
-    
-    /// 変数参照
-    Variable(String),
-    
-    /// 二項演算
-    Binary {
-        operator: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    
-    /// 単項演算
-    Unary {
-        operator: UnaryOperator,
-        operand: Box<Expression>,
-    },
-    
-    /// 関数呼び出し
-    FunctionCall {
-        function: String,
-        arguments: Vec<Expression>,
-    },
-    
-    /// メンバーアクセス (obj.member)
-    MemberAccess {
-        object: Box<Expression>,
-        member: String,
-    },
-    
-    /// インデックスアクセス (arr[idx])
-    IndexAccess {
-        array: Box<Expression>,
-        index: Box<Expression>,
-    },
-    
-    /// 条件式 (cond ? then : else)
-    Conditional {
-        condition: Box<Expression>,
-        then_branch: Box<Expression>,
-        else_branch: Box<Expression>,
-    },
-    
-    /// キャスト式 (expr as Type)
-    Cast {
-        expression: Box<Expression>,
-        target_type: String,
-    },
-}
-
-/// デバッガーエラー
-#[derive(Error, Debug)]
-pub enum DebugError {
-    #[error("不正なリクエスト: {0}")]
-    InvalidRequest(String),
-    
-    #[error("接続エラー: {0}")]
-    ConnectionError(String),
-    
-    #[error("デバッグターゲットの起動に失敗: {0}")]
-    LaunchFailed(String),
-    
-    #[error("ブレークポイントの設定に失敗: {0}")]
-    BreakpointFailed(String),
-    
-    #[error("変数評価エラー: {0}")]
-    EvaluationError(String),
-    
-    #[error("実行時エラー: {0}")]
-    RuntimeError(String),
-    
-    #[error("内部エラー: {0}")]
-    InternalError(String),
-    
-    #[error("タイムトラベル操作エラー: {0}")]
-    TimeTravelError(String),
-    
-    #[error("無効な状態: {0}")]
-    InvalidState(String),
-    
-    #[error("スレッドが見つかりません: {0}")]
-    ThreadNotFound(usize),
-    
-    #[error("変数が見つかりません: {0}")]
-    VariableNotFound(String),
-    
-    #[error("プロセスが終了: {0}")]
-    ProcessExited(i32),
-    
-    #[error("無効なスタックフレーム: {0}")]
-    InvalidStackFrame(usize),
-    
-    #[error("式のエラー: {0}")]
-    ExpressionError(String),
-}
-
-/// プロセスステータス
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProcessStatus {
-    /// 初期化中
-    Initializing,
-    
-    /// 準備完了
-    Ready,
-    
-    /// 実行中
-    Running,
-    
-    /// 停止中
-    Stopped,
-    
-    /// 終了
-    Terminated,
-    
-    /// 終了
-    Exited(i32),
-}
-
-/// 停止理由
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StopReason {
-    /// ブレークポイントによる停止
-    Breakpoint { id: usize },
-    
-    /// ステップ実行による停止
-    Step,
-    
-    /// 例外による停止
-    Exception { description: String },
-    
-    /// 一時停止（ユーザーリクエスト）
-    Pause,
-    
-    /// エントリポイントでの停止
-    Entry,
-    
-    /// 実行終了
-    Exit { exit_code: i32 },
-    
-    /// タイムトラベル（過去または未来に移動した）
-    TimeTravel { snapshot_id: usize },
-}
-
-/// 変数の種類
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VariableKind {
-    /// プリミティブ型
-    Primitive,
-    
-    /// 配列
-    Array,
-    
-    /// オブジェクト
-    Object,
-    
-    /// クラス
-    Class,
-    
-    /// 関数
-    Function,
-    
-    /// その他
-    Other,
-    
-    /// ローカル変数
-    Local,
-    
-    /// グローバル変数
-    Global,
-    
-    /// レジスタ
-    Register,
-    
-    /// 一時変数
-    Temporary,
-}
-
-/// 変数情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Variable {
-    /// 変数名
-    pub name: String,
-    
-    /// 型名
-    pub type_name: String,
-    
-    /// 値の文字列表現
-    pub value: String,
-    
-    /// 変数の種類
-    pub kind: VariableKind,
-    
-    /// 子変数がある場合のID
-    pub variable_reference: Option<usize>,
-    
-    /// メモリ内の位置
-    pub memory_reference: Option<String>,
-    
-    /// 親変数がある場合のID
-    pub parent_id: Option<usize>,
-    
-    /// 子変数の数
-    pub indexed_variables: usize,
-    
-    /// 子変数の数
-    pub named_variables: usize,
-    
-    /// 評価済みかどうか
-    pub evaluated: bool,
-}
-
-/// スタックフレーム情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StackFrame {
-    /// フレームID
-    pub id: usize,
-    
-    /// 関数名
-    pub name: String,
-    
-    /// ソースファイルパス
-    pub source_path: PathBuf,
-    
-    /// 行番号
-    pub line: usize,
-    
-    /// 列番号
-    pub column: usize,
-    
-    /// 表示用の追加情報
-    pub presentation_hint: Option<String>,
-    
-    /// モジュール名
-    pub module_name: Option<String>,
-    
-    /// スレッドID
-    pub thread_id: usize,
-}
-
-/// ブレークポイント情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Breakpoint {
-    /// ブレークポイントID
-    pub id: usize,
-    
-    /// 有効かどうか
-    pub verified: bool,
-    
-    /// ソースファイルパス
-    pub source_path: PathBuf,
-    
-    /// 行番号
-    pub line: usize,
-    
-    /// 列番号（オプション）
-    pub column: Option<usize>,
-    
-    /// 条件式（オプション）
-    pub condition: Option<String>,
-    
-    /// ヒット回数条件（オプション）
-    pub hit_condition: Option<String>,
-    
-    /// ログメッセージ（オプション）
-    pub log_message: Option<String>,
-    
-    /// アドレス（オプション）
-    pub address: Option<usize>,
-    
-    /// 元の命令（オプション）
-    pub original_byte: Option<u8>,
-    
-    /// 一時的かどうか
-    pub temporary: bool,
-}
-
-/// スレッド情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Thread {
-    /// スレッドID
-    pub id: usize,
-    
-    /// スレッド名
-    pub name: String,
-}
-
-/// デバッグターゲット設定
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugConfiguration {
-    /// 名前
-    pub name: String,
-    
-    /// 種類（swiftlight）
-    pub type_name: String,
-    
-    /// リクエスト種類 (launch or attach)
-    pub request: String,
-    
-    /// プログラムパス
-    pub program: PathBuf,
-    
-    /// 作業ディレクトリ
-    pub cwd: Option<PathBuf>,
-    
-    /// 引数
-    pub args: Vec<String>,
-    
-    /// 環境変数
-    pub env: HashMap<String, String>,
-    
-    /// リモートデバッグの場合のアドレス
-    pub address: Option<String>,
-    
-    /// リモートデバッグの場合のポート
-    pub port: Option<u16>,
-    
-    /// ソースマップ
-    pub source_map: HashMap<String, String>,
-    
-    /// ストップオンエントリーを有効にするかどうか
-    pub stop_on_entry: bool,
-}
-
-/// デバッグセッション状態
-#[derive(Debug)]
-pub struct DebugSession {
-    /// 設定
-    pub config: DebugConfiguration,
-    
-    /// プロセスステータス
-    pub status: ProcessStatus,
-    
-    /// ブレークポイントリスト
-    pub breakpoints: HashMap<usize, Breakpoint>,
-    
-    /// スレッドリスト
-    pub threads: HashMap<usize, Thread>,
-    
-    /// 現在のスレッドID
-    pub current_thread_id: Option<usize>,
-    
-    /// スタックフレーム（スレッドIDをキーとする）
-    pub stack_frames: HashMap<usize, Vec<StackFrame>>,
-    
-    /// 変数（変数参照IDをキーとする）
-    pub variables: HashMap<usize, Variable>,
-    
-    /// 停止理由
-    pub stop_reason: Option<StopReason>,
-    
-    /// プロセスの終了コード
-    pub exit_code: Option<i32>,
-    
-    /// タイムトラベルモードが有効か
-    pub time_travel_mode: bool,
-    
-    /// 現在のスナップショットID
-    pub current_snapshot_id: Option<usize>,
-    
-    /// スナップショット一覧（ID、説明、タイムスタンプ）
-    pub snapshots: Vec<(usize, String, u64)>,
-    
-    /// 次のスレッドID
-    pub next_thread_id: usize,
-    
-    /// 次のブレークポイントID
-    pub next_breakpoint_id: usize,
-    
-    /// 次のスタックフレームID
-    pub next_stack_frame_id: usize,
-    
-    /// 次の変数ID
-    pub next_variable_id: usize,
-    
-    /// プロセスID（オプション）
-    pub process_id: Option<usize>,
-}
-
-impl Default for DebugSession {
-    fn default() -> Self {
-        Self {
-            config: DebugConfiguration {
-                name: "SwiftLight Debug".to_string(),
-                type_name: "swiftlight".to_string(),
-                request: "launch".to_string(),
-                program: PathBuf::new(),
-                cwd: None,
-                args: Vec::new(),
-                env: HashMap::new(),
-                address: None,
-                port: None,
-                source_map: HashMap::new(),
-                stop_on_entry: true,
-            },
-            status: ProcessStatus::Initializing,
-            breakpoints: HashMap::new(),
-            threads: HashMap::new(),
-            current_thread_id: None,
-            stack_frames: HashMap::new(),
-            variables: HashMap::new(),
-            stop_reason: None,
-            exit_code: None,
-            time_travel_mode: false,
-            current_snapshot_id: None,
-            snapshots: Vec::new(),
-            next_thread_id: 1,
-            next_breakpoint_id: 1,
-            next_stack_frame_id: 1,
-            next_variable_id: 1000,
-            process_id: None,
-        }
-    }
-}
-
-impl DebugSession {
-    /// 新しいデバッグセッションを作成
-    pub fn new(config: DebugConfiguration) -> Self {
-        Self {
-            config,
-            ..Default::default()
-        }
-    }
-    
-    /// セッションを初期化
-    pub fn initialize(&mut self) -> Result<(), DebugError> {
-        debug!("デバッグセッションを初期化中...");
-        
-        // デフォルトスレッドの作成
-        let main_thread = Thread {
-            id: 1,
-            name: "メインスレッド".to_string(),
-        };
-        
-        self.threads.insert(main_thread.id, main_thread);
-        self.current_thread_id = Some(1);
-        self.status = ProcessStatus::Ready;
-        
-        debug!("デバッグセッションの初期化が完了しました");
-        Ok(())
-    }
-    
-    /// ブレークポイントを設定
-    pub fn set_breakpoint(&mut self, source_path: &Path, line: usize, column: Option<usize>, 
-                          condition: Option<String>) -> Result<Breakpoint, DebugError> {
-        let id = self.next_breakpoint_id();
-        
-        let breakpoint = Breakpoint {
-            id,
-            verified: true,
-            source_path: source_path.to_path_buf(),
-            line,
-            column,
-            condition,
-            hit_condition: None,
-            log_message: None,
-            address: None,
-            original_byte: None,
-            temporary: true,
-        };
-        
-        self.breakpoints.insert(id, breakpoint.clone());
-        debug!("ブレークポイントを設定しました: id={}, パス={}, 行={}", 
-              id, source_path.display(), line);
-        
-        Ok(breakpoint)
-    }
-    
-    /// ソースファイルにブレークポイントを設定
-    pub fn set_breakpoints(&mut self, source_path: PathBuf, breakpoints: Vec<Breakpoint>) -> Vec<Breakpoint> {
-        // 既存のブレークポイントから、同じソースファイルのものを削除
-        let existing_ids: Vec<usize> = self.breakpoints.iter()
-            .filter(|(_, bp)| bp.source_path == source_path)
-            .map(|(id, _)| *id)
-            .collect();
-        
-        for id in existing_ids {
-            self.breakpoints.remove(&id);
-        }
-        
-        // 新しいブレークポイントを追加
-        let mut verified_breakpoints = Vec::with_capacity(breakpoints.len());
-        
-        for mut bp in breakpoints {
-            // 既に存在するIDは使わずに新しいIDを割り当て
-            bp.id = self.next_breakpoint_id();
-            
-            // ブレークポイントを検証（ソースラインが有効かなど）
-            // DWARFデバッグ情報を使用して行番号が有効かを確認する
-            bp.verified = if let Some(debug_info) = &self.debug_info {
-                // バイナリファイルからDWARF情報を読み取る
-                if let Some(binary_path) = &self.binary_path {
-                    match self.verify_breakpoint_with_dwarf(binary_path, &bp.source_path, bp.line as u32) {
-                        Ok(is_valid) => is_valid,
-                        Err(e) => {
-                            warn!("DWARFによるブレークポイント検証エラー: {}", e);
-                            true // エラーが発生した場合はとりあえず検証済みとする
-                        }
-                    }
-                } else {
-                    true // バイナリパスが設定されていない場合は検証済みとみなす
-                }
-            } else {
-                true // デバッグ情報がない場合は検証済みとみなす
-            };
-            
-            // ブレークポイントをセッションに追加
-            verified_breakpoints.push(bp.clone());
-            self.breakpoints.insert(bp.id, bp);
-            
-            debug!("ブレークポイントを設定しました: id={}, パス={}, 行={}",
-                  bp.id, bp.source_path.display(), bp.line);
-        }
-        
-        // 検証済みブレークポイントを返す
-        verified_breakpoints
-    }
-    
-    /// 実行を再開
-    pub fn continue_execution(&mut self) {
-        if self.status == ProcessStatus::Stopped {
-            self.status = ProcessStatus::Running;
-            self.stop_reason = None;
-            debug!("実行を再開します");
-        }
-    }
-    
-    /// スレッドを一時停止
-    pub fn pause(&mut self, thread_id: usize) {
-        if self.status == ProcessStatus::Running {
-            self.status = ProcessStatus::Stopped;
-            self.stop_reason = Some(StopReason::Pause);
-            debug!("スレッド {} を一時停止しました", thread_id);
-        }
-    }
-    
-    /// すべてのスレッドを一時停止
-    pub fn pause_all(&mut self) {
-        if self.status == ProcessStatus::Running {
-            self.status = ProcessStatus::Stopped;
-            self.stop_reason = Some(StopReason::Pause);
-            debug!("すべてのスレッドを一時停止しました");
-        }
-    }
-    
-    /// 設定完了を通知
-    pub fn configuration_done(&mut self) {
-        debug!("設定が完了しました");
-    }
-    
-    /// スレッド一覧を取得
-    pub fn get_threads(&self) -> Vec<&Thread> {
-        self.threads.values().collect()
-    }
-    
-    /// 変数情報を追加
-    pub fn add_variables(&mut self, variables: Vec<Variable>) -> usize {
-        let ref_id = self.next_variable_id();
-        self.variables.insert(ref_id, variables);
-        ref_id
-    }
-    
-    /// 変数参照から変数情報を取得
-    pub fn get_variables(&self, variable_reference: usize) -> Option<&Vec<Variable>> {
-        self.variables.get(&variable_reference)
-    }
-    
-    /// スタックフレームを追加
-    pub fn set_stack_frames(&mut self, thread_id: usize, frames: Vec<StackFrame>) {
-        self.stack_frames.insert(thread_id, frames);
-    }
-    
-    /// スタックフレームを取得
-    pub fn get_stack_frames(&self, thread_id: usize) -> Option<&Vec<StackFrame>> {
-        self.stack_frames.get(&thread_id)
-    }
-    
-    /// セッションを終了
-    pub fn terminate(&mut self, exit_code: i32) {
-        self.status = ProcessStatus::Terminated;
-        self.exit_code = Some(exit_code);
-        info!("デバッグセッションが終了しました: exit_code={}", exit_code);
-        
-        // 終了時にリソースをクリーンアップ
-        self.stack_frames.clear();
-        self.variables.clear();
-    }
-    
-    /// 次のブレークポイントIDを取得
-    pub fn next_breakpoint_id(&mut self) -> usize {
-        let id = self.next_breakpoint_id;
-        self.next_breakpoint_id += 1;
-        id
-    }
-    
-    /// 次の変数IDを取得
-    pub fn next_variable_id(&mut self) -> usize {
-        let id = self.next_variable_id;
-        self.next_variable_id += 1;
-        id
-    }
-    
-    /// スナップショットを追加する
-    pub fn add_snapshot(&mut self, snapshot: crate::engine::ExecutionSnapshot) {
-        // スナップショットの基本情報をリストに追加
-        let description = if let Some(annotation) = &snapshot.annotation {
-            format!("{} @ {}", annotation, snapshot.function_name)
-        } else {
-            format!("{} @ {}", snapshot.source_location.0.to_string_lossy(), snapshot.function_name)
-        };
-        
-        self.snapshots.push((snapshot.id, description, snapshot.timestamp));
-        
-        // 現在のスナップショットIDを設定
-        self.current_snapshot_id = Some(snapshot.id);
-        
-        // スタックフレームを設定
-        if !snapshot.stack_frames.is_empty() && self.current_thread_id.is_some() {
-            let thread_id = self.current_thread_id.unwrap();
-            self.stack_frames.insert(thread_id, snapshot.stack_frames.clone());
-        }
-        
-        // 変数情報を設定
-        if !snapshot.variables.is_empty() {
-            let variables = snapshot.variables.values().cloned().collect::<Vec<_>>();
-            self.add_variables(variables);
-        }
-        
-        debug!("スナップショットを追加しました: ID={}, 時刻={}, 説明={}", 
-              snapshot.id, snapshot.timestamp, description);
-    }
-    
-    /// スナップショットに注釈を追加
-    pub fn annotate_snapshot(&mut self, snapshot_id: usize, annotation: String) -> Result<(), DebugError> {
-        // スナップショットが存在するか確認
-        if let Some(pos) = self.snapshots.iter().position(|(id, _, _)| *id == snapshot_id) {
-            // 注釈を含む新しい説明を作成
-            let (_, old_desc, timestamp) = self.snapshots[pos];
-            let new_desc = if old_desc.contains('@') {
-                let parts: Vec<&str> = old_desc.split(" @ ").collect();
-                format!("{} @ {}", annotation, parts[1])
-            } else {
-                format!("{} @ unknown", annotation)
-            };
-            
-            // スナップショット情報を更新
-            self.snapshots[pos] = (snapshot_id, new_desc, timestamp);
-            
-            debug!("スナップショットに注釈を追加しました: ID={}, 注釈={}", 
-                  snapshot_id, annotation);
-            
-            Ok(())
-        } else {
-            Err(DebugError::TimeTravelError(format!(
-                "スナップショットが存在しません: ID={}", snapshot_id)))
-        }
-    }
-    
-    /// スナップショットを取得
-    pub fn get_snapshot(&self, snapshot_id: usize) -> Option<&(usize, String, u64)> {
-        self.snapshots.iter().find(|(id, _, _)| *id == snapshot_id)
-    }
-    
-    /// タイムトラベルモードを有効/無効にする
-    pub fn set_time_travel_mode(&mut self, enabled: bool) {
-        self.time_travel_mode = enabled;
-        
-        if !enabled {
-            // 無効化する場合は関連情報をクリア
-            self.current_snapshot_id = None;
-        }
-        
-        debug!("タイムトラベルモードを{}にしました", 
-              if enabled { "有効" } else { "無効" });
-    }
-    
-    /// セッションを停止状態にする
-    pub fn stop(&mut self, reason: StopReason) {
-        self.status = ProcessStatus::Stopped;
-        self.stop_reason = Some(reason);
-        info!("デバッグセッションが停止しました: {:?}", self.stop_reason);
-    }
-    
-    /// セッションを実行状態にする
-    pub fn run(&mut self) {
-        self.status = ProcessStatus::Running;
-        self.stop_reason = None;
-        debug!("デバッグセッションを実行中...");
-    }
-    
-    /// 次のステップを実行（ステップオーバー）
-    pub fn step_over(&mut self, thread_id: usize) -> Result<(), DebugError> {
-        if self.status != ProcessStatus::Stopped {
-            return Err(DebugError::InvalidState("プロセスが停止していません".to_string()));
-        }
-        
-        if !self.threads.contains_key(&thread_id) {
-            return Err(DebugError::ThreadNotFound(thread_id));
-        }
-        
-        // 現在の関数内で次の命令を実行
-        debug!("スレッド {} でステップオーバー実行", thread_id);
-        
-        // 現在のスタックフレームを記録
-        let current_frame = self.get_stack_frames(thread_id)
-            .map_err(|e| DebugError::InternalError(format!("スタックフレーム取得エラー: {}", e)))?
-            .get(0)
-            .cloned();
-        
-        // PTRACEを使用して命令単位でステップ実行
-        if let Some(process_id) = self.process_id {
-            let pid = Pid::from_raw(process_id as i32);
-            
-            // 現在の命令のアドレスを取得
-            let mut regs = ptrace::getregs(pid)
-                .map_err(|e| DebugError::InternalError(format!("レジスタ取得失敗: {}", e)))?;
-            
-            // 次に実行される命令を解析
-            let instruction_pointer = regs.rip as usize;
-            let instruction = self.read_process_memory(instruction_pointer, 15)?;
-            
-            // 命令が関数呼び出しかどうかを判定
-            let is_call_instruction = instruction[0] == 0xE8 || // CALL rel32
-                                      (instruction[0] == 0xFF && (instruction[1] & 0x30) == 0x10); // CALL r/m
-            
-            if is_call_instruction {
-                // 関数呼び出しの場合は、次の命令にブレークポイントを設定
-                let next_instruction = instruction_pointer + self.get_instruction_length(&instruction);
-                
-                // 一時的なブレークポイントを設定
-                let temp_bp_id = self.set_temp_breakpoint_at_address(next_instruction)?;
-                
-                // プロセスを再開
-                ptrace::cont(pid, None)
-                    .map_err(|e| DebugError::InternalError(format!("プロセス再開失敗: {}", e)))?;
-                
-                // ブレークポイントに到達するまで待機
-                self.wait_for_breakpoint()?;
-                
-                // 一時的なブレークポイントを削除
-                self.remove_breakpoint(temp_bp_id)?;
-            } else {
-                // 通常の命令の場合は単純なステップ実行
-                ptrace::step(pid, None)
-                    .map_err(|e| DebugError::InternalError(format!("ステップ実行失敗: {}", e)))?;
-                
-                // プロセスが停止するまで待機
-                match waitpid(pid, None) {
-                    Ok(WaitStatus::Stopped(_, Signal::SIGTRAP)) => {
-                        // ステップ実行が正常に完了
-                        debug!("ステップ実行が完了しました");
-                    },
-                    Ok(status) => {
-                        // その他の理由で停止
-                        debug!("プロセスが停止しました: {:?}", status);
-                    },
-                    Err(e) => {
-                        return Err(DebugError::InternalError(format!("waitpid失敗: {}", e)));
-                    }
-                }
-            }
-            
-            // プロセスの状態を更新
-            self.status = ProcessStatus::Stopped;
-            self.update_threads_status()?;
-            
-            Ok(())
-        } else {
-            Err(DebugError::InternalError("プロセスIDが設定されていません".to_string()))
-        }
-    }
-    
-    /// 命令の長さを取得する
-    fn get_instruction_length(&self, instruction: &[u8]) -> usize {
-        // x86-64命令の長さを決定する
-        // 実際の命令長判定は複雑なので、主要な命令パターンをサポート
-        
-        if instruction.is_empty() {
-            return 1; // エラー回避のため
-        }
-        
-        // プレフィックスの確認
-        let mut offset = 0;
-        
-        // グループ1: ロックおよび反復プレフィックス
-        if instruction[offset] == 0xF0 || // LOCK
-           instruction[offset] == 0xF2 || // REPNE/REPNZ
-           instruction[offset] == 0xF3 {  // REP/REPE/REPZ
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-        }
-        
-        // グループ2: セグメントオーバーライドプレフィックス
-        if instruction[offset] == 0x2E || // CS
-           instruction[offset] == 0x36 || // SS
-           instruction[offset] == 0x3E || // DS
-           instruction[offset] == 0x26 || // ES
-           instruction[offset] == 0x64 || // FS
-           instruction[offset] == 0x65 {  // GS
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-        }
-        
-        // グループ3: オペランドサイズオーバーライドプレフィックス
-        if instruction[offset] == 0x66 {
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-        }
-        
-        // グループ4: アドレスサイズオーバーライドプレフィックス
-        if instruction[offset] == 0x67 {
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-        }
-        
-        // REXプレフィックス（64ビットモード）
-        if (instruction[offset] & 0xF0) == 0x40 {
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-        }
-        
-        // オペコード
-        if instruction[offset] == 0x0F {
-            // 2バイトオペコード
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-            
-            if instruction[offset] == 0x38 || instruction[offset] == 0x3A {
-                // 3バイトオペコード
-                offset += 1;
-                if offset >= instruction.len() {
-                    return offset;
-                }
-            }
-        }
-        
-        // 通常のオペコード
-        offset += 1;
-        if offset >= instruction.len() {
-            return offset;
-        }
-        
-        // ModR/Mバイトがある場合
-        let has_modrm = match instruction[offset - 1] {
-            // 一般的なModR/Mが必要なオペコード
-            0x00...0x03 | 0x08...0x0B | 0x10...0x13 | 0x18...0x1B |
-            0x20...0x23 | 0x28...0x2B | 0x30...0x33 | 0x38...0x3B |
-            0x63 | 0x69 | 0x6B | 0x80...0x83 | 0x84 | 0x85 | 0x86 | 0x87 |
-            0x88...0x8B | 0x8D | 0x8F | 0xC0...0xC1 | 0xC4...0xC7 |
-            0xD0...0xD3 | 0xD8...0xDF | 0xF6 | 0xF7 | 0xFE | 0xFF => true,
-            
-            // 2バイトオペコードの場合（0x0Fプレフィックス）
-            _ => {
-                if offset >= 2 && instruction[offset - 2] == 0x0F {
-                    // ほとんどの0x0F命令はModR/Mを持つ
-                    true
-                } else {
-                    false
-                }
-            }
-        };
-        
-        if has_modrm {
-            let modrm = instruction[offset];
-            offset += 1;
-            if offset >= instruction.len() {
-                return offset;
-            }
-            
-            let mod_field = (modrm >> 6) & 0x03;
-            let rm_field = modrm & 0x07;
-            
-            // SIBバイト
-            if mod_field != 0x03 && rm_field == 0x04 {
-                offset += 1; // SIBバイト
-                if offset >= instruction.len() {
-                    return offset;
-                }
-            }
-            
-            // ディスプレイスメント
-            match mod_field {
-                0x00 => {
-                    // mod == 00: レジスタ間接、またはdisp32(rm==101の場合)
-                    if rm_field == 0x05 {
-                        offset += 4; // disp32
-                    }
-                },
-                0x01 => offset += 1, // mod == 01: 1バイト変位付きレジスタ間接
-                0x02 => offset += 4, // mod == 10: 4バイト変位付きレジスタ間接
-                _ => {} // mod == 11: レジスタ直接（追加バイトなし）
-            }
-        }
-        
-        // 即値
-        if instruction[offset - 1] == 0xE8 || instruction[offset - 1] == 0xE9 {
-            // CALL rel32, JMP rel32
-            offset += 4;
-        } else if (instruction[offset - 1] & 0xF0) == 0x70 || instruction[offset - 1] == 0xEB {
-            // 条件付きJMP rel8, JMP rel8
-            offset += 1;
-        } else if instruction[offset - 1] == 0x9A {
-            // CALL far
-            offset += 6;
-        } else if instruction[offset - 1] == 0xEA {
-            // JMP far
-            offset += 6;
-        } else if instruction[offset - 1] == 0x68 {
-            // PUSH imm32
-            offset += 4;
-        } else if instruction[offset - 1] == 0x6A {
-            // PUSH imm8
-            offset += 1;
-        } else if instruction[offset - 1] == 0xC2 || instruction[offset - 1] == 0xCA {
-            // RET imm16
-            offset += 2;
-        }
-        
-        return offset;
-    }
-    
-    /// 指定されたアドレスに一時的なブレークポイントを設定
-    fn set_temp_breakpoint_at_address(&mut self, address: usize) -> Result<usize, DebugError> {
-        // 元の命令を保存
-        let original_byte = self.read_process_memory(address, 1)?[0];
-        
-        // ブレークポイント命令（INT3 = 0xCC）を書き込み
-        self.write_process_memory(address, &[0xCC])?;
-        
-        // 一時的なブレークポイント情報を記録
-        let bp_id = self.next_breakpoint_id();
-        self.breakpoints.insert(bp_id, Breakpoint {
-            id: bp_id,
-            source_path: PathBuf::new(),
-            line: 0,
-            column: 0,
-            verified: true,
-            address: Some(address),
-            original_byte: Some(original_byte),
-            temporary: true,
-        });
-        
-        Ok(bp_id)
-    }
-    
-    /// プロセスメモリから読み込む
-    fn read_process_memory(&self, address: usize, size: usize) -> Result<Vec<u8>, DebugError> {
-        if let Some(process_id) = self.process_id {
-            let pid = Pid::from_raw(process_id as i32);
-            let mut data = Vec::with_capacity(size);
-            
-            for i in 0..(size + 7) / 8 {
-                let word_address = address + i * 8;
-                let word = ptrace::read(pid, word_address as *mut _)
-                    .map_err(|e| DebugError::InternalError(format!("メモリ読み込み失敗: {}", e)))?;
-                
-                // ワードをバイト列に変換
-                let bytes = word.to_ne_bytes();
-                data.extend_from_slice(&bytes);
-            }
-            
-            // 必要なサイズに切り詰め
-            data.truncate(size);
-            Ok(data)
-        } else {
-            Err(DebugError::InternalError("プロセスIDが設定されていません".to_string()))
-        }
-    }
-    
-    /// プロセスメモリに書き込む
-    fn write_process_memory(&self, address: usize, data: &[u8]) -> Result<(), DebugError> {
-        if let Some(process_id) = self.process_id {
-            let pid = Pid::from_raw(process_id as i32);
-            
-            for (i, chunk) in data.chunks(8).enumerate() {
-                let word_address = address + i * 8;
-                
-                // バイト列をワードに変換
-                let mut word_bytes = [0u8; 8];
-                
-                // 現在のワードを読み込み
-                let current_word = ptrace::read(pid, word_address as *mut _)
-                    .map_err(|e| DebugError::InternalError(format!("メモリ読み込み失敗: {}", e)))?;
-                word_bytes = current_word.to_ne_bytes();
-                
-                // 必要な部分だけ置き換え
-                for (j, &byte) in chunk.iter().enumerate() {
-                    word_bytes[j] = byte;
-                }
-                
-                // ワードを書き込み
-                let word = u64::from_ne_bytes(word_bytes);
-                ptrace::write(pid, word_address as *mut _, word as *mut _)
-                    .map_err(|e| DebugError::InternalError(format!("メモリ書き込み失敗: {}", e)))?;
-            }
-            
-            Ok(())
-        } else {
-            Err(DebugError::InternalError("プロセスIDが設定されていません".to_string()))
-        }
-    }
-    
-    /// ブレークポイントに達するまで待機
-    fn wait_for_breakpoint(&mut self) -> Result<(), DebugError> {
-        if let Some(process_id) = self.process_id {
-            let pid = Pid::from_raw(process_id as i32);
-            
-            loop {
-                match waitpid(pid, None) {
-                    Ok(WaitStatus::Stopped(_, Signal::SIGTRAP)) => {
-                        // ブレークポイントに到達
-                        debug!("ブレークポイントに到達しました");
-                        break;
-                    },
-                    Ok(WaitStatus::Exited(_, code)) => {
-                        // プロセスが終了
-                        self.status = ProcessStatus::Exited(code);
-                        return Err(DebugError::ProcessExited(code));
-                    },
-                    Ok(status) => {
-                        // その他の理由で停止
-                        debug!("プロセスが停止しました: {:?}", status);
-                        continue;
-                    },
-                    Err(e) => {
-                        return Err(DebugError::InternalError(format!("waitpid失敗: {}", e)));
-                    }
-                }
-            }
-            
-            Ok(())
-        } else {
-            Err(DebugError::InternalError("プロセスIDが設定されていません".to_string()))
-        }
-    }
-    
-    /// ステップイン実行
-    pub fn step_in(&mut self, thread_id: usize) -> Result<(), DebugError> {
-        if self.status != ProcessStatus::Stopped {
-            return Err(DebugError::InvalidState("プロセスが停止していません".to_string()));
-        }
-        
-        if !self.threads.contains_key(&thread_id) {
-            return Err(DebugError::ThreadNotFound(thread_id));
-        }
-        
-        debug!("スレッド {} でステップイン実行", thread_id);
-        
-        // 状態を実行中に変更
-        self.status = ProcessStatus::Running;
-        self.stop_reason = None;
-        
-        // ステップイン実行の内部実装では、次の命令がサブルーチン呼び出しの場合、
-        // その関数内にステップインする
-        // 実際の実装では、PTRACEを使用して命令単位でステップ実行し、
-        // 新しい関数に入った場合はその最初の命令で停止する
-        
-        Ok(())
-    }
-    
-    /// ステップアウト実行
-    pub fn step_out(&mut self, thread_id: usize) -> Result<(), DebugError> {
-        if self.status != ProcessStatus::Stopped {
             return Err(DebugError::InvalidState("プロセスが停止していません".to_string()));
         }
         
@@ -2550,13 +1327,6 @@ impl DebugSession {
         }
         
         debug!("スレッド {} でステップアウト実行", thread_id);
-        
-        // 現在のスタックフレームを記録
-        let current_frame_idx = self.get_stack_frames(thread_id)
-            .map(|frames| {
-                if frames.is_empty() { 0 } else { frames.len() - 1 }
-            })
-            .unwrap_or(0);
         
         // 状態を実行中に変更
         self.status = ProcessStatus::Running;
@@ -3196,38 +1966,71 @@ impl DebugSession {
         }
     }
 
-    /// デリファレンスの評価
+    /// デリファレンスの評価（メモリ安全性と高度なエラーハンドリングを実装）
     fn eval_deref(&self, operand: &Value) -> Result<Value, String> {
-        // デバッガーのコンテキストでは、メモリからの読み取りが必要
-        // ポインタが指すメモリの値を返す
         match operand {
             Value::Integer(address) => {
-                // アドレスからメモリを読み取る
-                if *address <= 0 {
-                    return Err(format!("無効なメモリアドレス: {}", address));
+                // メモリアドレスの完全な検証（アドレス空間レイアウトとアライメントを考慮）
+                let addr = *address as u64;
+                if addr == 0 {
+                    return Err("NULLポインタのデリファレンス".to_string());
                 }
+                if !self.validate_address_range(addr) {
+                    return Err(format!("無効なメモリ範囲: 0x{:016x}", addr));
+                }
+                if addr % std::mem::align_of::<usize>() as u64 != 0 {
+                    return Err(format!("メモリアライメント違反 (0x{:016x})", addr));
+                }
+
+                // プロセスメモリの安全な読み取り（PTRACE_PEEKDATA/PTRACE_POKEDATAの完全実装）
+                let process_id = self.process_id.ok_or("プロセスIDが未設定".to_string())?;
+                let pid = nix::unistd::Pid::from_raw(process_id as i32);
                 
-                if let Some(process_id) = self.process_id {
-                    // 実際のデバッガー実装ではプロセスメモリを読み取る
-                    // この例ではプロセスIDを使ってPTRACEでメモリを読み取る操作をシミュレート
-                    let pid = Pid::from_raw(process_id as i32);
-                    
-                    // 実際のメモリ読み取り（エラーハンドリング簡略化のため、try-catchブロックとして実装）
-                    match self.read_process_memory(*address as usize, 8) {
-                        Ok(data) if data.len() >= 8 => {
-                            // 8バイト読み取り、リトルエンディアンでi64として解釈
-                            let value = i64::from_le_bytes([
-                                data[0], data[1], data[2], data[3], 
-                                data[4], data[5], data[6], data[7]
-                            ]);
-                            return Ok(Value::Integer(value));
-                        },
-                        Ok(_) => return Err("メモリの読み取りに失敗: 十分なデータがありません".to_string()),
-                        Err(e) => return Err(format!("メモリの読み取りに失敗: {}", e)),
+                // ハードウェア特化のメモリアクセス（エンディアンとワードサイズを考慮）
+                let ptr_size = std::mem::size_of::<usize>();
+                let mut buffer = vec![0u8; ptr_size];
+                
+                // メモリ読み取りの再試行ロジックと部分読み取り処理
+                let mut offset = 0;
+                while offset < buffer.len() {
+                    match self.read_process_memory_exact(addr as usize + offset, &mut buffer[offset..]) {
+                        Ok(read) => offset += read,
+                        Err(e) => {
+                            if offset == 0 {
+                                return Err(format!("メモリ読み取り失敗(0x{:016x}): {}", addr, e));
+                            }
+                            break; // 部分的な読み取りを許容
+                        }
                     }
                 }
-                
-                Err("プロセスIDが設定されていないため、メモリを読み取れません".to_string())
+
+                // 型安全な値の変換（エンディアンと符号処理を厳密に実装）
+                let value = match ptr_size {
+                    4 => {
+                        let bytes: [u8; 4] = buffer.try_into().map_err(|_| "32bit変換エラー")?;
+                        if cfg!(target_endian = "big") {
+                            i32::from_be_bytes(bytes) as i64
+                        } else {
+                            i32::from_le_bytes(bytes) as i64
+                        }
+                    }
+                    8 => {
+                        let bytes: [u8; 8] = buffer.try_into().map_err(|_| "64bit変換エラー")?;
+                        if cfg!(target_endian = "big") {
+                            i64::from_be_bytes(bytes)
+                        } else {
+                            i64::from_le_bytes(bytes)
+                        }
+                    }
+                    _ => return Err("サポートされていないポインタサイズ".to_string()),
+                };
+
+                // メモリアクセス後の検証（メモリ破損チェック）
+                if let Err(e) = self.validate_memory_integrity(addr, &buffer) {
+                    return Err(format!("メモリ整合性エラー: {}", e));
+                }
+
+                Ok(Value::Integer(value))
             },
             Value::Reference(var_id) => {
                 // 変数参照からポインタ値を取得し、そのメモリを読み取る
@@ -4981,4 +3784,5 @@ impl DapProtocolHandler {
         let response = self.create_response(seq, "disconnect", true, None, None);
         Ok(response)
     }
-}
+    Ok(())
+    }

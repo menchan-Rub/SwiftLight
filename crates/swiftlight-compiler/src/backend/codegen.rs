@@ -5,11 +5,11 @@
 //! コード生成を担当します。LLVM、WebAssembly、ネイティブコードなど複数のバックエンドを
 //! サポートし、高度な最適化技術を適用します。
 
-use crate::middleend::ir::Module;
+use crate::backend::native::swift_ir::representation::Module;
 use crate::frontend::error::{Result, Error, ErrorKind, ErrorSeverity, ErrorCategory};
 use crate::backend::target::{TargetOptions, TargetArch, TargetOS, TargetEnv};
 use crate::backend::optimization::{OptimizationLevel, OptimizationPass, PassManager};
-use crate::utils::diagnostics::DiagnosticEmitter;
+use crate::diagnostics::DiagnosticEmitter;
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -1025,7 +1025,7 @@ impl CodeGenerator {
             
             let function_type_ref = context.function_type(
                 unsafe { Type::from_type_ref(return_type) },
-                &param_types.iter().map(|&ty| unsafe { Type::from_type_ref(ty) }).collect::<Vec<_>>(),
+                &param_llvm_types.iter().map(|&ty| unsafe { Type::from_type_ref(ty) }).collect::<Vec<_>>(),
                 function_type.is_var_args,
             ).as_type_ref();
             

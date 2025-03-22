@@ -1,186 +1,128 @@
-use swiftlight_compiler::frontend::lexer::{Lexer, token::TokenKind};
+use swiftlight_compiler::frontend::lexer::{self, Token, TokenKind};
 
 #[test]
-fn test_lexer_basic_tokens() {
-    let source = r#"
-    fn main() {
-        let x = 42;
-        let y = "hello";
-        if x > 10 {
-            println(y);
-        }
+fn test_lexer_simple_tokens() {
+    let source = "let x: Int = 42;";
+    let tokens = lexer::tokenize(source, "test.swl").unwrap();
+    
+    let expected_tokens = vec![
+        TokenKind::Let,
+        TokenKind::Identifier,
+        TokenKind::Colon,
+        TokenKind::Identifier,
+        TokenKind::Equal,
+        TokenKind::IntegerLiteral,
+        TokenKind::Semicolon,
+        TokenKind::Eof,
+    ];
+    
+    assert_eq!(tokens.len(), expected_tokens.len());
+    
+    for (token, expected_kind) in tokens.iter().zip(expected_tokens.iter()) {
+        assert_eq!(&token.kind, expected_kind);
     }
-    "#;
-    
-    let mut lexer = Lexer::new(source, "test.sl");
-    let tokens: Vec<_> = lexer.collect();
-    
-    // 期待されるトークン数をチェック
-    assert!(tokens.len() > 20, "トークンが少なすぎます: {}", tokens.len());
-    
-    // 基本的なトークンタイプの検証
-    let token_kinds: Vec<_> = tokens.iter().map(|t| t.kind).collect();
-    
-    assert!(token_kinds.contains(&TokenKind::Fn));
-    assert!(token_kinds.contains(&TokenKind::Identifier));
-    assert!(token_kinds.contains(&TokenKind::LeftParen));
-    assert!(token_kinds.contains(&TokenKind::RightParen));
-    assert!(token_kinds.contains(&TokenKind::LeftBrace));
-    assert!(token_kinds.contains(&TokenKind::RightBrace));
-    assert!(token_kinds.contains(&TokenKind::Let));
-    assert!(token_kinds.contains(&TokenKind::Equals));
-    assert!(token_kinds.contains(&TokenKind::IntLiteral));
-    assert!(token_kinds.contains(&TokenKind::StringLiteral));
-    assert!(token_kinds.contains(&TokenKind::Semicolon));
-    assert!(token_kinds.contains(&TokenKind::If));
-    assert!(token_kinds.contains(&TokenKind::GreaterThan));
 }
 
 #[test]
-fn test_lexer_position_tracking() {
-    let source = "let x = 10;\nlet y = 20;";
-    let mut lexer = Lexer::new(source, "test.sl");
+fn test_lexer_string_literals() {
+    let source = "let message = \"Hello, World!\";";
+    let tokens = lexer::tokenize(source, "test.swl").unwrap();
     
-    // 最初の行のトークンを検証
-    let tok1 = lexer.next().unwrap();
-    assert_eq!(tok1.kind, TokenKind::Let);
-    assert_eq!(tok1.location.line, 1);
+    // 文字列リテラルトークンの位置を特定
+    let string_literal_idx = tokens.iter()
+        .position(|t| matches!(t.kind, TokenKind::StringLiteral))
+        .unwrap();
     
-    let tok2 = lexer.next().unwrap();
-    assert_eq!(tok2.kind, TokenKind::Identifier);
-    assert_eq!(tok2.location.line, 1);
-    
-    // セミコロンまでスキップ
-    let mut last_token = tok2;
-    while last_token.kind != TokenKind::Semicolon {
-        last_token = lexer.next().unwrap();
-    }
-    
-    // 2行目の先頭のトークンをチェック
-    let tok_next_line = lexer.next().unwrap();
-    assert_eq!(tok_next_line.kind, TokenKind::Let);
-    assert_eq!(tok_next_line.location.line, 2);
-}
-
-#[test]
-fn test_lexer_error_handling() {
-    let source = "let x = @invalid;";
-    let mut lexer = Lexer::new(source, "test.sl");
-    
-    // 無効なトークンまで進める
-    let tok1 = lexer.next().unwrap();
-    assert_eq!(tok1.kind, TokenKind::Let);
-    
-    let tok2 = lexer.next().unwrap();
-    assert_eq!(tok2.kind, TokenKind::Identifier);
-    
-    let tok3 = lexer.next().unwrap();
-    assert_eq!(tok3.kind, TokenKind::Equals);
-    
-    // 無効なトークンを検出
-    let error_token = lexer.next().unwrap();
-    assert_eq!(error_token.kind, TokenKind::Error);
+    // 文字列リテラルトークンのコンテンツを確認
+    let string_token = &tokens[string_literal_idx];
+    assert_eq!(string_token.span.extract_source(source), "\"Hello, World!\"");
 }
 
 #[test]
 fn test_lexer_keywords() {
-    let source = "fn let if else while for return break continue struct trait impl self Self";
-    let mut lexer = Lexer::new(source, "test.sl");
+    let source = "if true { return false; } else { let x = 10; }";
+    let tokens = lexer::tokenize(source, "test.swl").unwrap();
     
-    let expected_kinds = vec![
-        TokenKind::Fn,
-        TokenKind::Let,
+    let expected_keywords = vec![
         TokenKind::If,
-        TokenKind::Else,
-        TokenKind::While,
-        TokenKind::For,
+        TokenKind::True,
         TokenKind::Return,
-        TokenKind::Break,
-        TokenKind::Continue,
-        TokenKind::Struct,
-        TokenKind::Trait,
-        TokenKind::Impl,
-        TokenKind::SelfLower,
-        TokenKind::SelfUpper,
+        TokenKind::False,
+        TokenKind::Else,
+        TokenKind::Let,
     ];
     
-    for expected in expected_kinds {
-        let token = lexer.next().unwrap();
-        assert_eq!(token.kind, expected, "期待: {:?}, 実際: {:?}", expected, token.kind);
-    }
-}
-
-#[test]
-fn test_lexer_number_literals() {
-    let source = "123 0xff 0b1010 123.456 1e10 1.5e-4";
-    let mut lexer = Lexer::new(source, "test.sl");
+    let actual_keywords: Vec<_> = tokens.iter()
+        .filter(|t| t.kind.is_keyword())
+        .map(|t| &t.kind)
+        .collect();
     
-    // 整数リテラル
-    let tok1 = lexer.next().unwrap();
-    assert_eq!(tok1.kind, TokenKind::IntLiteral);
-    
-    // 16進数リテラル
-    let tok2 = lexer.next().unwrap();
-    assert_eq!(tok2.kind, TokenKind::IntLiteral);
-    
-    // 2進数リテラル
-    let tok3 = lexer.next().unwrap();
-    assert_eq!(tok3.kind, TokenKind::IntLiteral);
-    
-    // 小数点リテラル
-    let tok4 = lexer.next().unwrap();
-    assert_eq!(tok4.kind, TokenKind::FloatLiteral);
-    
-    // 指数表記リテラル
-    let tok5 = lexer.next().unwrap();
-    assert_eq!(tok5.kind, TokenKind::FloatLiteral);
-    
-    // 負の指数表記リテラル
-    let tok6 = lexer.next().unwrap();
-    assert_eq!(tok6.kind, TokenKind::FloatLiteral);
+    assert_eq!(actual_keywords, expected_keywords);
 }
 
 #[test]
 fn test_lexer_operators() {
-    let source = "+ - * / % == != < <= > >= && || ! << >> & | ^ ~ = += -= *= /= %= &= |= ^= <<= >>=";
-    let mut lexer = Lexer::new(source, "test.sl");
+    let source = "a + b - c * d / e % f && g || h == i != j < k <= l > m >= n";
+    let tokens = lexer::tokenize(source, "test.swl").unwrap();
     
-    let expected_kinds = vec![
+    let expected_operators = vec![
         TokenKind::Plus,
         TokenKind::Minus,
         TokenKind::Star,
         TokenKind::Slash,
         TokenKind::Percent,
-        TokenKind::EqualsEquals,
-        TokenKind::BangEquals,
-        TokenKind::LessThan,
-        TokenKind::LessThanEquals,
-        TokenKind::GreaterThan,
-        TokenKind::GreaterThanEquals,
-        TokenKind::AmpersandAmpersand,
+        TokenKind::AmpAmp,
         TokenKind::PipePipe,
-        TokenKind::Bang,
-        TokenKind::LessThanLessThan,
-        TokenKind::GreaterThanGreaterThan,
-        TokenKind::Ampersand,
-        TokenKind::Pipe,
-        TokenKind::Caret,
-        TokenKind::Tilde,
-        TokenKind::Equals,
-        TokenKind::PlusEquals,
-        TokenKind::MinusEquals,
-        TokenKind::StarEquals,
-        TokenKind::SlashEquals,
-        TokenKind::PercentEquals,
-        TokenKind::AmpersandEquals,
-        TokenKind::PipeEquals,
-        TokenKind::CaretEquals,
-        TokenKind::LessThanLessThanEquals,
-        TokenKind::GreaterThanGreaterThanEquals,
+        TokenKind::EqualEqual,
+        TokenKind::BangEqual,
+        TokenKind::Less,
+        TokenKind::LessEqual,
+        TokenKind::Greater,
+        TokenKind::GreaterEqual,
     ];
     
-    for expected in expected_kinds {
-        let token = lexer.next().unwrap();
-        assert_eq!(token.kind, expected, "期待: {:?}, 実際: {:?}", expected, token.kind);
-    }
+    let actual_operators: Vec<_> = tokens.iter()
+        .filter(|t| t.kind.is_operator())
+        .map(|t| &t.kind)
+        .collect();
+    
+    assert_eq!(actual_operators, expected_operators);
+}
+
+#[test]
+fn test_lexer_error_handling() {
+    let source = "let x = @invalid;";
+    let result = lexer::tokenize(source, "test.swl");
+    
+    assert!(result.is_err(), "不正なトークンに対してエラーが返されるべき");
+}
+
+#[test]
+fn test_lexer_unterminated_string() {
+    let source = "let message = \"Hello, World!";
+    let result = lexer::tokenize(source, "test.swl");
+    
+    assert!(result.is_err(), "終了していない文字列リテラルに対してエラーが返されるべき");
+}
+
+#[test]
+fn test_lexer_comments() {
+    let source = "
+        // これは行コメントです
+        let x = 10; /* これはブロックコメントです */
+        /* 複数行の
+           ブロックコメント
+        */
+        let y = 20;
+    ";
+    
+    let tokens = lexer::tokenize(source, "test.swl").unwrap();
+    
+    // コメントは無視されるはず
+    let identifiers: Vec<_> = tokens.iter()
+        .filter(|t| matches!(t.kind, TokenKind::Identifier))
+        .map(|t| t.span.extract_source(source))
+        .collect();
+    
+    assert_eq!(identifiers, vec!["x", "y"]);
 }

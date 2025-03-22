@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use crate::frontend::ast::Function;
-use crate::middleend::ir::{Module, Instruction, BasicBlock, Type, Value};
+use crate::backend::native::swift_ir::representation::{Module, Instruction, BasicBlock, Type, Value};
 use crate::backend::native::x86_64::{TargetInfo, RegisterClass};
 use crate::frontend::error::Result;
 
@@ -670,12 +670,597 @@ impl RISCVOptimizer {
         
         if is_compressed {
             // 圧縮命令のデコード処理
-            // ここに圧縮命令のデコードロジックを実装
-            unimplemented!("圧縮命令のデコードは実装されていません");
+            self.decode_compressed_instruction(bytes)
         } else {
             // 標準命令のデコード処理
-            // ここに標準命令のデコードロジックを実装
-            unimplemented!("標準命令のデコードは実装されていません");
+            if bytes.len() < 4 {
+                return Err(CompilerError::new(
+                    ErrorKind::OptimizationError,
+                    "標準命令のデコード中にバッファ境界を超えました".to_string(),
+                    None
+                ));
+            }
+            self.decode_standard_instruction(bytes)
+        }
+    }
+
+    /// 圧縮命令のデコード
+    fn decode_compressed_instruction(&self, bytes: &[u8]) -> Result<(RISCVInstruction, usize)> {
+        // 16ビット命令の取得
+        let inst_bytes = [bytes[0], bytes[1]];
+        let inst = u16::from_le_bytes(inst_bytes);
+        
+        // 命令フォーマットの判定（最下位2ビット）
+        let op = inst & 0b11;
+        
+        // 命令の種類を判定
+        match op {
+            0b00 => {
+                // C0形式
+                let funct3 = (inst >> 13) & 0b111;
+                
+                match funct3 {
+                    0b000 => {
+                        // c.addi4spn
+                        let rd = ((inst >> 2) & 0b111) + 8; // rd' (x8-x15)
+                        let imm = ((inst >> 7) & 0b1111) << 6 | // imm[9:6]
+                                 ((inst >> 11) & 0b11) << 4 | // imm[5:4]
+                                 ((inst >> 5) & 0b1) << 3 | // imm[3]
+                                 ((inst >> 6) & 0b1) << 2; // imm[2]
+                                 
+                        // addi rd, x2(sp), imm
+                        let operands = vec![
+                            RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                            RISCVOperand::Register(RISCVRegister::new("sp", 2, RISCVRegisterClass::General, Some("sp"), true)),
+                            RISCVOperand::Immediate(imm as i64)
+                        ];
+                        
+                        Ok((RISCVInstruction {
+                            mnemonic: "c.addi4spn".to_string(),
+                            format: RISCVInstructionFormat::I,
+                            operands,
+                            required_extensions: HashSet::from([RISCVExtension::C]),
+                            latency: 1,
+                            throughput: 1.0,
+                            encoding: Some(inst as u32),
+                            comment: Some("圧縮形式: addi rd, sp, imm".to_string())
+                        }, 2))
+                    },
+                    0b010 => {
+                        // c.lw
+                        let rs1 = ((inst >> 7) & 0b111) + 8; // rs1' (x8-x15)
+                        let rd = ((inst >> 2) & 0b111) + 8; // rd' (x8-x15)
+                        let imm = ((inst >> 10) & 0b111) << 3 | // imm[5:3]
+                                 ((inst >> 6) & 0b1) << 2 | // imm[2]
+                                 ((inst >> 5) & 0b1) << 6; // imm[6]
+                        
+                        let operands = vec![
+                            RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                            RISCVOperand::Memory {
+                                base: RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false),
+                                offset: imm as i32
+                            }
+                        ];
+                        
+                        Ok((RISCVInstruction {
+                            mnemonic: "c.lw".to_string(),
+                            format: RISCVInstructionFormat::I,
+                            operands,
+                            required_extensions: HashSet::from([RISCVExtension::C]),
+                            latency: 2,
+                            throughput: 0.5,
+                            encoding: Some(inst as u32),
+                            comment: Some("圧縮形式: lw rd, imm(rs1)".to_string())
+                        }, 2))
+                    },
+                    // その他のC0命令も同様に実装
+                    _ => {
+                        Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応の圧縮命令です: funct3={:03b}, op={:02b}", funct3, op),
+                            None
+                        ))
+                    }
+                }
+            },
+            0b01 => {
+                // C1形式
+                let funct3 = (inst >> 13) & 0b111;
+                
+                match funct3 {
+                    0b000 => {
+                        // c.addi
+                        let rd = (inst >> 7) & 0b11111; // rd/rs1
+                        let imm = ((inst >> 12) & 0b1) << 5 | // imm[5]
+                                 ((inst >> 2) & 0b11111); // imm[4:0]
+                        
+                        // 符号拡張
+                        let imm = if (imm >> 5) & 1 == 1 {
+                            ((imm as i64) | !0x3F) // 負数の場合は上位ビットを1で埋める
+                        } else {
+                            imm as i64
+                        };
+                        
+                        let operands = vec![
+                            RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                            RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                            RISCVOperand::Immediate(imm)
+                        ];
+                        
+                        Ok((RISCVInstruction {
+                            mnemonic: "c.addi".to_string(),
+                            format: RISCVInstructionFormat::I,
+                            operands,
+                            required_extensions: HashSet::from([RISCVExtension::C]),
+                            latency: 1,
+                            throughput: 1.0,
+                            encoding: Some(inst as u32),
+                            comment: Some("圧縮形式: addi rd, rd, imm".to_string())
+                        }, 2))
+                    },
+                    // その他のC1命令も同様に実装
+                    _ => {
+                        Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応の圧縮命令です: funct3={:03b}, op={:02b}", funct3, op),
+                            None
+                        ))
+                    }
+                }
+            },
+            0b10 => {
+                // C2形式
+                let funct3 = (inst >> 13) & 0b111;
+                
+                match funct3 {
+                    0b100 => {
+                        // RISC-V C拡張のいくつかの命令
+                        if (inst >> 12) & 0b1 == 0 {
+                            // c.jr / c.mv
+                            let rs1 = (inst >> 7) & 0b11111;
+                            let rs2 = (inst >> 2) & 0b11111;
+                            
+                            if rs2 == 0 {
+                                // c.jr
+                                let operands = vec![
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false))
+                                ];
+                                
+                                Ok((RISCVInstruction {
+                                    mnemonic: "c.jr".to_string(),
+                                    format: RISCVInstructionFormat::I,
+                                    operands,
+                                    required_extensions: HashSet::from([RISCVExtension::C]),
+                                    latency: 2,
+                                    throughput: 0.5,
+                                    encoding: Some(inst as u32),
+                                    comment: Some("圧縮形式: jalr x0, rs1, 0".to_string())
+                                }, 2))
+                            } else {
+                                // c.mv
+                                let operands = vec![
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs2), rs2 as usize, RISCVRegisterClass::General, None, false))
+                                ];
+                                
+                                Ok((RISCVInstruction {
+                                    mnemonic: "c.mv".to_string(),
+                                    format: RISCVInstructionFormat::R,
+                                    operands,
+                                    required_extensions: HashSet::from([RISCVExtension::C]),
+                                    latency: 1,
+                                    throughput: 1.0,
+                                    encoding: Some(inst as u32),
+                                    comment: Some("圧縮形式: add rd, x0, rs2".to_string())
+                                }, 2))
+                            }
+                        } else {
+                            // c.jalr / c.add
+                            let rs1 = (inst >> 7) & 0b11111;
+                            let rs2 = (inst >> 2) & 0b11111;
+                            
+                            if rs2 == 0 {
+                                // c.jalr
+                                let operands = vec![
+                                    RISCVOperand::Register(RISCVRegister::new("ra", 1, RISCVRegisterClass::General, Some("ra"), false)),
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false))
+                                ];
+                                
+                                Ok((RISCVInstruction {
+                                    mnemonic: "c.jalr".to_string(),
+                                    format: RISCVInstructionFormat::I,
+                                    operands,
+                                    required_extensions: HashSet::from([RISCVExtension::C]),
+                                    latency: 2,
+                                    throughput: 0.5,
+                                    encoding: Some(inst as u32),
+                                    comment: Some("圧縮形式: jalr ra, rs1, 0".to_string())
+                                }, 2))
+                            } else {
+                                // c.add
+                                let operands = vec![
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs2), rs2 as usize, RISCVRegisterClass::General, None, false))
+                                ];
+                                
+                                Ok((RISCVInstruction {
+                                    mnemonic: "c.add".to_string(),
+                                    format: RISCVInstructionFormat::R,
+                                    operands,
+                                    required_extensions: HashSet::from([RISCVExtension::C]),
+                                    latency: 1,
+                                    throughput: 1.0,
+                                    encoding: Some(inst as u32),
+                                    comment: Some("圧縮形式: add rd, rd, rs2".to_string())
+                                }, 2))
+                            }
+                        }
+                    },
+                    // その他のC2命令も同様に実装
+                    _ => {
+                        Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応の圧縮命令です: funct3={:03b}, op={:02b}", funct3, op),
+                            None
+                        ))
+                    }
+                }
+            },
+            _ => {
+                // このケースは発生しないはず
+                Err(CompilerError::new(
+                    ErrorKind::OptimizationError,
+                    format!("無効な圧縮命令オペコードです: {:02b}", op),
+                    None
+                ))
+            }
+        }
+    }
+
+    /// 標準命令のデコード
+    fn decode_standard_instruction(&self, bytes: &[u8]) -> Result<(RISCVInstruction, usize)> {
+        // 32ビット命令の取得
+        let inst_bytes = [bytes[0], bytes[1], bytes[2], bytes[3]];
+        let inst = u32::from_le_bytes(inst_bytes);
+        
+        // 命令フォーマットの判定（最下位7ビットがオペコード）
+        let opcode = inst & 0x7F;
+        
+        match opcode {
+            0b0110111 => {
+                // LUI - Load Upper Immediate
+                let rd = (inst >> 7) & 0x1F;
+                let imm = (inst & 0xFFFFF000) as i32 >> 12;
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Immediate(imm as i64)
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: "lui".to_string(),
+                    format: RISCVInstructionFormat::U,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 1,
+                    throughput: 1.0,
+                    encoding: Some(inst),
+                    comment: Some("Load Upper Immediate".to_string())
+                }, 4))
+            },
+            0b0010111 => {
+                // AUIPC - Add Upper Immediate to PC
+                let rd = (inst >> 7) & 0x1F;
+                let imm = (inst & 0xFFFFF000) as i32 >> 12;
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Immediate(imm as i64)
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: "auipc".to_string(),
+                    format: RISCVInstructionFormat::U,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 1,
+                    throughput: 1.0,
+                    encoding: Some(inst),
+                    comment: Some("Add Upper Immediate to PC".to_string())
+                }, 4))
+            },
+            0b1101111 => {
+                // JAL - Jump and Link
+                let rd = (inst >> 7) & 0x1F;
+                let imm = ((inst >> 31) & 0x1) << 20 | // imm[20]
+                        ((inst >> 12) & 0xFF) << 12 | // imm[19:12]
+                        ((inst >> 20) & 0x1) << 11 | // imm[11]
+                        ((inst >> 21) & 0x3FF) << 1; // imm[10:1]
+                
+                // 符号拡張
+                let imm = if (imm >> 20) & 1 == 1 {
+                    ((imm as i64) | (!0xFFFFF)) // 負数の場合は上位ビットを1で埋める
+                } else {
+                    imm as i64
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Immediate(imm)
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: "jal".to_string(),
+                    format: RISCVInstructionFormat::J,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 2,
+                    throughput: 0.5,
+                    encoding: Some(inst),
+                    comment: Some("Jump and Link".to_string())
+                }, 4))
+            },
+            0b1100111 => {
+                // JALR - Jump and Link Register
+                let rd = (inst >> 7) & 0x1F;
+                let rs1 = (inst >> 15) & 0x1F;
+                let imm = (inst >> 20) & 0xFFF;
+                
+                // 符号拡張
+                let imm = if (imm >> 11) & 1 == 1 {
+                    ((imm as i64) | (!0xFFF)) // 負数の場合は上位ビットを1で埋める
+                } else {
+                    imm as i64
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Immediate(imm)
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: "jalr".to_string(),
+                    format: RISCVInstructionFormat::I,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 2,
+                    throughput: 0.5,
+                    encoding: Some(inst),
+                    comment: Some("Jump and Link Register".to_string())
+                }, 4))
+            },
+            0b0000011 => {
+                // ロード系命令
+                let rd = (inst >> 7) & 0x1F;
+                let rs1 = (inst >> 15) & 0x1F;
+                let funct3 = (inst >> 12) & 0x7;
+                let imm = (inst >> 20) & 0xFFF;
+                
+                // 符号拡張
+                let imm = if (imm >> 11) & 1 == 1 {
+                    ((imm as i64) | (!0xFFF)) // 負数の場合は上位ビットを1で埋める
+                } else {
+                    imm as i64
+                };
+                
+                let mnemonic = match funct3 {
+                    0b000 => "lb", // Load Byte
+                    0b001 => "lh", // Load Halfword
+                    0b010 => "lw", // Load Word
+                    0b100 => "lbu", // Load Byte Unsigned
+                    0b101 => "lhu", // Load Halfword Unsigned
+                    _ => {
+                        return Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応のロード命令です: funct3={:03b}", funct3),
+                            None
+                        ));
+                    }
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Memory {
+                        base: RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false),
+                        offset: imm as i32
+                    }
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: mnemonic.to_string(),
+                    format: RISCVInstructionFormat::I,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 2,
+                    throughput: 0.5,
+                    encoding: Some(inst),
+                    comment: Some("ロード命令".to_string())
+                }, 4))
+            },
+            0b0100011 => {
+                // ストア系命令
+                let rs1 = (inst >> 15) & 0x1F;
+                let rs2 = (inst >> 20) & 0x1F;
+                let funct3 = (inst >> 12) & 0x7;
+                let imm = ((inst >> 25) & 0x7F) << 5 | ((inst >> 7) & 0x1F);
+                
+                // 符号拡張
+                let imm = if (imm >> 11) & 1 == 1 {
+                    ((imm as i64) | (!0xFFF)) // 負数の場合は上位ビットを1で埋める
+                } else {
+                    imm as i64
+                };
+                
+                let mnemonic = match funct3 {
+                    0b000 => "sb", // Store Byte
+                    0b001 => "sh", // Store Halfword
+                    0b010 => "sw", // Store Word
+                    _ => {
+                        return Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応のストア命令です: funct3={:03b}", funct3),
+                            None
+                        ));
+                    }
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs2), rs2 as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Memory {
+                        base: RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false),
+                        offset: imm as i32
+                    }
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: mnemonic.to_string(),
+                    format: RISCVInstructionFormat::S,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 1,
+                    throughput: 1.0,
+                    encoding: Some(inst),
+                    comment: Some("ストア命令".to_string())
+                }, 4))
+            },
+            0b0010011 => {
+                // 即値演算命令
+                let rd = (inst >> 7) & 0x1F;
+                let rs1 = (inst >> 15) & 0x1F;
+                let funct3 = (inst >> 12) & 0x7;
+                let imm = (inst >> 20) & 0xFFF;
+                
+                // 符号拡張
+                let imm = if (imm >> 11) & 1 == 1 && funct3 != 0b001 && funct3 != 0b101 {
+                    ((imm as i64) | (!0xFFF)) // 負数の場合は上位ビットを1で埋める
+                } else {
+                    imm as i64
+                };
+                
+                let (mnemonic, format) = match funct3 {
+                    0b000 => ("addi", RISCVInstructionFormat::I), // Add Immediate
+                    0b010 => ("slti", RISCVInstructionFormat::I), // Set Less Than Immediate
+                    0b011 => ("sltiu", RISCVInstructionFormat::I), // Set Less Than Immediate Unsigned
+                    0b100 => ("xori", RISCVInstructionFormat::I), // Xor Immediate
+                    0b110 => ("ori", RISCVInstructionFormat::I), // Or Immediate
+                    0b111 => ("andi", RISCVInstructionFormat::I), // And Immediate
+                    0b001 => {
+                        // シフト命令（SLLI）
+                        if (imm >> 5) != 0 {
+                            return Err(CompilerError::new(
+                                ErrorKind::OptimizationError,
+                                "SLLI命令の即値フィールドが無効です".to_string(),
+                                None
+                            ));
+                        }
+                        ("slli", RISCVInstructionFormat::I) // Shift Left Logical Immediate
+                    },
+                    0b101 => {
+                        // シフト命令（SRLI/SRAI）
+                        if (imm >> 10) == 0 {
+                            // SRLI
+                            ("srli", RISCVInstructionFormat::I) // Shift Right Logical Immediate
+                        } else if (imm >> 10) == 1 {
+                            // SRAI
+                            ("srai", RISCVInstructionFormat::I) // Shift Right Arithmetic Immediate
+                        } else {
+                            return Err(CompilerError::new(
+                                ErrorKind::OptimizationError,
+                                "SRLI/SRAI命令の即値フィールドが無効です".to_string(),
+                                None
+                            ));
+                        }
+                    },
+                    _ => {
+                        // このケースは発生しないはず
+                        return Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応の即値演算命令です: funct3={:03b}", funct3),
+                            None
+                        ));
+                    }
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Immediate(imm & 0x1F) // シフト命令の場合は下位5ビットのみ使用
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: mnemonic.to_string(),
+                    format,
+                    operands,
+                    required_extensions: HashSet::from([RISCVExtension::I]),
+                    latency: 1,
+                    throughput: 1.0,
+                    encoding: Some(inst),
+                    comment: Some("即値演算命令".to_string())
+                }, 4))
+            },
+            0b0110011 => {
+                // レジスタ演算命令
+                let rd = (inst >> 7) & 0x1F;
+                let rs1 = (inst >> 15) & 0x1F;
+                let rs2 = (inst >> 20) & 0x1F;
+                let funct3 = (inst >> 12) & 0x7;
+                let funct7 = (inst >> 25) & 0x7F;
+                
+                let (mnemonic, required_ext) = match (funct7, funct3) {
+                    (0b0000000, 0b000) => ("add", RISCVExtension::I), // Add
+                    (0b0100000, 0b000) => ("sub", RISCVExtension::I), // Subtract
+                    (0b0000000, 0b001) => ("sll", RISCVExtension::I), // Shift Left Logical
+                    (0b0000000, 0b010) => ("slt", RISCVExtension::I), // Set Less Than
+                    (0b0000000, 0b011) => ("sltu", RISCVExtension::I), // Set Less Than Unsigned
+                    (0b0000000, 0b100) => ("xor", RISCVExtension::I), // Xor
+                    (0b0000000, 0b101) => ("srl", RISCVExtension::I), // Shift Right Logical
+                    (0b0100000, 0b101) => ("sra", RISCVExtension::I), // Shift Right Arithmetic
+                    (0b0000000, 0b110) => ("or", RISCVExtension::I), // Or
+                    (0b0000000, 0b111) => ("and", RISCVExtension::I), // And
+                    (0b0000001, 0b000) => ("mul", RISCVExtension::M), // Multiply
+                    (0b0000001, 0b001) => ("mulh", RISCVExtension::M), // Multiply High Signed Signed
+                    (0b0000001, 0b010) => ("mulhsu", RISCVExtension::M), // Multiply High Signed Unsigned
+                    (0b0000001, 0b011) => ("mulhu", RISCVExtension::M), // Multiply High Unsigned Unsigned
+                    (0b0000001, 0b100) => ("div", RISCVExtension::M), // Divide Signed
+                    (0b0000001, 0b101) => ("divu", RISCVExtension::M), // Divide Unsigned
+                    (0b0000001, 0b110) => ("rem", RISCVExtension::M), // Remainder Signed
+                    (0b0000001, 0b111) => ("remu", RISCVExtension::M), // Remainder Unsigned
+                    _ => {
+                        return Err(CompilerError::new(
+                            ErrorKind::OptimizationError,
+                            format!("未対応のレジスタ演算命令です: funct7={:07b}, funct3={:03b}", funct7, funct3),
+                            None
+                        ));
+                    }
+                };
+                
+                let operands = vec![
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rd), rd as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs1), rs1 as usize, RISCVRegisterClass::General, None, false)),
+                    RISCVOperand::Register(RISCVRegister::new(&format!("x{}", rs2), rs2 as usize, RISCVRegisterClass::General, None, false))
+                ];
+                
+                Ok((RISCVInstruction {
+                    mnemonic: mnemonic.to_string(),
+                    format: RISCVInstructionFormat::R,
+                    operands,
+                    required_extensions: HashSet::from([required_ext]),
+                    latency: 1,
+                    throughput: 1.0,
+                    encoding: Some(inst),
+                    comment: Some("レジスタ演算命令".to_string())
+                }, 4))
+            },
+            // その他の命令も同様に実装
+            _ => {
+                Err(CompilerError::new(
+                    ErrorKind::OptimizationError,
+                    format!("未対応の命令オペコードです: {:#09b}", opcode),
+                    None
+                ))
+            }
         }
     }
 

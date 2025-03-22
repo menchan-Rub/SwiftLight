@@ -17,7 +17,7 @@ pub mod dominator;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use crate::frontend::error::{Result, CompilerError};
-use crate::middleend::ir::{Module, Function, BasicBlock, Instruction, OpCode, Value, Operand};
+use crate::backend::native::swift_ir::representation::{Module, Function, BasicBlock, Instruction, OpCode, Value, Operand};
 
 /// 制御フローグラフ解析
 pub struct CFGAnalysis<'a> {

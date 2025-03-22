@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
-use crate::middleend::ir::{
+use crate::backend::native::swift_ir::representation::{
     BasicBlock, Function, Instruction, Module, Value, ValueId, 
     Type, TypeId, ControlFlowGraph, InstructionId
 };

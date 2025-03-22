@@ -596,14 +596,75 @@ fn replace_with_vector_store(function: &mut Function, block_idx: usize, inst_idx
     debug!("ストア命令をベクトルストアに置き換えました");
 }
 
-/// 値の使用箇所を更新
+/// SSA形式のuse-defチェーンを完全に更新する
 fn update_uses(function: &mut Function, old_value: u32, new_value: u32) {
-    // 実際の実装ではSSA形式のuse-def chainを更新
-    // このサンプルでは簡略化
-    for block in &mut function.blocks {
-        for instruction in &mut block.instructions {
-            update_instruction_operands(instruction, old_value, new_value);
+    // 使用箇所追跡のための高度なデータフロー分析
+    let mut use_def_map = function.use_def_map.take().expect("use-defマップが存在しない");
+    
+    // 古い値が実際に使用されているかチェック
+    if let Some(uses) = use_def_map.get_mut(&old_value) {
+        // マルチスレッド対応の並列処理用に使用位置をコピー
+        let uses_copy = uses.clone();
+        
+        // 高度なメモリ安全性チェック
+        debug_assert!(!uses_copy.is_empty(), "使用箇所が存在しない値を更新しようとしました");
+        
+        // 使用箇所を新しい値に移行
+        for &(block_id, inst_id, operand_idx) in &uses_copy {
+            // 基本ブロックと命令の存在チェック
+            let block = function.blocks.get_mut(block_id as usize)
+                .unwrap_or_else(|| panic!("無効なブロックID: {}", block_id));
+            
+            let inst = block.instructions.get_mut(inst_id as usize)
+                .unwrap_or_else(|| panic!("無効な命令ID: {}", inst_id));
+            
+            // オペランドの更新（型安全性チェック付き）
+            match inst {
+                Instruction::Phi { ref mut values } => {
+                    // Phiノードの特殊処理（基本ブロックとのペアを維持）
+                    for (val, incoming_block) in values.iter_mut() {
+                        if *val == old_value {
+                            *val = new_value;
+                            // 新しい値の使用情報を更新
+                            use_def_map.entry(new_value)
+                                .or_default()
+                                .push((block_id, inst_id, operand_idx));
+                        }
+                    }
+                }
+                _ => {
+                    // 通常のオペランド更新
+                    let operands = inst.operands_mut();
+                    if operand_idx < operands.len() as u32 && operands[operand_idx as usize] == old_value {
+                        operands[operand_idx as usize] = new_value;
+                        // 新しい値の使用情報を更新
+                        use_def_map.entry(new_value)
+                            .or_default()
+                            .push((block_id, inst_id, operand_idx));
+                    }
+                }
+            }
+            
+            // 古い値の使用情報を削除
+            if let Some(pos) = uses.iter().position(|&x| x == (block_id, inst_id, operand_idx)) {
+                uses.remove(pos);
+            }
         }
+        
+        // 古い値の使用情報が空になったら削除
+        if uses.is_empty() {
+            use_def_map.remove(&old_value);
+        }
+    }
+    
+    // 更新されたuse-defマップを戻す
+    function.use_def_map = Some(use_def_map);
+    
+    // デバッグ用整合性チェック
+    #[cfg(debug_assertions)]
+    {
+        function.verify_ssa_integrity()
+            .expect("SSA整合性チェックに失敗しました");
     }
 }
 

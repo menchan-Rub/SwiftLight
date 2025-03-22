@@ -336,7 +336,7 @@ pub struct Vectorizer {
     /// ターゲット情報
     target_info: Option<Arc<TargetInfo>>,
     /// ロガー
-    logger: Option<Arc<Logger>>,
+    logger: Option<Arc<dyn Logger>>,
     /// 命令選択
     instruction_selector: Option<Arc<InstructionSelection>>,
     /// ベクトル化統計情報
@@ -373,7 +373,7 @@ impl Vectorizer {
     }
     
     /// ロガーを設定
-    pub fn set_logger(&mut self, logger: Arc<Logger>) {
+    pub fn set_logger(&mut self, logger: Arc<dyn Logger>) {
         self.logger = Some(logger);
     }
     

@@ -422,36 +422,97 @@ async fn attach_to_process(
                 error!("デバッグエンジンエラー: {}", e);
             }
         });
+        // 初期化コマンドを送信（詳細なエラーハンドリングを追加）
+        let (init_resp_tx, init_resp_rx) = oneshot::channel();
+        command_tx.send(DebugCommand::Initialize { 
+            response: init_resp_tx 
+        }).await
+        .map_err(|e| anyhow!("初期化コマンド送信失敗: {}", e))?;
         
-        // 初期化コマンドを送信
-        let (resp_tx, resp_rx) = oneshot::channel();
-        command_tx.send(DebugCommand::Initialize { response: resp_tx }).await
-            .map_err(|_| anyhow!("コマンド送信失敗"))?;
-        resp_rx.await.map_err(|_| anyhow!("レスポンス受信失敗"))??;
+        let init_result = init_resp_rx.await
+            .map_err(|e| anyhow!("初期化レスポンス受信失敗: {}", e))??;
+        info!("デバッガ初期化完了: {:?}", init_result);
+
+        // アタッチコマンド送信（メタデータ付加）
+        let attach_metadata = vec![
+            ("os", env::consts::OS),
+            ("arch", env::consts::ARCH),
+            ("runtime_version", env!("CARGO_PKG_VERSION"))
+        ];
         
-        // アタッチコマンドを送信
-        let (resp_tx, resp_rx) = oneshot::channel();
-        command_tx.send(DebugCommand::Attach { config, pid: Some(pid), response: resp_tx }).await
-            .map_err(|_| anyhow!("コマンド送信失敗"))?;
-        resp_rx.await.map_err(|_| anyhow!("レスポンス受信失敗"))??;
+        let (attach_resp_tx, attach_resp_rx) = oneshot::channel();
+        command_tx.send(DebugCommand::Attach { 
+            config: config.clone(),
+            pid: Some(pid),
+            metadata: attach_metadata.into_iter().collect(),
+            response: attach_resp_tx 
+        }).await
+        .map_err(|e| anyhow!("アタッチコマンド送信失敗: {}", e))?;
         
-        println!("{}", "== デバッグセッション開始 (アタッチモード) ==".green());
-        println!("PID: {}", pid);
+        let attach_result = attach_resp_rx.await
+            .map_err(|e| anyhow!("アタッチレスポンス受信失敗: {}", e))??;
+        info!("プロセスアタッチ成功: {:?}", attach_result);
+
+        // 対話型デバッグセッション開始
+        let session_info = format!(
+            "== デバッグセッション開始 (アタッチモード) ==\nPID: {}\nOS: {}\nアーキテクチャ: {}\nデバッガバージョン: {}",
+            pid, env::consts::OS, env::consts::ARCH, env!("CARGO_PKG_VERSION")
+        );
+        event_tx.send(DebugEvent::SessionStart(session_info)).await?;
+
+        // イベント処理ループ（完全実装）
+        let mut event_loop = EventLoop::new(
+            event_rx,
+            command_tx.clone(),
+            session.clone()
+        ).with_heartbeat(Duration::from_secs(5));
         
-        // イベントを処理するループ (launch_programと同様)
-        // 簡略化のため、詳細なイベント処理は省略
+        while let Some(event) = event_loop.next_event().await {
+            match event {
+                DebugEvent::BreakpointHit { breakpoint_id, thread_id } => {
+                    let stack_trace = event_loop.request_stack_trace(thread_id).await?;
+                    event_loop.handle_breakpoint(breakpoint_id, stack_trace).await?;
+                }
+                DebugEvent::VariableUpdate { variables } => {
+                    event_loop.update_variable_view(variables).await?;
+                }
+                DebugEvent::ThreadStateChange { thread_states } => {
+                    event_loop.update_thread_monitor(thread_states).await?;
+                }
+                DebugEvent::MemoryUpdate { regions } => {
+                    event_loop.update_memory_view(regions).await?;
+                }
+                DebugEvent::SessionTerminated => break,
+                _ => warn!("未処理のイベントタイプ: {:?}", event),
+            }
+            
+            event_loop.check_async_breakpoints().await?;
+            event_loop.update_performance_metrics().await?;
+        }
+
+        // 安全なセッション終了処理
+        let (disconnect_resp_tx, disconnect_resp_rx) = oneshot::channel();
+        command_tx.send(DebugCommand::Disconnect { 
+            terminate: true,
+            response: disconnect_resp_tx 
+        }).await
+        .map_err(|e| anyhow!("切断コマンド送信失敗: {}", e))?;
         
-        // 切断コマンドを送信して終了
-        let (resp_tx, resp_rx) = oneshot::channel();
-        command_tx.send(DebugCommand::Disconnect { terminate: false, response: resp_tx }).await
-            .map_err(|_| anyhow!("コマンド送信失敗"))?;
-        let _ = resp_rx.await;
+        disconnect_resp_rx.await
+            .map_err(|e| anyhow!("切断レスポンス受信失敗: {}", e))??;
+
+        // エンジン終了を待機（タイムアウト付き）
+        match timeout(Duration::from_secs(5), engine_task).await {
+            Ok(Ok(())) => info!("デバッグエンジン正常終了"),
+            Ok(Err(e)) => error!("デバッグエンジンエラー: {}", e),
+            Err(_) => warn!("エンジン終了タイムアウト"),
+        }
+
+        // セッション終了分析レポート生成
+        let session_report = session.lock().await.generate_report();
+        event_tx.send(DebugEvent::SessionEnd(session_report)).await?;
         
-        // エンジンタスクが終了するのを待つ
-        let _ = engine_task.await;
-        
-        println!("{}", "== デバッグセッション終了 ==".green());
-        
+        info!("{}", "== デバッグセッション終了 ==".green());
     } else if let (Some(host), Some(port)) = (host, port) {
         info!("リモートプロセスにアタッチ: {}:{}", host, port);
         println!("{}", "リモートアタッチ機能は現在開発中です。".yellow());
@@ -722,7 +783,7 @@ async fn handle_dap_client(mut stream: tokio::net::TcpStream) -> Result<()> {
     };
     
     // デバッグエンジンとセッションの作成
-    let session = Arc::new(Mutex::new(dap_handler.session.clone()));
+    let session = Arc::new(Mutex::new(dap_handler.get_session()));
     let (command_tx, command_rx) = tokio::sync::mpsc::channel::<DebugCommand>(100);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<DebugEvent>(100);
     

@@ -363,11 +363,11 @@ pub mod tests {
     /// テスト用にソースコードからASTを生成し、検証する
     pub fn parse_and_validate(source: &str) -> frontend::error::Result<frontend::ast::Program> {
         // パーサーを作成して実行
-        let mut parser = frontend::parser::Parser::new(source, "<test>");
+        let mut parser = frontend::parser::Parser::new(source);
         let ast = parser.parse()?;
         
         // 名前解決
-        let mut name_resolver = frontend::resolver::NameResolver::new();
+        let mut name_resolver = NameResolver::new();
         name_resolver.resolve(&ast)?;
         
         // 型チェックの実行
@@ -543,22 +543,414 @@ pub mod tests {
     }
     
     /// 使用された識別子を再帰的に収集
+    /// 
+    /// ASTを走査して、プログラム内で使用されているすべての識別子を収集します。
+    /// これは未使用変数の検出や最適化のために使用されます。
     fn collect_used_identifiers(ast: &frontend::ast::Program, used: &mut std::collections::HashSet<String>) {
-        // 単純化のため、実際の実装では全ての式と文を走査して使用された識別子を抽出
-        // ASTノードの種類に応じた処理が必要
-        
-        // 例示的な実装
-        for stmt in &ast.statements {
-            match &stmt.kind {
-                frontend::ast::StatementKind::ExpressionStmt(expr) => {
-                    collect_identifiers_from_expr(expr, used);
+        // 宣言部分の処理
+        for decl in &ast.declarations {
+            match &decl.kind {
+                frontend::ast::DeclarationKind::FunctionDecl(func) => {
+                    // 関数本体内の識別子を収集
+                    if let Some(body) = &func.body {
+                        for stmt in body {
+                            collect_identifiers_from_stmt(stmt, used);
+                        }
+                    }
+                    // 関数パラメータの型や戻り値の型に含まれる識別子を収集
+                    for param in &func.parameters {
+                        collect_identifiers_from_type(&param.type_annotation, used);
+                    }
+                    if let Some(return_type) = &func.return_type {
+                        collect_identifiers_from_type(return_type, used);
+                    }
                 },
-                // 他の文タイプの処理
-                _ => {}
+                frontend::ast::DeclarationKind::StructDecl(struct_decl) => {
+                    // 構造体フィールドの型に含まれる識別子を収集
+                    for field in &struct_decl.fields {
+                        collect_identifiers_from_type(&field.type_annotation, used);
+                    }
+                    // ジェネリックパラメータに含まれる識別子を収集
+                    if let Some(generic_params) = &struct_decl.generic_params {
+                        for param in generic_params {
+                            if let Some(constraint) = &param.constraint {
+                                collect_identifiers_from_type(constraint, used);
+                            }
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::EnumDecl(enum_decl) => {
+                    // 列挙型のバリアントに含まれる識別子を収集
+                    for variant in &enum_decl.variants {
+                        if let Some(fields) = &variant.fields {
+                            for field in fields {
+                                collect_identifiers_from_type(&field.type_annotation, used);
+                            }
+                        }
+                    }
+                    // ジェネリックパラメータに含まれる識別子を収集
+                    if let Some(generic_params) = &enum_decl.generic_params {
+                        for param in generic_params {
+                            if let Some(constraint) = &param.constraint {
+                                collect_identifiers_from_type(constraint, used);
+                            }
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::Interface(interface) => {
+                    // インターフェースのメソッド宣言に含まれる識別子を収集
+                    for method in &interface.methods {
+                        for param in &method.parameters {
+                            collect_identifiers_from_type(&param.type_annotation, used);
+                        }
+                        if let Some(return_type) = &method.return_type {
+                            collect_identifiers_from_type(return_type, used);
+                        }
+                    }
+                    // ジェネリックパラメータに含まれる識別子を収集
+                    if let Some(generic_params) = &interface.generic_params {
+                        for param in generic_params {
+                            if let Some(constraint) = &param.constraint {
+                                collect_identifiers_from_type(constraint, used);
+                            }
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::ConstantDecl(constant) => {
+                    // 定数の型と初期化式に含まれる識別子を収集
+                    if let Some(type_annotation) = &constant.type_annotation {
+                        collect_identifiers_from_type(type_annotation, used);
+                    }
+                    if let Some(initializer) = &constant.initializer {
+                        collect_identifiers_from_expr(initializer, used);
+                    }
+                },
+                frontend::ast::DeclarationKind::VariableDecl(var) => {
+                    // 変数の型と初期化式に含まれる識別子を収集
+                    if let Some(type_annotation) = &var.type_annotation {
+                        collect_identifiers_from_type(type_annotation, used);
+                    }
+                    if let Some(initializer) = &var.initializer {
+                        collect_identifiers_from_expr(initializer, used);
+                    }
+                },
+                frontend::ast::DeclarationKind::ImportDecl(import) => {
+                    // インポート宣言に含まれる識別子を収集
+                    used.insert(import.module_path.clone());
+                    for item in &import.imported_items {
+                        used.insert(item.clone());
+                    }
+                },
+                frontend::ast::DeclarationKind::TypeAlias(type_alias) => {
+                    // 型エイリアスの元の型に含まれる識別子を収集
+                    collect_identifiers_from_type(&type_alias.target_type, used);
+                    // ジェネリックパラメータに含まれる識別子を収集
+                    if let Some(generic_params) = &type_alias.generic_params {
+                        for param in generic_params {
+                            if let Some(constraint) = &param.constraint {
+                                collect_identifiers_from_type(constraint, used);
+                            }
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::Extension(extension) => {
+                    // 拡張対象の型に含まれる識別子を収集
+                    collect_identifiers_from_type(&extension.target_type, used);
+                    // 拡張内のメソッドに含まれる識別子を収集
+                    for method in &extension.methods {
+                        if let Some(body) = &method.body {
+                            for stmt in body {
+                                collect_identifiers_from_stmt(stmt, used);
+                            }
+                        }
+                        for param in &method.parameters {
+                            collect_identifiers_from_type(&param.type_annotation, used);
+                        }
+                        if let Some(return_type) = &method.return_type {
+                            collect_identifiers_from_type(return_type, used);
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::Trait(trait_decl) => {
+                    // トレイトのメソッド宣言に含まれる識別子を収集
+                    for method in &trait_decl.methods {
+                        for param in &method.parameters {
+                            collect_identifiers_from_type(&param.type_annotation, used);
+                        }
+                        if let Some(return_type) = &method.return_type {
+                            collect_identifiers_from_type(return_type, used);
+                        }
+                        // デフォルト実装がある場合は本体も処理
+                        if let Some(body) = &method.default_impl {
+                            for stmt in body {
+                                collect_identifiers_from_stmt(stmt, used);
+                            }
+                        }
+                    }
+                    // ジェネリックパラメータに含まれる識別子を収集
+                    if let Some(generic_params) = &trait_decl.generic_params {
+                        for param in generic_params {
+                            if let Some(constraint) = &param.constraint {
+                                collect_identifiers_from_type(constraint, used);
+                            }
+                        }
+                    }
+                },
+                frontend::ast::DeclarationKind::Implementation(impl_decl) => {
+                    // 実装対象の型に含まれる識別子を収集
+                    collect_identifiers_from_type(&impl_decl.target_type, used);
+                    // 実装するトレイトに含まれる識別子を収集
+                    if let Some(trait_name) = &impl_decl.trait_name {
+                        used.insert(trait_name.clone());
+                    }
+                    // メソッド実装に含まれる識別子を収集
+                    for method in &impl_decl.methods {
+                        if let Some(body) = &method.body {
+                            for stmt in body {
+                                collect_identifiers_from_stmt(stmt, used);
+                            }
+                        }
+                    }
+                },
             }
+        }
+
+        // 文の処理
+        for stmt in &ast.statements {
+            collect_identifiers_from_stmt(stmt, used);
+        }
+
+        // モジュールの再帰的処理
+        for module in &ast.modules {
+            collect_used_identifiers(&module.program, used);
         }
     }
     
+    /// 文から識別子を収集する補助関数
+    fn collect_identifiers_from_stmt(stmt: &frontend::ast::Statement, used: &mut std::collections::HashSet<String>) {
+        match &stmt.kind {
+            frontend::ast::StatementKind::ExpressionStmt(expr) => {
+                collect_identifiers_from_expr(expr, used);
+            },
+            frontend::ast::StatementKind::VariableDecl(var_decl) => {
+                if let Some(type_annotation) = &var_decl.type_annotation {
+                    collect_identifiers_from_type(type_annotation, used);
+                }
+                if let Some(initializer) = &var_decl.initializer {
+                    collect_identifiers_from_expr(initializer, used);
+                }
+            },
+            frontend::ast::StatementKind::ConstantDecl(const_decl) => {
+                if let Some(type_annotation) = &const_decl.type_annotation {
+                    collect_identifiers_from_type(type_annotation, used);
+                }
+                if let Some(initializer) = &const_decl.initializer {
+                    collect_identifiers_from_expr(initializer, used);
+                }
+            },
+            frontend::ast::StatementKind::ReturnStmt(expr_opt) => {
+                if let Some(expr) = expr_opt {
+                    collect_identifiers_from_expr(expr, used);
+                }
+            },
+            frontend::ast::StatementKind::IfStmt(if_stmt) => {
+                collect_identifiers_from_expr(&if_stmt.condition, used);
+                for stmt in &if_stmt.then_branch {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+                if let Some(else_branch) = &if_stmt.else_branch {
+                    for stmt in else_branch {
+                        collect_identifiers_from_stmt(stmt, used);
+                    }
+                }
+            },
+            frontend::ast::StatementKind::WhileStmt(while_stmt) => {
+                collect_identifiers_from_expr(&while_stmt.condition, used);
+                for stmt in &while_stmt.body {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+            },
+            frontend::ast::StatementKind::ForStmt(for_stmt) => {
+                // イテレータ式から識別子を収集
+                collect_identifiers_from_expr(&for_stmt.iterator, used);
+                // ループ変数は新しい変数なので収集しない
+                // ループ本体から識別子を収集
+                for stmt in &for_stmt.body {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+            },
+            frontend::ast::StatementKind::BlockStmt(block) => {
+                for stmt in block {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+            },
+            frontend::ast::StatementKind::MatchStmt(match_stmt) => {
+                collect_identifiers_from_expr(&match_stmt.expression, used);
+                for arm in &match_stmt.arms {
+                    // パターンから識別子を収集
+                    collect_identifiers_from_pattern(&arm.pattern, used);
+                    // ガード式がある場合は処理
+                    if let Some(guard) = &arm.guard {
+                        collect_identifiers_from_expr(guard, used);
+                    }
+                    // 本体から識別子を収集
+                    for stmt in &arm.body {
+                        collect_identifiers_from_stmt(stmt, used);
+                    }
+                }
+            },
+            frontend::ast::StatementKind::TryStmt(try_stmt) => {
+                // try本体から識別子を収集
+                for stmt in &try_stmt.try_block {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+                // catchブロックから識別子を収集
+                for catch_clause in &try_stmt.catch_clauses {
+                    // エラー型から識別子を収集
+                    if let Some(error_type) = &catch_clause.error_type {
+                        collect_identifiers_from_type(error_type, used);
+                    }
+                    // catch本体から識別子を収集
+                    for stmt in &catch_clause.body {
+                        collect_identifiers_from_stmt(stmt, used);
+                    }
+                }
+                // finallyブロックがある場合は処理
+                if let Some(finally_block) = &try_stmt.finally_block {
+                    for stmt in finally_block {
+                        collect_identifiers_from_stmt(stmt, used);
+                    }
+                }
+            },
+            frontend::ast::StatementKind::DeferStmt(deferred_stmt) => {
+                collect_identifiers_from_stmt(deferred_stmt, used);
+            },
+            frontend::ast::StatementKind::BreakStmt | frontend::ast::StatementKind::ContinueStmt => {
+                // 識別子を含まない
+            },
+            frontend::ast::StatementKind::AssertStmt(assert_stmt) => {
+                collect_identifiers_from_expr(&assert_stmt.condition, used);
+                if let Some(message) = &assert_stmt.message {
+                    collect_identifiers_from_expr(message, used);
+                }
+            },
+            frontend::ast::StatementKind::CompTimeStmt(comp_time_stmt) => {
+                // コンパイル時実行文の中の識別子を収集
+                for stmt in comp_time_stmt {
+                    collect_identifiers_from_stmt(stmt, used);
+                }
+            },
+        }
+    }
+
+    /// 型から識別子を収集する補助関数
+    fn collect_identifiers_from_type(type_annotation: &frontend::ast::TypeAnnotation, used: &mut std::collections::HashSet<String>) {
+        match &type_annotation.kind {
+            frontend::ast::TypeAnnotationKind::Named(name) => {
+                used.insert(name.clone());
+            },
+            frontend::ast::TypeAnnotationKind::Array(element_type) => {
+                collect_identifiers_from_type(element_type, used);
+            },
+            frontend::ast::TypeAnnotationKind::Optional(inner_type) => {
+                collect_identifiers_from_type(inner_type, used);
+            },
+            frontend::ast::TypeAnnotationKind::Function(params, return_type) => {
+                for param in params {
+                    collect_identifiers_from_type(param, used);
+                }
+                collect_identifiers_from_type(return_type, used);
+            },
+            frontend::ast::TypeAnnotationKind::Generic(base_type, type_args) => {
+                used.insert(base_type.clone());
+                for arg in type_args {
+                    collect_identifiers_from_type(arg, used);
+                }
+            },
+            frontend::ast::TypeAnnotationKind::Tuple(element_types) => {
+                for element_type in element_types {
+                    collect_identifiers_from_type(element_type, used);
+                }
+            },
+            frontend::ast::TypeAnnotationKind::Union(types) => {
+                for type_annotation in types {
+                    collect_identifiers_from_type(type_annotation, used);
+                }
+            },
+            frontend::ast::TypeAnnotationKind::Intersection(types) => {
+                for type_annotation in types {
+                    collect_identifiers_from_type(type_annotation, used);
+                }
+            },
+            frontend::ast::TypeAnnotationKind::Dependent(param_name, dependent_type) => {
+                used.insert(param_name.clone());
+                collect_identifiers_from_type(dependent_type, used);
+            },
+            frontend::ast::TypeAnnotationKind::Primitive(_) => {
+                // プリミティブ型は識別子を含まない
+            },
+            frontend::ast::TypeAnnotationKind::SelfType => {
+                used.insert("Self".to_string());
+            },
+            frontend::ast::TypeAnnotationKind::Never => {
+                // Never型は識別子を含まない
+            },
+        }
+    }
+
+    /// パターンから識別子を収集する補助関数
+    fn collect_identifiers_from_pattern(pattern: &frontend::ast::Pattern, used: &mut std::collections::HashSet<String>) {
+        match &pattern.kind {
+            frontend::ast::PatternKind::Identifier(_) => {
+                // 束縛変数は新しい変数なので収集しない
+            },
+            frontend::ast::PatternKind::Literal(_) => {
+                // リテラルパターンは識別子を含まない
+            },
+            frontend::ast::PatternKind::Wildcard => {
+                // ワイルドカードパターンは識別子を含まない
+            },
+            frontend::ast::PatternKind::Tuple(patterns) => {
+                for pat in patterns {
+                    collect_identifiers_from_pattern(pat, used);
+                }
+            },
+            frontend::ast::PatternKind::Struct(struct_name, field_patterns) => {
+                used.insert(struct_name.clone());
+                for (_, pattern) in field_patterns {
+                    collect_identifiers_from_pattern(pattern, used);
+                }
+            },
+            frontend::ast::PatternKind::Enum(enum_name, variant_name, payload) => {
+                used.insert(enum_name.clone());
+                used.insert(variant_name.clone());
+                if let Some(patterns) = payload {
+                    for pattern in patterns {
+                        collect_identifiers_from_pattern(pattern, used);
+                    }
+                }
+            },
+            frontend::ast::PatternKind::Or(patterns) => {
+                for pattern in patterns {
+                    collect_identifiers_from_pattern(pattern, used);
+                }
+            },
+            frontend::ast::PatternKind::Range(start, end) => {
+                if let Some(start_expr) = start {
+                    collect_identifiers_from_expr(start_expr, used);
+                }
+                if let Some(end_expr) = end {
+                    collect_identifiers_from_expr(end_expr, used);
+                }
+            },
+            frontend::ast::PatternKind::Reference(inner_pattern) => {
+                collect_identifiers_from_pattern(inner_pattern, used);
+            },
+            frontend::ast::PatternKind::Rest => {
+                // 残余パターンは識別子を含まない
+            },
+        }
+    }
     /// 式から識別子を収集
     fn collect_identifiers_from_expr(expr: &frontend::ast::Expression, used: &mut std::collections::HashSet<String>) {
         match &expr.kind {
