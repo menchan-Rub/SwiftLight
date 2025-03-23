@@ -5,9 +5,11 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use crate::config::{Config, OutputFormat, Severity};
+use serde::Serialize;
+use serde_json::{json, Value as JsonValue};
 
 /// 診断情報を表す構造体
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub file: PathBuf,
     pub line: usize,
@@ -15,6 +17,7 @@ pub struct Diagnostic {
     pub message: String,
     pub rule_id: String,
     pub severity: Severity,
+    #[serde(skip_serializing)]
     pub suggestions: Vec<String>,
 }
 
@@ -91,9 +94,6 @@ fn write_text_format<W: Write>(writer: &mut W, diagnostics: &[Diagnostic]) {
 /// JSON形式で診断情報を出力
 fn write_json_format<W: Write>(writer: &mut W, diagnostics: &[Diagnostic]) {
     // 実際の実装ではserdeなどを使ってJSON形式に変換する
-    use serde::Serialize;
-    use serde_json::json;
-
     #[derive(Serialize)]
     struct DiagnosticOutput<'a> {
         severity: &'static str,
@@ -119,7 +119,16 @@ fn write_json_format<W: Write>(writer: &mut W, diagnostics: &[Diagnostic]) {
         .collect();
 
     let output = json!({
-        "diagnostics": diagnostics_json
+        "version": "1.0",
+        "generator": "SwiftLight Analyzer",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "diagnostics": diagnostics_json,
+        "summary": {
+            "total": diagnostics.len(),
+            "errors": diagnostics.iter().filter(|d| d.severity == Severity::Error).count(),
+            "warnings": diagnostics.iter().filter(|d| d.severity == Severity::Warning).count(),
+            "info": diagnostics.iter().filter(|d| d.severity == Severity::Info).count()
+        }
     });
 
     serde_json::to_writer_pretty(writer, &output).unwrap_or_else(|e| {
@@ -132,14 +141,22 @@ fn write_xml_format<W: Write>(writer: &mut W, diagnostics: &[Diagnostic]) {
     writeln!(writer, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>").unwrap();
     writeln!(writer, "<diagnostics>").unwrap();
     
+    // タイムスタンプを追加
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    writeln!(writer, "  <metadata>").unwrap();
+    writeln!(writer, "    <generator>SwiftLight Analyzer</generator>").unwrap();
+    writeln!(writer, "    <timestamp>{}</timestamp>", timestamp).unwrap();
+    writeln!(writer, "    <version>1.0</version>").unwrap();
+    writeln!(writer, "  </metadata>").unwrap();
+    
     for diag in diagnostics {
         writeln!(writer, "  <diagnostic>").unwrap();
         writeln!(writer, "    <severity>{}</severity>", severity_to_string(diag.severity)).unwrap();
         writeln!(writer, "    <message>{}</message>", escape_xml(&diag.message)).unwrap();
-        writeln!(writer, "    <file>{}</file>", diag.file.display()).unwrap();
+        writeln!(writer, "    <file>{}</file>", escape_xml(&diag.file.display().to_string())).unwrap();
         writeln!(writer, "    <line>{}</line>", diag.line).unwrap();
         writeln!(writer, "    <column>{}</column>", diag.column).unwrap();
-        writeln!(writer, "    <rule_id>{}</rule_id>", diag.rule_id).unwrap();
+        writeln!(writer, "    <rule_id>{}</rule_id>", escape_xml(&diag.rule_id)).unwrap();
         
         writeln!(writer, "    <suggestions>").unwrap();
         for suggestion in &diag.suggestions {
@@ -149,6 +166,17 @@ fn write_xml_format<W: Write>(writer: &mut W, diagnostics: &[Diagnostic]) {
         
         writeln!(writer, "  </diagnostic>").unwrap();
     }
+    
+    // 統計情報を追加
+    writeln!(writer, "  <summary>").unwrap();
+    writeln!(writer, "    <total>{}</total>", diagnostics.len()).unwrap();
+    writeln!(writer, "    <errors>{}</errors>", 
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).count()).unwrap();
+    writeln!(writer, "    <warnings>{}</warnings>", 
+        diagnostics.iter().filter(|d| d.severity == Severity::Warning).count()).unwrap();
+    writeln!(writer, "    <info>{}</info>", 
+        diagnostics.iter().filter(|d| d.severity == Severity::Info).count()).unwrap();
+    writeln!(writer, "  </summary>").unwrap();
     
     writeln!(writer, "</diagnostics>").unwrap();
 }

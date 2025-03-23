@@ -284,6 +284,17 @@ pub enum TokenKind {
     Eof,
 }
 
+impl TokenKind {
+    /// このトークンが宣言の開始を示すかどうかを判定
+    pub fn is_declaration_start(&self) -> bool {
+        use TokenKind::*;
+        matches!(
+            self,
+            Let | Var | Const | Func | Struct | Enum | Trait | Impl | Type | Module | Import | Export
+        )
+    }
+}
+
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use TokenKind::*;

@@ -358,7 +358,7 @@ struct LoopInfo {
     nested_loops: Vec<usize>,
 }
 
-/// 命令コスト
+/// 命令コスト情報
 #[derive(Debug, Clone)]
 struct InstructionCost {
     /// 命令名
@@ -377,7 +377,7 @@ struct InstructionCost {
     micro_ops: usize,
 }
 
-/// 最適化パス
+/// 最適化パス情報
 #[derive(Debug, Clone)]
 struct OptimizationPass {
     /// パス名
@@ -405,15 +405,13 @@ struct OptimizationPass {
 impl X86_64Optimizer {
     /// 新しい最適化器を作成
     pub fn new() -> Self {
-        let target_info = TargetInfo::new_x86_64();
-        
         Self {
             register_allocation: HashMap::new(),
             instruction_selection: HashMap::new(),
             interference_graph: Graph::new(),
             loop_info: HashMap::new(),
             scheduling_info: HashMap::new(),
-            target_info,
+            target_info: TargetInfo::new_x86_64(),
             metrics: OptimizationMetrics::new(),
             optimization_history: Vec::new(),
             instruction_costs: Self::initialize_instruction_costs(),
@@ -424,11 +422,10 @@ impl X86_64Optimizer {
     fn initialize_instruction_costs() -> HashMap<String, InstructionCost> {
         let mut costs = HashMap::new();
         
-        // 基本的な命令のコスト情報を追加
         costs.insert("mov".to_string(), InstructionCost {
             name: "mov".to_string(),
             latency: 1,
-            throughput: 0.25,
+            throughput: 1.0,
             execution_ports: vec![0, 1, 5],
             micro_ops: 1,
         });
@@ -436,16 +433,16 @@ impl X86_64Optimizer {
         costs.insert("add".to_string(), InstructionCost {
             name: "add".to_string(),
             latency: 1,
-            throughput: 0.25,
-            execution_ports: vec![0, 1, 5, 6],
+            throughput: 1.0,
+            execution_ports: vec![0, 1, 5],
             micro_ops: 1,
         });
         
         costs.insert("sub".to_string(), InstructionCost {
             name: "sub".to_string(),
             latency: 1,
-            throughput: 0.25,
-            execution_ports: vec![0, 1, 5, 6],
+            throughput: 1.0,
+            execution_ports: vec![0, 1, 5],
             micro_ops: 1,
         });
         
@@ -489,6 +486,106 @@ impl X86_64Optimizer {
     
     /// キャッシュ階層情報を検出
     fn detect_cache_hierarchy() -> Vec<CacheLevel> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe {
+                use std::arch::x86_64::*;
+                
+                let mut cache_levels = Vec::new();
+                
+                // CPUID命令を使用してキャッシュ情報を取得
+                let max_cpuid = __get_cpuid_max(0).0;
+                
+                // キャッシュ情報を取得するには拡張CPUID (0x4) が必要
+                if max_cpuid >= 4 {
+                    // 各キャッシュレベルを取得
+                    for cache_idx in 0..10 { // 最大10レベルのキャッシュをチェック (実際は少ない)
+                        let mut eax: u32 = 0;
+                        let mut ebx: u32 = 0;
+                        let mut ecx: u32 = cache_idx;
+                        let mut edx: u32 = 0;
+                        
+                        // CPUID 関数 4 を呼び出してキャッシュ情報を取得
+                        __cpuid_count(4, cache_idx, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                        
+                        // キャッシュタイプを取得
+                        let cache_type = eax & 0x1F;
+                        if cache_type == 0 {
+                            // 無効なキャッシュレベルにたどり着いたので処理終了
+                            break;
+                        }
+                        
+                        // キャッシュレベルを取得
+                        let level = ((eax >> 5) & 0x7) as usize;
+                        
+                        // ラインサイズを取得
+                        let line_size = ((ebx & 0xFFF) + 1) as usize;
+                        
+                        // 連想性を取得
+                        let associativity = (((ebx >> 22) & 0x3FF) + 1) as usize;
+                        
+                        // パーティション数を取得
+                        let partitions = (((ebx >> 12) & 0x3FF) + 1) as usize;
+                        
+                        // セット数を取得
+                        let sets = (ecx + 1) as usize;
+                        
+                        // キャッシュサイズを計算
+                        let size = line_size * associativity * partitions * sets;
+                        
+                        // 推定レイテンシ (階層に基づく推定値)
+                        let latency = match level {
+                            1 => 4,  // L1 のレイテンシの典型的な値
+                            2 => 12, // L2 のレイテンシの典型的な値
+                            3 => 40, // L3 のレイテンシの典型的な値
+                            _ => level * 10, // その他の階層の推定値
+                        };
+                        
+                        cache_levels.push(CacheLevel {
+                            level,
+                            size,
+                            line_size,
+                            associativity,
+                            latency: latency as u64,
+                        });
+                    }
+                }
+                
+                // 上記の方法で情報が取得できない場合は古い方法を試す
+                if cache_levels.is_empty() {
+                    let mut eax: u32 = 0;
+                    let mut ebx: u32 = 0;
+                    let mut ecx: u32 = 0;
+                    let mut edx: u32 = 0;
+                    
+                    // CPUID 関数 2 を呼び出してキャッシュディスクリプタを取得
+                    __cpuid(2, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                    
+                    // 簡単な推測のためのキャッシュディスクリプタの一部
+                    // 本来はより詳細な解析が必要だが、簡略化している
+                    
+                    // フォールバック: 典型的なIntel CPUのキャッシュレベルを仮定
+                    cache_levels = get_default_cache_levels();
+                }
+                
+                // 最後のフォールバック: 情報が全く取得できない場合
+                if cache_levels.is_empty() {
+                    cache_levels = get_default_cache_levels();
+                }
+                
+                cache_levels
+            }
+        }
+        
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // x86_64 以外のアーキテクチャでは一般的な値を使用
+            get_default_cache_levels()
+        }
+    }
+    
+    /// デフォルトのキャッシュ階層情報を取得
+    fn get_default_cache_levels() -> Vec<CacheLevel> {
         // 一般的なx86_64プロセッサの階層を仮定
         vec![
             CacheLevel {
@@ -633,8 +730,6 @@ impl X86_64Optimizer {
         
         // 5. 命令融合最適化
         
-        // 6. キャッシュライン最適化
-        
         Ok(optimized_code)
     }
 }
@@ -655,10 +750,10 @@ struct CacheLevel {
     associativity: usize,
     
     /// レイテンシ（サイクル）
-    latency: usize,
+    latency: u64,
 }
 
-// ターゲット情報関連の型
+/// ターゲット情報
 pub struct TargetInfo {
     // ターゲット固有の情報
     pub target_triple: String,
@@ -671,13 +766,14 @@ impl TargetInfo {
     pub fn new_x86_64() -> Self {
         Self {
             target_triple: "x86_64-unknown-linux-gnu".to_string(),
-            features: vec![TargetFeature::SSE2, TargetFeature::AVX],
+            features: vec![TargetFeature::SSE2, TargetFeature::SSE3],
             pointer_size: 8,
             calling_convention: CallingConvention::SystemV,
         }
     }
 }
 
+/// ターゲット機能
 pub enum TargetFeature {
     SSE2,
     SSE3,
@@ -691,6 +787,7 @@ pub enum TargetFeature {
     ADX,
 }
 
+/// レジスタクラス
 pub enum RegisterClass {
     General,
     FloatingPoint,
@@ -698,6 +795,7 @@ pub enum RegisterClass {
     Special,
 }
 
+/// レジスタ制約
 pub enum RegisterConstraint {
     MustBeRegister,
     MustBeSpecificRegister(Register),
@@ -705,6 +803,7 @@ pub enum RegisterConstraint {
     NoConstraint,
 }
 
+/// 呼び出し規約
 pub enum CallingConvention {
     SystemV,
     Microsoft,

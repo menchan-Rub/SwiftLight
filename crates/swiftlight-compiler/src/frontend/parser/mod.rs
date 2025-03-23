@@ -19,6 +19,7 @@ use crate::frontend::ast::{
 use crate::frontend::error::{CompilerError, ErrorKind, Result, SourceLocation};
 use crate::frontend::lexer::{Token, TokenKind, Lexer};
 use crate::frontend::source_map::SourceMap;
+use crate::frontend::parser::error_recovery::{ErrorRecovery, RecoveryMode};
 
 pub mod error;
 pub mod expression;
@@ -123,6 +124,8 @@ pub struct Parser {
     cache: Arc<Mutex<ParseCache>>,
     /// 最後にパースしたファイルパス
     last_file_path: Option<String>,
+    /// エラー回復機構
+    error_recovery: ErrorRecovery,
 }
 
 impl Parser {
@@ -136,6 +139,7 @@ impl Parser {
             skipped_tokens: 0,
             cache: Arc::new(Mutex::new(ParseCache::new())),
             last_file_path: None,
+            error_recovery: ErrorRecovery::new(),
         }
     }
 
@@ -149,6 +153,7 @@ impl Parser {
             skipped_tokens: 0,
             cache,
             last_file_path: None,
+            error_recovery: ErrorRecovery::new(),
         }
     }
 
@@ -158,10 +163,18 @@ impl Parser {
         self.last_file_path = Some(file_path.to_string());
 
         // キャッシュからトークンと前回のASTを取得
-        let cached_tokens = {
+        let (cached_tokens, cached_ast) = {
             let cache = self.cache.lock().unwrap();
-            cache.get_cached_tokens(file_path).cloned()
+            (
+                cache.get_cached_tokens(file_path).cloned(),
+                cache.get_cached_ast(file_path).clone()
+            )
         };
+        
+        // 変更がなければキャッシュからASTを返す
+        if diff.old_len == 0 && diff.new_len == 0 && cached_ast.is_some() {
+            return Ok(cached_ast.unwrap());
+        }
         
         // トークンの再利用または新規生成
         let tokens = if let Some(cached_tokens) = cached_tokens {
@@ -185,6 +198,8 @@ impl Parser {
         self.errors.clear();
         self.panic_mode = false;
         self.skipped_tokens = 0;
+        // エラー回復機構をリセット
+        self.error_recovery = ErrorRecovery::new();
         
         // プログラムをパース
         let program = self.parse_program()?;
@@ -211,22 +226,48 @@ impl Parser {
         let start_token_idx = self.find_token_at_position(&old_tokens, diff.start);
         let end_token_idx = self.find_token_at_position(&old_tokens, diff.start + diff.old_len);
         
-        // 変更領域の前のトークン
-        let prefix_tokens = old_tokens.iter().take(start_token_idx).cloned().collect::<Vec<_>>();
+        // 変更前後のバッファ領域（コンテキスト）を追加
+        // 変更の影響が及ぶ可能性のある範囲を広めに取る
+        let context_buffer = 5; // 前後5トークンをバッファとして追加
+        let context_start = if start_token_idx > context_buffer {
+            start_token_idx - context_buffer
+        } else {
+            0
+        };
         
-        // 変更領域のテキストを解析
-        let changed_source = &source[diff.start..diff.start + diff.new_len];
+        let context_end = (end_token_idx + context_buffer).min(old_tokens.len());
+        
+        // 変更領域の前のトークン
+        let prefix_tokens = old_tokens.iter().take(context_start).cloned().collect::<Vec<_>>();
+        
+        // 再解析する範囲を決定
+        let reparse_start = if context_start > 0 {
+            old_tokens[context_start].location.start
+        } else {
+            0
+        };
+        
+        let reparse_end = if context_end < old_tokens.len() {
+            old_tokens[context_end - 1].location.end
+        } else {
+            source.len()
+        };
+        
+        // 変更を含むコンテキスト範囲のテキストを解析
+        let changed_source = &source[reparse_start..reparse_end];
         let lexer = Lexer::new(changed_source, file_path);
         let mut new_tokens = lexer.collect::<Result<Vec<_>>>()?;
         
         // 位置情報を修正
-        self.adjust_token_locations(&mut new_tokens, diff.start);
+        self.adjust_token_locations(&mut new_tokens, reparse_start);
         
         // 変更領域の後のトークン
-        let mut suffix_tokens = old_tokens.iter().skip(end_token_idx).cloned().collect::<Vec<_>>();
+        let mut suffix_tokens = old_tokens.iter().skip(context_end).cloned().collect::<Vec<_>>();
         
         // 位置情報を修正（変更によるオフセット）
-        let offset = diff.new_len as isize - diff.old_len as isize;
+        let offset = (reparse_end + new_tokens.last().map_or(0, |t| t.location.end - reparse_start)) as isize
+                    - old_tokens[context_end - 1].location.end as isize;
+        
         if offset != 0 {
             self.adjust_token_locations_with_offset(&mut suffix_tokens, offset);
         }
@@ -236,6 +277,19 @@ impl Parser {
         result.extend(prefix_tokens);
         result.extend(new_tokens);
         result.extend(suffix_tokens);
+        
+        // トークン列の整合性チェック（デバッグ用）
+        #[cfg(debug_assertions)]
+        {
+            for i in 1..result.len() {
+                let prev = &result[i-1];
+                let curr = &result[i];
+                if prev.location.end > curr.location.start {
+                    // トークンの位置が重複している場合は警告
+                    eprintln!("Warning: Token positions overlap! prev={:?}, curr={:?}", prev, curr);
+                }
+            }
+        }
         
         Ok(result)
     }
@@ -326,6 +380,90 @@ impl Parser {
         // 実際にはASTをトラバースしてすべてのノードをカウントする必要がある
         // ここでは簡易的に宣言の数を返す
         program.declarations.len()
+    }
+
+    /// エラー発生時に回復して次の有効な構文境界まで進む
+    fn synchronize(&mut self) {
+        // 既にパニックモード中なら何もしない（再帰を防止）
+        if self.panic_mode {
+            return;
+        }
+        
+        self.panic_mode = true;
+        self.skipped_tokens = 0;
+        
+        // 現在のトークンに基づいて適切な回復モードを選択
+        let recovery_mode = match self.peek_kind() {
+            Some(TokenKind::LeftBrace) => RecoveryMode::SkipToBlockEnd,
+            Some(TokenKind::Semicolon) => {
+                // セミコロンまで既に来ている場合は、それを消費して回復完了
+                self.advance();
+                self.panic_mode = false;
+                return;
+            },
+            Some(TokenKind::KeywordFn) | Some(TokenKind::KeywordLet) | 
+            Some(TokenKind::KeywordVar) | Some(TokenKind::KeywordConst) |
+            Some(TokenKind::KeywordStruct) | Some(TokenKind::KeywordEnum) |
+            Some(TokenKind::KeywordTrait) | Some(TokenKind::KeywordImpl) |
+            Some(TokenKind::KeywordType) | Some(TokenKind::KeywordImport) |
+            Some(TokenKind::KeywordModule) => {
+                // 宣言の開始点なら回復完了
+                self.panic_mode = false;
+                return;
+            },
+            _ => RecoveryMode::SkipToEndOfStatement,
+        };
+        
+        // エラー回復モードを設定
+        self.error_recovery.set_panic_mode(true);
+        
+        // 同期ポイントが見つかるまでトークンを消費
+        while !self.is_at_end() {
+            if let Some(token) = self.peek() {
+                // 現在のトークンで回復できるか試みる
+                if self.error_recovery.try_recover(token) {
+                    break;
+                }
+                
+                // 特定の同期ポイントに達したかチェック
+                match token.kind {
+                    TokenKind::Semicolon => {
+                        self.advance(); // セミコロンを消費
+                        break;
+                    }
+                    TokenKind::RightBrace => {
+                        // ブロック終了なら回復（消費しない）
+                        break;
+                    }
+                    TokenKind::KeywordFn | TokenKind::KeywordLet | 
+                    TokenKind::KeywordVar | TokenKind::KeywordConst |
+                    TokenKind::KeywordStruct | TokenKind::KeywordEnum |
+                    TokenKind::KeywordTrait | TokenKind::KeywordImpl |
+                    TokenKind::KeywordType | TokenKind::KeywordImport |
+                    TokenKind::KeywordModule => {
+                        // 新しい宣言の開始なら回復（消費しない）
+                        break;
+                    }
+                    _ => {
+                        // 同期ポイントでなければトークンを飛ばす
+                        self.advance();
+                        self.skipped_tokens += 1;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        
+        // 回復完了
+        self.panic_mode = false;
+        self.error_recovery.set_panic_mode(false);
+        
+        // スキップされたトークン数をログに記録（開発時のデバッグ用）
+        if self.skipped_tokens > 0 {
+            // println!("Skipped {} tokens during error recovery", self.skipped_tokens);
+            self.skipped_tokens = 0;
+        }
     }
 
     /// プログラム（複数の文）を解析

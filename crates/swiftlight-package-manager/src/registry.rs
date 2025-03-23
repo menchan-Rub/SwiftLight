@@ -26,6 +26,8 @@ use reqwest::StatusCode;
 use url::Url;
 use std::io::{self, Write};
 use tempfile;
+use reqwest::multipart;
+use tokio;
 
 use crate::manifest::Manifest;
 use crate::dependency::Dependency;
@@ -508,34 +510,9 @@ fn collect_package_files(project_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files_to_include.into_iter().map(|(path, _)| path).collect())
 }
 
-/// レジストリにパッケージを公開
-fn publish_to_registry(package: &PackageInfo, archive_path: &Path, registry_config: &RegistryConfig) -> Result<()> {
-    let registry_url = &registry_config.url;
-    
-    // 1. 認証情報の取得
-    let auth_token = registry_config.token.as_ref()
-        .ok_or_else(|| anyhow!("レジストリ '{}' の認証トークンが見つかりません。\n'swiftlight package login' を実行してログインしてください。", registry_url))?;
-    
-    // 2. APIエンドポイントの構築
-    let api_endpoint = format!("{}/api/v1/packages/publish", registry_url);
-    info!("レジストリ '{}' にパッケージを公開しています...", registry_url);
-    
-    // 3. マルチパートフォームデータの準備
-    let form = prepare_publish_form(package, archive_path, auth_token)?;
-    
-    // 4. APIリクエストの送信（実際の実装ではリクエストを送信）
-    info!("パッケージデータをアップロード中...");
-    
-    // APIリクエストの疑似実装
-    simulate_api_request(package)?;
-    
-    info!("パッケージデータがレジストリにアップロードされました");
-    Ok(())
-}
-
 /// 公開用フォームデータの準備
-fn prepare_publish_form(package: &PackageInfo, archive_path: &Path, auth_token: &str) -> Result<()> {
-    // フォームデータの準備（実際の実装ではrequestのFormDataを構築）
+fn prepare_publish_form(package: &PackageInfo, archive_path: &Path, auth_token: &str) -> Result<reqwest::multipart::Form> {
+    // 実際のrequestのFormDataを構築
     
     // アーカイブファイルの読み込み
     let archive_data = fs::read(archive_path)
@@ -545,20 +522,88 @@ fn prepare_publish_form(package: &PackageInfo, archive_path: &Path, auth_token: 
     let metadata = serde_json::to_string(package)
         .context("パッケージメタデータのJSONシリアライズに失敗しました")?;
     
+    let archive_part = reqwest::multipart::Part::bytes(archive_data)
+        .file_name(format!("{}-{}.tar.gz", package.name, package.version))
+        .mime_str("application/gzip")
+        .context("MIMEタイプの設定に失敗しました")?;
+    
+    let metadata_part = reqwest::multipart::Part::text(metadata)
+        .mime_str("application/json")
+        .context("MIMEタイプの設定に失敗しました")?;
+    
+    let form = reqwest::multipart::Form::new()
+        .part("archive", archive_part)
+        .part("metadata", metadata_part)
+        .text("name", package.name.clone())
+        .text("version", package.version.clone());
+    
     debug!("公開用フォームデータを準備しました");
     
-    Ok(())
+    Ok(form)
 }
 
-/// APIリクエストをシミュレート（実際の実装では削除）
-fn simulate_api_request(package: &PackageInfo) -> Result<()> {
-    // 実際のHTTPリクエストのシミュレーション
-    debug!("API呼び出しをシミュレートしています...");
+/// APIリクエストを送信
+async fn send_api_request(package: &PackageInfo, form: reqwest::multipart::Form, registry_url: &str, auth_token: &str) -> Result<()> {
+    // 実際のHTTPリクエストを送信
+    debug!("API呼び出しを実行しています...");
     
-    // 処理時間をシミュレート
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    let api_endpoint = format!("{}/api/v1/packages/publish", registry_url);
     
-    // 成功シミュレーション
+    let client = reqwest::Client::new();
+    let response = client.post(&api_endpoint)
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .multipart(form)
+        .send()
+        .await
+        .context("APIリクエストの送信に失敗しました")?;
+    
+    // レスポンスのステータスコードを確認
+    if response.status().is_success() {
+        debug!("API呼び出しが成功しました");
+        
+        // レスポンスボディの取得（オプション）
+        let response_text = response.text().await
+            .context("レスポンスボディの読み取りに失敗しました")?;
+        
+        debug!("APIレスポンス: {}", response_text);
+        
+        Ok(())
+    } else {
+        let status = response.status();
+        let error_text = response.text().await
+            .context("エラーレスポンスの読み取りに失敗しました")?;
+        
+        Err(anyhow::anyhow!("APIリクエストが失敗しました。ステータス: {}, エラー: {}", status, error_text))
+    }
+}
+
+/// パッケージをレジストリに公開
+fn publish_to_registry(package: &PackageInfo, archive_path: &Path, registry_config: &RegistryConfig) -> Result<()> {
+    let registry_url = &registry_config.url;
+    let auth_token = registry_config.token.as_deref().unwrap_or("");
+    
+    if auth_token.is_empty() {
+        return Err(anyhow::anyhow!("レジストリへの認証トークンが設定されていません。先にログインしてください。"));
+    }
+    
+    let api_endpoint = format!("{}/api/v1/packages/publish", registry_url);
+    info!("レジストリ '{}' にパッケージを公開しています...", registry_url);
+    
+    // 3. マルチパートフォームデータの準備
+    let form = prepare_publish_form(package, archive_path, auth_token)?;
+    
+    // 4. APIリクエストの送信
+    info!("パッケージデータをアップロード中...");
+    
+    // async関数を同期的に実行するためのランタイム
+    let runtime = tokio::runtime::Runtime::new()
+        .context("Tokioランタイムの作成に失敗しました")?;
+    
+    runtime.block_on(async {
+        send_api_request(package, form, registry_url, auth_token).await
+    })?;
+    
+    info!("パッケージデータがレジストリにアップロードされました");
     Ok(())
 }
 

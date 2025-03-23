@@ -133,10 +133,395 @@ impl IntrinsicManager {
     
     /// デフォルトのイントリンシック関数を登録
     fn register_default_intrinsics(&mut self) {
-        // 実際の実装では標準的なイントリンシックを登録する
-        // この実装はダミー
+        // メモリ操作系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::MemCopy,
+            name: "swiftlight_memcopy".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Void), false), // 宛先ポインタ
+                Type::Pointer(Box::new(Type::Void), true),  // 元ポインタ（読み取り専用）
+                Type::Integer(64, false),                   // サイズ（バイト単位）
+                Type::Boolean,                              // 揮発性フラグ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::MemSet,
+            name: "swiftlight_memset".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Void), false), // 宛先ポインタ
+                Type::Integer(8, false),                    // 設定値
+                Type::Integer(64, false),                   // サイズ（バイト単位）
+                Type::Boolean,                              // 揮発性フラグ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 数学系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Sqrt,
+            name: "swiftlight_sqrt".to_string(),
+            parameter_types: vec![Type::Float(64)],
+            return_type: Type::Float(64),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Sin,
+            name: "swiftlight_sin".to_string(),
+            parameter_types: vec![Type::Float(64)],
+            return_type: Type::Float(64),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Cos,
+            name: "swiftlight_cos".to_string(),
+            parameter_types: vec![Type::Float(64)],
+            return_type: Type::Float(64),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // ビット操作系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::BitCount,
+            name: "swiftlight_bitcount".to_string(),
+            parameter_types: vec![Type::Integer(64, false)],
+            return_type: Type::Integer(32, false),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::BitReverse,
+            name: "swiftlight_bitreverse".to_string(),
+            parameter_types: vec![Type::Integer(64, false)],
+            return_type: Type::Integer(64, false),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // アトミック操作系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AtomicLoad,
+            name: "swiftlight_atomic_load".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(64, false)), true), // 読み取り対象ポインタ
+                Type::Integer(32, false),                               // メモリオーダリング
+            ],
+            return_type: Type::Integer(64, false),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: false, // メモリ状態に依存
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AtomicStore,
+            name: "swiftlight_atomic_store".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(64, false)), false), // 書き込み対象ポインタ
+                Type::Integer(64, false),                                // 書き込む値
+                Type::Integer(32, false),                                // メモリオーダリング
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // SIMD操作系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::VectorAdd,
+            name: "swiftlight_vector_add".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Float(32)), 4), // 4要素のfloat32ベクトル
+                Type::Vector(Box::new(Type::Float(32)), 4), // 4要素のfloat32ベクトル
+            ],
+            return_type: Type::Vector(Box::new(Type::Float(32)), 4),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string()],
+            },
+        });
+
+        // 並行処理系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Yield,
+            name: "swiftlight_yield".to_string(),
+            parameter_types: vec![],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // デバッグ系イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::DebugPrint,
+            name: "swiftlight_debug_print".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(8, false)), true), // 文字列ポインタ
+                Type::Integer(64, false),                              // 文字列長
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: false, // 出力が混ざる可能性あり
+                available_targets: vec!["all".to_string()],
+            },
+        });
+        // デバッグ用イントリンシック - ブレークポイント挿入
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::DebugBreak,
+            name: "swiftlight_debug_break".to_string(),
+            parameter_types: vec![],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // メモリフェンス - 並行処理における順序付け保証
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Fence,
+            name: "swiftlight_fence".to_string(),
+            parameter_types: vec![Type::Integer(32, false)], // フェンスタイプ（Acquire=1, Release=2, AcqRel=3, SeqCst=4）
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // アトミックCAS（Compare-And-Swap）操作
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AtomicCAS,
+            name: "swiftlight_atomic_cas".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(64, false)), false), // ターゲットポインタ
+                Type::Integer(64, false),                                // 期待値
+                Type::Integer(64, false),                                // 新しい値
+                Type::Integer(32, false),                                // メモリオーダリング
+            ],
+            return_type: Type::Integer(64, false), // 操作前の値を返す
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // SIMD操作 - ベクトル乗算
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::VectorMul,
+            name: "swiftlight_vector_mul".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Float(32)), 4), // 4要素のfloat32ベクトル
+                Type::Vector(Box::new(Type::Float(32)), 4), // 4要素のfloat32ベクトル
+            ],
+            return_type: Type::Vector(Box::new(Type::Float(32)), 4),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string()],
+            },
+        });
+
+        // プロファイリング用イントリンシック - 関数開始
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::ProfileFunctionEnter,
+            name: "swiftlight_profile_enter".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(8, false)), true), // 関数名ポインタ
+                Type::Integer(64, false),                              // 関数名長さ
+            ],
+            return_type: Type::Integer(64, false), // プロファイルID
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // プロファイリング用イントリンシック - 関数終了
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::ProfileFunctionExit,
+            name: "swiftlight_profile_exit".to_string(),
+            parameter_types: vec![Type::Integer(64, false)], // プロファイルID
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // ハードウェア特化イントリンシック - CPUID取得
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::CPUID,
+            name: "swiftlight_cpuid".to_string(),
+            parameter_types: vec![Type::Integer(32, false)], // 機能ID
+            return_type: Type::Tuple(vec![
+                Type::Integer(32, false), // EAX
+                Type::Integer(32, false), // EBX
+                Type::Integer(32, false), // ECX
+                Type::Integer(32, false), // EDX
+            ]),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: false, // 実行環境に依存
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - プリフェッチ
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Prefetch,
+            name: "swiftlight_prefetch".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // プリフェッチするメモリアドレス
+                Type::Integer(32, false),                 // プリフェッチタイプ (0=読み込み, 1=書き込み)
+                Type::Integer(32, false),                 // 局所性レベル (0=非局所的, 3=高局所性)
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false, // 実際のメモリアクセスはない（ヒント）
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string()],
+            },
+        });
+
+        // 暗号化イントリンシック - AES命令
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AESEncrypt,
+            name: "swiftlight_aes_encrypt".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Integer(8, false)), 16), // 平文ブロック
+                Type::Vector(Box::new(Type::Integer(8, false)), 16), // 暗号化キー
+            ],
+            return_type: Type::Vector(Box::new(Type::Integer(8, false)), 16), // 暗号文
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_aesni".to_string()],
+            },
+        });
+
+        // 並行処理イントリンシック - スピンロック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::SpinLock,
+            name: "swiftlight_spin_lock".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(32, false)), false), // ロック変数へのポインタ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 並行処理イントリンシック - スピンアンロック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::SpinUnlock,
+            name: "swiftlight_spin_unlock".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(32, false)), false), // ロック変数へのポインタ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
     }
-    
     /// イントリンシック関数を登録
     pub fn register(&mut self, intrinsic: IntrinsicFunction) {
         self.intrinsics.insert(intrinsic.kind, intrinsic);
@@ -214,16 +599,26 @@ impl IntrinsicManager {
         }
         
         // 呼び出しを生成
-        // 実際の実装ではより複雑になる
+        let call_id = generate_unique_id();
+        let function_ref = Value::FunctionRef(intrinsic.name.clone(), intrinsic.return_type.clone());
         
-        // ダミー実装：仮の値を返す
-        Ok(Value::Constant(0)) // ダミー実装
+        // 呼び出し命令を生成
+        let call_instr = Instruction::Call {
+            function: Box::new(function_ref),
+            arguments: arguments.clone(),
+            result_type: intrinsic.return_type.clone(),
+            is_tail_call: false,
+            calling_convention: CallingConvention::C,
+        };
+        
+        // 結果値を生成
+        Ok(Value::InstructionResult(call_id, intrinsic.return_type.clone(), Box::new(call_instr)))
     }
     
     /// イントリンシック関数が特定のターゲットで利用可能かチェック
     pub fn is_available_for_target(&self, kind: IntrinsicKind, target: &str) -> bool {
         if let Some(intrinsic) = self.lookup(kind) {
-            intrinsic.attributes.available_targets.iter().any(|t| t == target)
+            intrinsic.attributes.available_targets.iter().any(|t| t == "all" || t == target)
         } else {
             false
         }
@@ -255,8 +650,11 @@ pub mod memory {
         align: u32,
         is_volatile: bool
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::MemCpy, vec![dest, src, size])
+        // アライメントと揮発性フラグを追加パラメータとして渡す
+        let align_val = Value::Constant(align as i64);
+        let volatile_val = Value::Constant(if is_volatile { 1 } else { 0 });
+        
+        manager.generate_call(IntrinsicKind::MemCpy, vec![dest, src, size, align_val, volatile_val])
     }
     
     /// memsetイントリンシックを生成
@@ -268,8 +666,35 @@ pub mod memory {
         align: u32,
         is_volatile: bool
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::MemSet, vec![dest, val, size])
+        // アライメントと揮発性フラグを追加パラメータとして渡す
+        let align_val = Value::Constant(align as i64);
+        let volatile_val = Value::Constant(if is_volatile { 1 } else { 0 });
+        
+        manager.generate_call(IntrinsicKind::MemSet, vec![dest, val, size, align_val, volatile_val])
+    }
+    
+    /// memmoveイントリンシックを生成（重複領域対応）
+    pub fn build_memmove(
+        manager: &IntrinsicManager,
+        dest: Value,
+        src: Value,
+        size: Value,
+        align: u32,
+        is_volatile: bool
+    ) -> Result<Value> {
+        let align_val = Value::Constant(align as i64);
+        let volatile_val = Value::Constant(if is_volatile { 1 } else { 0 });
+        
+        manager.generate_call(IntrinsicKind::MemMove, vec![dest, src, size, align_val, volatile_val])
+    }
+    
+    /// メモリバリアを生成
+    pub fn build_memory_barrier(
+        manager: &IntrinsicManager,
+        ordering: MemoryOrdering
+    ) -> Result<Value> {
+        let ordering_val = Value::Constant(ordering as i32);
+        manager.generate_call(IntrinsicKind::Fence, vec![ordering_val])
     }
 }
 
@@ -282,7 +707,6 @@ pub mod math {
         manager: &IntrinsicManager,
         value: Value
     ) -> Result<Value> {
-        // 実際の実装
         manager.generate_call(IntrinsicKind::Sqrt, vec![value])
     }
     
@@ -291,8 +715,44 @@ pub mod math {
         manager: &IntrinsicManager,
         value: Value
     ) -> Result<Value> {
-        // 実際の実装
         manager.generate_call(IntrinsicKind::Sin, vec![value])
+    }
+    
+    /// 余弦イントリンシックを生成
+    pub fn build_cos(
+        manager: &IntrinsicManager,
+        value: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::Cos, vec![value])
+    }
+    
+    /// 指数関数イントリンシックを生成
+    pub fn build_exp(
+        manager: &IntrinsicManager,
+        value: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::Exp, vec![value])
+    }
+    
+    /// 対数関数イントリンシックを生成
+    pub fn build_log(
+        manager: &IntrinsicManager,
+        value: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::Log, vec![value])
+    }
+    
+    /// 高精度数学演算（多倍長精度）
+    pub fn build_high_precision_op(
+        manager: &IntrinsicManager,
+        op_type: HighPrecisionOpType,
+        values: Vec<Value>
+    ) -> Result<Value> {
+        let op_type_val = Value::Constant(op_type as i32);
+        let mut args = vec![op_type_val];
+        args.extend(values);
+        
+        manager.generate_call(IntrinsicKind::HighPrecisionMath, args)
     }
 }
 
@@ -307,18 +767,55 @@ pub mod simd {
         vec2: Value,
         mask: Value
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::SimdShuffle, vec![vec1, vec2, mask])
+        manager.generate_call(IntrinsicKind::VectorShuffle, vec![vec1, vec2, mask])
     }
     
     /// SIMD要素追加イントリンシックを生成
-    pub fn build_add(
+    pub fn build_vector_add(
         manager: &IntrinsicManager,
         vec1: Value,
         vec2: Value
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::SimdAdd, vec![vec1, vec2])
+        manager.generate_call(IntrinsicKind::VectorAdd, vec![vec1, vec2])
+    }
+    
+    /// SIMD要素乗算イントリンシックを生成
+    pub fn build_vector_mul(
+        manager: &IntrinsicManager,
+        vec1: Value,
+        vec2: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::VectorMul, vec![vec1, vec2])
+    }
+    
+    /// SIMD要素比較イントリンシックを生成
+    pub fn build_vector_compare(
+        manager: &IntrinsicManager,
+        vec1: Value,
+        vec2: Value,
+        compare_type: VectorCompareType
+    ) -> Result<Value> {
+        let compare_type_val = Value::Constant(compare_type as i32);
+        manager.generate_call(IntrinsicKind::VectorCompare, vec![vec1, vec2, compare_type_val])
+    }
+    
+    /// SIMD要素抽出イントリンシックを生成
+    pub fn build_vector_extract(
+        manager: &IntrinsicManager,
+        vec: Value,
+        index: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::VectorExtract, vec![vec, index])
+    }
+    
+    /// SIMD要素挿入イントリンシックを生成
+    pub fn build_vector_insert(
+        manager: &IntrinsicManager,
+        vec: Value,
+        value: Value,
+        index: Value
+    ) -> Result<Value> {
+        manager.generate_call(IntrinsicKind::VectorInsert, vec![vec, value, index])
     }
 }
 
@@ -327,10 +824,24 @@ pub mod atomic {
     use super::*;
     
     /// アトミック読み込みイントリンシックを生成
-    pub fn build_load(ptr: Value, ordering: Value
+    pub fn build_load(
+        manager: &IntrinsicManager,
+        ptr: Value, 
+        ordering: MemoryOrdering
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::AtomicLoad, vec![ptr, ordering])
+        let ordering_val = Value::Constant(ordering as i32);
+        manager.generate_call(IntrinsicKind::AtomicLoad, vec![ptr, ordering_val])
+    }
+    
+    /// アトミック書き込みイントリンシックを生成
+    pub fn build_store(
+        manager: &IntrinsicManager,
+        ptr: Value,
+        val: Value,
+        ordering: MemoryOrdering
+    ) -> Result<Value> {
+        let ordering_val = Value::Constant(ordering as i32);
+        manager.generate_call(IntrinsicKind::AtomicStore, vec![ptr, val, ordering_val])
     }
     
     /// アトミック加算イントリンシックを生成
@@ -338,9 +849,38 @@ pub mod atomic {
         manager: &IntrinsicManager,
         ptr: Value,
         val: Value,
-        ordering: Value
+        ordering: MemoryOrdering
     ) -> Result<Value> {
-        // 実際の実装
-        manager.generate_call(IntrinsicKind::AtomicAdd, vec![ptr, val, ordering])
+        let ordering_val = Value::Constant(ordering as i32);
+        manager.generate_call(IntrinsicKind::AtomicAdd, vec![ptr, val, ordering_val])
     }
-} 
+    
+    /// アトミックCAS（Compare-And-Swap）イントリンシックを生成
+    pub fn build_compare_exchange(
+        manager: &IntrinsicManager,
+        ptr: Value,
+        expected: Value,
+        new_value: Value,
+        success_ordering: MemoryOrdering,
+        failure_ordering: MemoryOrdering
+    ) -> Result<Value> {
+        let success_ordering_val = Value::Constant(success_ordering as i32);
+        let failure_ordering_val = Value::Constant(failure_ordering as i32);
+        
+        manager.generate_call(
+            IntrinsicKind::AtomicCAS, 
+            vec![ptr, expected, new_value, success_ordering_val, failure_ordering_val]
+        )
+    }
+    
+    /// アトミックフェッチ加算イントリンシックを生成
+    pub fn build_fetch_add(
+        manager: &IntrinsicManager,
+        ptr: Value,
+        val: Value,
+        ordering: MemoryOrdering
+    ) -> Result<Value> {
+        let ordering_val = Value::Constant(ordering as i32);
+        manager.generate_call(IntrinsicKind::AtomicFetchAdd, vec![ptr, val, ordering_val])
+    }
+}

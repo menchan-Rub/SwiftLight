@@ -10,6 +10,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::{Instant, Duration};
+use std::f64::consts::PI;
+use std::cmp::Ordering;
+use num_complex::{Complex64, Complex};
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::thread_rng;
+use reqwest::Client;
+use serde::{Serialize, Deserialize};
 
 use crate::frontend::error::{CompilerError, ErrorKind, Result, SourceLocation};
 use crate::typesystem::{
@@ -238,6 +246,461 @@ pub struct QuantumParallelTask {
     pub parallelism: usize,
     /// 優先度
     pub priority: u8,
+}
+
+/// 量子ビット
+#[derive(Debug, Clone)]
+struct Qubit {
+    index: usize,
+}
+
+/// 量子状態ベクトル
+#[derive(Debug, Clone)]
+struct StateVector {
+    /// 量子状態を表す複素振幅の配列
+    amplitudes: Vec<Complex64>,
+    /// 量子ビット数
+    num_qubits: usize,
+}
+
+impl StateVector {
+    /// 指定した量子ビット数の新しい状態ベクトルを作成（|0...0⟩状態で初期化）
+    fn new(num_qubits: usize) -> Self {
+        let size = 1 << num_qubits;
+        let mut amplitudes = vec![Complex64::new(0.0, 0.0); size];
+        amplitudes[0] = Complex64::new(1.0, 0.0); // |0...0⟩状態
+        
+        Self {
+            amplitudes,
+            num_qubits,
+        }
+    }
+    
+    /// 全ての振幅を取得
+    fn get_amplitudes(&self) -> &[Complex64] {
+        &self.amplitudes
+    }
+    
+    /// 特定の状態の振幅を取得
+    fn get_amplitude(&self, state: usize) -> Complex64 {
+        if state < self.amplitudes.len() {
+            self.amplitudes[state]
+        } else {
+            Complex64::new(0.0, 0.0)
+        }
+    }
+    
+    /// 単一量子ビットゲートを適用
+    fn apply_single_qubit_gate(&mut self, qubit: usize, matrix: [[Complex64; 2]; 2]) {
+        if qubit >= self.num_qubits {
+            return;
+        }
+        
+        let n = self.amplitudes.len();
+        let mut new_amplitudes = vec![Complex64::new(0.0, 0.0); n];
+        
+        let mask = 1 << qubit;
+        
+        for i in 0..n {
+            let bit_is_set = (i & mask) != 0;
+            let paired_index = if bit_is_set { i & !mask } else { i | mask };
+            
+            if bit_is_set {
+                new_amplitudes[i] = matrix[1][0] * self.amplitudes[paired_index] + matrix[1][1] * self.amplitudes[i];
+            } else {
+                new_amplitudes[i] = matrix[0][0] * self.amplitudes[i] + matrix[0][1] * self.amplitudes[paired_index];
+            }
+        }
+        
+        self.amplitudes = new_amplitudes;
+    }
+    
+    /// 制御量子ビットゲートを適用
+    fn apply_controlled_gate(&mut self, control: usize, target: usize, matrix: [[Complex64; 2]; 2]) {
+        if control >= self.num_qubits || target >= self.num_qubits || control == target {
+            return;
+        }
+        
+        let n = self.amplitudes.len();
+        let mut new_amplitudes = self.amplitudes.clone();
+        
+        let control_mask = 1 << control;
+        let target_mask = 1 << target;
+        
+        for i in 0..n {
+            // 制御ビットが1の場合のみゲートを適用
+            if (i & control_mask) != 0 {
+                let bit_is_set = (i & target_mask) != 0;
+                let paired_index = if bit_is_set { i & !target_mask } else { i | target_mask };
+                
+                if bit_is_set {
+                    new_amplitudes[i] = matrix[1][1] * self.amplitudes[i] + matrix[1][0] * self.amplitudes[paired_index];
+                } else {
+                    new_amplitudes[i] = matrix[0][0] * self.amplitudes[i] + matrix[0][1] * self.amplitudes[paired_index];
+                }
+            }
+        }
+        
+        self.amplitudes = new_amplitudes;
+    }
+    
+    /// 測定シミュレーション（計算基底）
+    fn measure(&self, shots: usize) -> HashMap<String, usize> {
+        let n = self.amplitudes.len();
+        let mut probabilities = Vec::with_capacity(n);
+        
+        // 各状態の確率を計算
+        for amp in &self.amplitudes {
+            let prob = amp.norm_sqr();
+            probabilities.push(prob);
+        }
+        
+        // 小さな数値誤差を補正
+        let total: f64 = probabilities.iter().sum();
+        if (total - 1.0).abs() > 1e-10 {
+            for prob in &mut probabilities {
+                *prob /= total;
+            }
+        }
+        
+        // 確率分布に基づいてサンプリング
+        let dist = WeightedIndex::new(&probabilities).unwrap();
+        let mut rng = thread_rng();
+        let mut results = HashMap::new();
+        
+        for _ in 0..shots {
+            let idx = dist.sample(&mut rng);
+            let bit_string = format!("{:0width$b}", idx, width=self.num_qubits);
+            *results.entry(bit_string).or_insert(0) += 1;
+        }
+        
+        results
+    }
+    
+    /// 最も確率の高い結果を取得
+    fn most_probable_result(&self) -> String {
+        let n = self.amplitudes.len();
+        let mut max_prob = 0.0;
+        let mut max_idx = 0;
+        
+        for (idx, amp) in self.amplitudes.iter().enumerate() {
+            let prob = amp.norm_sqr();
+            if prob > max_prob {
+                max_prob = prob;
+                max_idx = idx;
+            }
+        }
+        
+        format!("{:0width$b}", max_idx, width=self.num_qubits)
+    }
+}
+
+/// 量子ゲート行列を生成
+fn get_gate_matrix(gate_type: &QuantumGateType) -> [[Complex64; 2]; 2] {
+    match gate_type {
+        QuantumGateType::X => {
+            [
+                [Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+            ]
+        },
+        QuantumGateType::Y => {
+            [
+                [Complex64::new(0.0, 0.0), Complex64::new(0.0, -1.0)],
+                [Complex64::new(0.0, 1.0), Complex64::new(0.0, 0.0)],
+            ]
+        },
+        QuantumGateType::Z => {
+            [
+                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::new(-1.0, 0.0)],
+            ]
+        },
+        QuantumGateType::H => {
+            let factor = 1.0 / f64::sqrt(2.0);
+            [
+                [Complex64::new(factor, 0.0), Complex64::new(factor, 0.0)],
+                [Complex64::new(factor, 0.0), Complex64::new(-factor, 0.0)],
+            ]
+        },
+        QuantumGateType::S => {
+            [
+                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::new(0.0, 1.0)],
+            ]
+        },
+        QuantumGateType::T => {
+            [
+                [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::new(f64::cos(PI/4.0), f64::sin(PI/4.0))],
+            ]
+        },
+        QuantumGateType::RX(theta) => {
+            let cos = f64::cos(*theta / 2.0);
+            let sin = f64::sin(*theta / 2.0);
+            [
+                [Complex64::new(cos, 0.0), Complex64::new(0.0, -sin)],
+                [Complex64::new(0.0, -sin), Complex64::new(cos, 0.0)],
+            ]
+        },
+        QuantumGateType::RY(theta) => {
+            let cos = f64::cos(*theta / 2.0);
+            let sin = f64::sin(*theta / 2.0);
+            [
+                [Complex64::new(cos, 0.0), Complex64::new(-sin, 0.0)],
+                [Complex64::new(sin, 0.0), Complex64::new(cos, 0.0)],
+            ]
+        },
+        QuantumGateType::RZ(theta) => {
+            let phase = Complex64::new(f64::cos(*theta / 2.0), f64::sin(*theta / 2.0));
+            let phase_conj = phase.conj();
+            [
+                [phase_conj, Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), phase],
+            ]
+        },
+        _ => panic!("非単一量子ビットゲートには行列表現がありません"),
+    }
+}
+
+/// シミュレーションの実行
+fn simulate_quantum_circuit(circuit: &QuantumCircuit, precision: f64, shots: usize) -> QuantumExecutionResult {
+    let start_time = Instant::now();
+    
+    // 状態ベクトルの初期化
+    let mut state = StateVector::new(circuit.num_qubits);
+    
+    // 回路のゲートを適用
+    for gate in &circuit.gates {
+        match gate.gate_type {
+            QuantumGateType::X | 
+            QuantumGateType::Y | 
+            QuantumGateType::Z | 
+            QuantumGateType::H | 
+            QuantumGateType::S | 
+            QuantumGateType::T | 
+            QuantumGateType::RX(_) | 
+            QuantumGateType::RY(_) | 
+            QuantumGateType::RZ(_) => {
+                // 単一量子ビットゲート
+                if !gate.target_qubits.is_empty() {
+                    let matrix = get_gate_matrix(&gate.gate_type);
+                    let target = gate.target_qubits[0];
+                    state.apply_single_qubit_gate(target, matrix);
+                }
+            },
+            QuantumGateType::CNOT => {
+                // 制御NOTゲート
+                if gate.control_qubits.len() == 1 && gate.target_qubits.len() == 1 {
+                    let control = gate.control_qubits[0];
+                    let target = gate.target_qubits[0];
+                    let x_matrix = get_gate_matrix(&QuantumGateType::X);
+                    state.apply_controlled_gate(control, target, x_matrix);
+                }
+            },
+            QuantumGateType::CZ => {
+                // 制御Zゲート
+                if gate.control_qubits.len() == 1 && gate.target_qubits.len() == 1 {
+                    let control = gate.control_qubits[0];
+                    let target = gate.target_qubits[0];
+                    let z_matrix = get_gate_matrix(&QuantumGateType::Z);
+                    state.apply_controlled_gate(control, target, z_matrix);
+                }
+            },
+            // 他のゲートタイプの実装...
+            _ => {
+                // まだ実装されていないゲートの場合は無視
+            }
+        }
+    }
+    
+    // 測定結果を取得
+    let measurement_results = state.measure(shots);
+    
+    // 確率分布を計算
+    let mut probability_distribution = HashMap::new();
+    for (bit_string, count) in &measurement_results {
+        let prob = *count as f64 / shots as f64;
+        probability_distribution.insert(bit_string.clone(), prob);
+    }
+    
+    // 最も高確率の結果を取得
+    let most_probable = if !measurement_results.is_empty() {
+        measurement_results
+            .iter()
+            .max_by(|a, b| {
+                a.1.cmp(b.1).then_with(|| a.0.cmp(b.0))
+            })
+            .map(|(bit_string, _)| bit_string.clone())
+            .unwrap_or_else(|| "0".repeat(circuit.num_classical_bits))
+    } else {
+        state.most_probable_result()
+    };
+    
+    // 実行時間を計算
+    let execution_time = start_time.elapsed().as_micros() as u64;
+    
+    QuantumExecutionResult {
+        probability_distribution,
+        most_probable,
+        shot_count: shots,
+        execution_time_us: execution_time,
+    }
+}
+
+// 外部シミュレータAPIリクエスト用データ構造
+#[derive(Serialize, Deserialize, Debug)]
+struct ExternalSimulatorRequest {
+    circuit: ExternalCircuitRepresentation,
+    shots: usize,
+    api_key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ExternalCircuitRepresentation {
+    num_qubits: usize,
+    gates: Vec<ExternalGateRepresentation>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ExternalGateRepresentation {
+    gate_type: String,
+    targets: Vec<usize>,
+    controls: Vec<usize>,
+    params: Option<Vec<f64>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ExternalSimulatorResponse {
+    results: HashMap<String, usize>,
+    execution_time_us: u64,
+}
+
+/// 外部シミュレータとの通信を行う
+async fn communicate_with_external_simulator(
+    circuit: &QuantumCircuit,
+    connection: &QuantumConnectionInfo,
+    shots: usize
+) -> Result<QuantumExecutionResult> {
+    // 回路をAPIリクエスト形式に変換
+    let external_gates = circuit.gates.iter().map(|gate| {
+        let gate_type = match gate.gate_type {
+            QuantumGateType::X => "x".to_string(),
+            QuantumGateType::Y => "y".to_string(),
+            QuantumGateType::Z => "z".to_string(),
+            QuantumGateType::H => "h".to_string(),
+            QuantumGateType::S => "s".to_string(),
+            QuantumGateType::T => "t".to_string(),
+            QuantumGateType::CNOT => "cx".to_string(),
+            QuantumGateType::CZ => "cz".to_string(),
+            QuantumGateType::SWAP => "swap".to_string(),
+            QuantumGateType::RX(theta) => {
+                return ExternalGateRepresentation {
+                    gate_type: "rx".to_string(),
+                    targets: gate.target_qubits.clone(),
+                    controls: gate.control_qubits.clone(),
+                    params: Some(vec![theta]),
+                };
+            },
+            QuantumGateType::RY(theta) => {
+                return ExternalGateRepresentation {
+                    gate_type: "ry".to_string(),
+                    targets: gate.target_qubits.clone(),
+                    controls: gate.control_qubits.clone(),
+                    params: Some(vec![theta]),
+                };
+            },
+            QuantumGateType::RZ(theta) => {
+                return ExternalGateRepresentation {
+                    gate_type: "rz".to_string(),
+                    targets: gate.target_qubits.clone(),
+                    controls: gate.control_qubits.clone(),
+                    params: Some(vec![theta]),
+                };
+            },
+            QuantumGateType::Toffoli => "ccx".to_string(),
+        };
+        
+        ExternalGateRepresentation {
+            gate_type,
+            targets: gate.target_qubits.clone(),
+            controls: gate.control_qubits.clone(),
+            params: None,
+        }
+    }).collect();
+    
+    let external_circuit = ExternalCircuitRepresentation {
+        num_qubits: circuit.num_qubits,
+        gates: external_gates,
+    };
+    
+    let request = ExternalSimulatorRequest {
+        circuit: external_circuit,
+        shots,
+        api_key: connection.auth_token.clone().unwrap_or_default(),
+    };
+    
+    // HTTPクライアントを作成
+    let client = Client::builder()
+        .timeout(Duration::from_millis(connection.timeout_ms))
+        .build()
+        .map_err(|e| CompilerError::new(
+            ErrorKind::RuntimeError,
+            format!("HTTPクライアントの作成に失敗しました: {}", e),
+            SourceLocation::default(),
+        ))?;
+    
+    // リクエストを送信
+    let response = client.post(&connection.url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| CompilerError::new(
+            ErrorKind::RuntimeError,
+            format!("外部シミュレータへのリクエスト送信に失敗しました: {}", e),
+            SourceLocation::default(),
+        ))?;
+    
+    // レスポンスを解析
+    let simulator_response = if response.status().is_success() {
+        response.json::<ExternalSimulatorResponse>().await
+            .map_err(|e| CompilerError::new(
+                ErrorKind::RuntimeError,
+                format!("シミュレータレスポンスの解析に失敗しました: {}", e),
+                SourceLocation::default(),
+            ))?
+    } else {
+        let error_text = response.text().await
+            .unwrap_or_else(|_| "レスポンステキストの取得に失敗".to_string());
+        
+        return Err(CompilerError::new(
+            ErrorKind::RuntimeError,
+            format!("シミュレータがエラーを返しました: {} - {}", response.status(), error_text),
+            SourceLocation::default(),
+        ));
+    };
+    
+    // 結果を変換
+    let mut probability_distribution = HashMap::new();
+    let total_shots = shots as f64;
+    
+    for (bit_string, count) in &simulator_response.results {
+        probability_distribution.insert(bit_string.clone(), *count as f64 / total_shots);
+    }
+    
+    // 最も確率の高い結果を取得
+    let most_probable = simulator_response.results
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1))
+        .map(|(bit_string, _)| bit_string.clone())
+        .unwrap_or_else(|| "0".repeat(circuit.num_classical_bits));
+    
+    Ok(QuantumExecutionResult {
+        probability_distribution,
+        most_probable,
+        shot_count: shots,
+        execution_time_us: simulator_response.execution_time_us,
+    })
 }
 
 impl QuantumCircuit {
@@ -645,39 +1108,8 @@ impl QuantumExecutor {
                 }
                 
                 // 内部シミュレータでの実行
-                // （実際のシミュレーション実装はここに...）
-                
-                // 簡易実装：ランダムな測定結果を生成
-                let mut results = QuantumExecutionResult {
-                    probability_distribution: HashMap::new(),
-                    most_probable: String::new(),
-                    shot_count: 1024,
-                    execution_time_us: 100, // 仮の値
-                };
-                
-                // シミュレーション結果を生成
-                let num_results = 1 << program_state.circuit.num_classical_bits;
-                let mut max_prob = 0.0;
-                let mut rng = rand::thread_rng();
-                
-                for i in 0..num_results {
-                    let bit_string = format!("{:0width$b}", i, width=program_state.circuit.num_classical_bits);
-                    
-                    // ランダムな確率を生成（実際はシミュレーション結果に基づく）
-                    let prob = rand::Rng::gen_range(&mut rng, 0.0..1.0);
-                    results.probability_distribution.insert(bit_string.clone(), prob);
-                    
-                    if prob > max_prob {
-                        max_prob = prob;
-                        results.most_probable = bit_string;
-                    }
-                }
-                
-                // 結果を正規化
-                let total_prob: f64 = results.probability_distribution.values().sum();
-                for prob in results.probability_distribution.values_mut() {
-                    *prob /= total_prob;
-                }
+                let circuit = program_state.circuit.clone();
+                let results = simulate_quantum_circuit(&circuit, *precision, 1024);
                 
                 // 結果を設定
                 program_state.results = Some(results);
@@ -686,22 +1118,32 @@ impl QuantumExecutor {
             
             QuantumBackend::ExternalSimulator { name, connection } => {
                 // 外部シミュレータへの接続と実行処理
-                // （実際の実装はここに...）
+                let connection_clone = connection.clone();
+                let circuit = program_state.circuit.clone();
                 
-                // 実際の実装では、外部シミュレータAPIへの接続、
-                // 回路の送信、結果の受信などを行う
-                
-                // 簡易実装として、完了状態にする
+                // 実行状態を更新
                 program_state.execution_state = QuantumExecutionState::Queued;
                 
                 // タスクを作成
                 let task = Task::new(
                     task_id,
-                    "量子シミュレーション".to_string(),
+                    format!("量子シミュレーション ({})", name),
                     Box::new(move || {
-                        // 非同期処理として実行
-                        // （実際の実装はここに...）
-                        Ok(())
+                        // async関数を実行するためのランタイム
+                        let runtime = tokio::runtime::Runtime::new()
+                            .map_err(|e| CompilerError::new(
+                                ErrorKind::RuntimeError,
+                                format!("Tokioランタイムの作成に失敗しました: {}", e),
+                                SourceLocation::default(),
+                            ))?;
+                        
+                        // 外部シミュレータと通信
+                        let result = runtime.block_on(async {
+                            communicate_with_external_simulator(&circuit, &connection_clone, 1024).await
+                        })?;
+                        
+                        // 結果をタスク結果として返す
+                        Ok(Box::new(result) as Box<dyn Any + Send>)
                     }),
                     vec![],
                     1,

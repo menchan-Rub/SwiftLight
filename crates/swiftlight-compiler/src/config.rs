@@ -465,20 +465,353 @@ impl FromStr for CompilerConfig {
     
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // TOML形式の設定ファイルを解析する実装
-        // （簡易実装のため、ここでは省略）
+        let toml_value: toml::Value = toml::from_str(s)
+            .map_err(|e| format!("TOML解析エラー: {}", e))?;
         
-        // ダミー実装
-        Ok(Self::default())
+        let toml_table = match toml_value {
+            toml::Value::Table(table) => table,
+            _ => return Err("設定はTOMLテーブルでなければなりません".to_string()),
+        };
+        
+        let mut config = CompilerConfig::default();
+        
+        // 最適化レベル
+        if let Some(opt_level) = toml_table.get("optimization_level") {
+            if let Some(level_str) = opt_level.as_str() {
+                config.opt_level = level_str.parse()
+                    .map_err(|e| format!("無効な最適化レベル: {}", e))?;
+            } else if let Some(level_int) = opt_level.as_integer() {
+                config.opt_level = OptimizationLevel::from(level_int as u8);
+            }
+        }
+        
+        // デバッグ情報
+        if let Some(debug_info) = toml_table.get("debug_info") {
+            if let Some(value) = debug_info.as_bool() {
+                config.debug_info = value;
+            }
+        }
+        
+        // 警告をエラーとして扱う
+        if let Some(warnings_as_errors) = toml_table.get("warnings_as_errors") {
+            if let Some(value) = warnings_as_errors.as_bool() {
+                config.warnings_as_errors = value;
+            }
+        }
+        
+        // 詳細レベル
+        if let Some(verbosity) = toml_table.get("verbosity") {
+            if let Some(value) = verbosity.as_integer() {
+                config.verbosity = value as u8;
+            }
+        }
+        
+        // ターゲット
+        if let Some(target) = toml_table.get("target") {
+            if let Some(value) = target.as_str() {
+                config.target = Some(value.to_string());
+            }
+        }
+        
+        // 定義マクロ
+        if let Some(defines) = toml_table.get("defines") {
+            if let Some(defines_table) = defines.as_table() {
+                for (key, value) in defines_table {
+                    if let Some(value_str) = value.as_str() {
+                        config.defines.insert(key.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+        
+        // インクルードパス
+        if let Some(include_paths) = toml_table.get("include_paths") {
+            if let Some(paths) = include_paths.as_array() {
+                for path in paths {
+                    if let Some(path_str) = path.as_str() {
+                        config.include_paths.push(PathBuf::from(path_str));
+                    }
+                }
+            }
+        }
+        
+        // ライブラリパス
+        if let Some(lib_paths) = toml_table.get("lib_paths") {
+            if let Some(paths) = lib_paths.as_array() {
+                for path in paths {
+                    if let Some(path_str) = path.as_str() {
+                        config.lib_paths.push(PathBuf::from(path_str));
+                    }
+                }
+            }
+        }
+        
+        // リンクするライブラリ
+        if let Some(libs) = toml_table.get("libs") {
+            if let Some(libs_array) = libs.as_array() {
+                for lib in libs_array {
+                    if let Some(lib_str) = lib.as_str() {
+                        config.libs.push(lib_str.to_string());
+                    }
+                }
+            }
+        }
+        
+        // 出力形式
+        if let Some(output_type) = toml_table.get("output_type") {
+            if let Some(type_str) = output_type.as_str() {
+                config.output_type = type_str.parse()
+                    .map_err(|e| format!("無効な出力形式: {}", e))?;
+            }
+        }
+        
+        // スレッド数
+        if let Some(thread_count) = toml_table.get("thread_count") {
+            if let Some(count) = thread_count.as_integer() {
+                config.thread_count = count as usize;
+            }
+        }
+        
+        // キャッシュを使用するか
+        if let Some(use_cache) = toml_table.get("use_cache") {
+            if let Some(value) = use_cache.as_bool() {
+                config.use_cache = value;
+            }
+        }
+        
+        // キャッシュディレクトリ
+        if let Some(cache_dir) = toml_table.get("cache_dir") {
+            if let Some(dir_str) = cache_dir.as_str() {
+                config.cache_dir = PathBuf::from(dir_str);
+            }
+        }
+        
+        // インクリメンタルコンパイル
+        if let Some(incremental) = toml_table.get("incremental") {
+            if let Some(value) = incremental.as_bool() {
+                config.incremental = value;
+            }
+        }
+        
+        // インクリメンタルディレクトリ
+        if let Some(incremental_dir) = toml_table.get("incremental_dir") {
+            if let Some(dir_str) = incremental_dir.as_str() {
+                config.incremental_dir = PathBuf::from(dir_str);
+            }
+        }
+        
+        // プラグインパス
+        if let Some(plugin_paths) = toml_table.get("plugin_paths") {
+            if let Some(paths) = plugin_paths.as_array() {
+                for path in paths {
+                    if let Some(path_str) = path.as_str() {
+                        config.plugin_paths.push(PathBuf::from(path_str));
+                    }
+                }
+            }
+        }
+        
+        // プラグイン引数
+        if let Some(plugin_args) = toml_table.get("plugin_args") {
+            if let Some(args_table) = plugin_args.as_table() {
+                for (plugin, args) in args_table {
+                    if let Some(args_array) = args.as_array() {
+                        let mut plugin_args = Vec::new();
+                        for arg in args_array {
+                            if let Some(arg_str) = arg.as_str() {
+                                plugin_args.push(arg_str.to_string());
+                            }
+                        }
+                        config.plugin_args.insert(plugin.clone(), plugin_args);
+                    }
+                }
+            }
+        }
+        
+        // 言語標準
+        if let Some(language_standard) = toml_table.get("language_standard") {
+            if let Some(standard_str) = language_standard.as_str() {
+                config.language_standard = standard_str.parse()
+                    .map_err(|e| format!("無効な言語標準: {}", e))?;
+            }
+        }
+        
+        // 言語拡張
+        if let Some(language_extensions) = toml_table.get("language_extensions") {
+            if let Some(extensions_array) = language_extensions.as_array() {
+                for extension in extensions_array {
+                    if let Some(ext_str) = extension.as_str() {
+                        let ext = ext_str.parse()
+                            .map_err(|e| format!("無効な言語拡張: {}", e))?;
+                        config.language_extensions.push(ext);
+                    }
+                }
+            }
+        }
+        
+        // カスタム設定
+        if let Some(custom) = toml_table.get("custom") {
+            if let Some(custom_table) = custom.as_table() {
+                for (key, value) in custom_table {
+                    if let Some(value_str) = value.as_str() {
+                        config.custom.insert(key.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+        
+        Ok(config)
     }
 }
 
 impl fmt::Display for CompilerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // TOML形式の設定ファイルに変換する実装
-        // （簡易実装のため、ここでは省略）
+        writeln!(f, "# SwiftLight コンパイラ設定")?;
+        writeln!(f, "")?;
         
-        // ダミー実装
-        write!(f, "# SwiftLight コンパイラ設定\n")
+        // 基本設定
+        writeln!(f, "# 基本設定")?;
+        writeln!(f, "optimization_level = \"{}\"", self.opt_level)?;
+        writeln!(f, "debug_info = {}", self.debug_info)?;
+        writeln!(f, "warnings_as_errors = {}", self.warnings_as_errors)?;
+        writeln!(f, "verbosity = {}", self.verbosity)?;
+        
+        // ターゲット設定
+        if let Some(target) = &self.target {
+            writeln!(f, "target = \"{}\"", target)?;
+        }
+        
+        // 出力設定
+        writeln!(f, "")?;
+        writeln!(f, "# 出力設定")?;
+        writeln!(f, "output_type = \"{}\"", self.output_type)?;
+        
+        // パフォーマンス設定
+        writeln!(f, "")?;
+        writeln!(f, "# パフォーマンス設定")?;
+        writeln!(f, "thread_count = {}", self.thread_count)?;
+        writeln!(f, "use_cache = {}", self.use_cache)?;
+        writeln!(f, "cache_dir = \"{}\"", self.cache_dir.display())?;
+        writeln!(f, "incremental = {}", self.incremental)?;
+        writeln!(f, "incremental_dir = \"{}\"", self.incremental_dir.display())?;
+        
+        // 言語設定
+        writeln!(f, "")?;
+        writeln!(f, "# 言語設定")?;
+        writeln!(f, "language_standard = \"{}\"", self.language_standard)?;
+        
+        if !self.language_extensions.is_empty() {
+            write!(f, "language_extensions = [")?;
+            let mut first = true;
+            for ext in &self.language_extensions {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "\"{}\"", ext)?;
+                first = false;
+            }
+            writeln!(f, "]")?;
+        }
+        
+        // 定義マクロ
+        if !self.defines.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "[defines]")?;
+            for (key, value) in &self.defines {
+                writeln!(f, "{} = \"{}\"", key, value)?;
+            }
+        }
+        
+        // パス設定
+        if !self.include_paths.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "# インクルードパス")?;
+            write!(f, "include_paths = [")?;
+            let mut first = true;
+            for path in &self.include_paths {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "\"{}\"", path.display())?;
+                first = false;
+            }
+            writeln!(f, "]")?;
+        }
+        
+        if !self.lib_paths.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "# ライブラリパス")?;
+            write!(f, "lib_paths = [")?;
+            let mut first = true;
+            for path in &self.lib_paths {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "\"{}\"", path.display())?;
+                first = false;
+            }
+            writeln!(f, "]")?;
+        }
+        
+        if !self.libs.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "# リンクするライブラリ")?;
+            write!(f, "libs = [")?;
+            let mut first = true;
+            for lib in &self.libs {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "\"{}\"", lib)?;
+                first = false;
+            }
+            writeln!(f, "]")?;
+        }
+        
+        // プラグイン設定
+        if !self.plugin_paths.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "# プラグインパス")?;
+            write!(f, "plugin_paths = [")?;
+            let mut first = true;
+            for path in &self.plugin_paths {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "\"{}\"", path.display())?;
+                first = false;
+            }
+            writeln!(f, "]")?;
+        }
+        
+        if !self.plugin_args.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "[plugin_args]")?;
+            for (plugin, args) in &self.plugin_args {
+                write!(f, "{} = [", plugin)?;
+                let mut first = true;
+                for arg in args {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\"", arg)?;
+                    first = false;
+                }
+                writeln!(f, "]")?;
+            }
+        }
+        
+        // カスタム設定
+        if !self.custom.is_empty() {
+            writeln!(f, "")?;
+            writeln!(f, "[custom]")?;
+            for (key, value) in &self.custom {
+                writeln!(f, "{} = \"{}\"", key, value)?;
+            }
+        }
+        
+        Ok(())
     }
 }
 
