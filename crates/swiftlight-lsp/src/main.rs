@@ -31,6 +31,7 @@ use tokio::runtime::Runtime;
 
 mod completion;
 mod diagnostics;
+pub mod syntax_highlight;
 
 // SwiftLightドキュメントの情報を保持する構造体
 struct DocumentState {
@@ -43,13 +44,17 @@ struct DocumentState {
 struct ServerState {
     documents: HashMap<Url, DocumentState>,
     workspace_root: Option<PathBuf>,
+    syntax_highlighter: syntax_highlight::LspSyntaxHighlighter,
 }
 
 impl ServerState {
     fn new() -> Self {
+        let diagnostics = Arc::new(diagnostics::DiagnosticEmitter::new());
+        
         Self {
             documents: HashMap::new(),
             workspace_root: None,
+            syntax_highlighter: syntax_highlight::LspSyntaxHighlighter::new(diagnostics.clone()),
         }
     }
 
@@ -120,6 +125,26 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             hover_provider: Some(OneOf::Left(true)),
             definition_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
+            semantic_tokens_provider: Some(
+                SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types: vec![
+                                SemanticTokenType::KEYWORD,
+                                SemanticTokenType::FUNCTION,
+                                // その他のトークンタイプ
+                            ],
+                            token_modifiers: vec![
+                                SemanticTokenModifier::DECLARATION,
+                                SemanticTokenModifier::DEFINITION,
+                                // その他の修飾子
+                            ],
+                        },
+                        range: Some(true),
+                        full: Some(true),
+                    }
+                )
+            ),
             ..ServerCapabilities::default()
         };
         
@@ -225,6 +250,26 @@ async fn handle_request(
             connection.sender.send(Message::Response(response))?;
         }
         
+        // セマンティックトークンリクエスト
+        "textDocument/semanticTokens/full" => {
+            let params: SemanticTokensParams = serde_json::from_value(request.params)?;
+            let result = semantic_tokens_request(&state, params);
+            let response = Response::new_ok(request.id, result);
+            connection.sender.send(Message::Response(response))?;
+        }
+        
+        // セマンティックトークンリクエスト（範囲指定）
+        "textDocument/semanticTokens/range" => {
+            let params: SemanticTokensRangeParams = serde_json::from_value(request.params)?;
+            let full_params = SemanticTokensParams {
+                text_document: params.text_document,
+                work_done_progress_params: params.work_done_progress_params,
+            };
+            let result = semantic_tokens_request(&state, full_params);
+            let response = Response::new_ok(request.id, result);
+            connection.sender.send(Message::Response(response))?;
+        }
+        
         // 未実装のリクエスト
         _ => {
             log::warn!("未実装のリクエスト: {}", request.method);
@@ -309,6 +354,9 @@ async fn handle_document_open(
     let diagnostics = diagnostics::get_diagnostics(state.clone(), &text_document.uri).await?;
     send_diagnostics(connection, text_document.uri, diagnostics)?;
     
+    // 構文ハイライトも更新
+    state.syntax_highlighter.update_document(&text_document.uri.to_string(), &text_document.text);
+    
     Ok(())
 }
 
@@ -365,6 +413,9 @@ async fn handle_document_change(
     // 診断結果の更新と送信
     let diagnostics = diagnostics::get_diagnostics(state.clone(), &document_id.uri).await?;
     send_diagnostics(connection, document_id.uri, diagnostics)?;
+    
+    // 構文ハイライトも更新
+    state.syntax_highlighter.update_document(&document_id.uri.to_string(), &content);
     
     Ok(())
 }
@@ -478,4 +529,11 @@ fn position_to_index(text: &str, position: Position) -> Result<usize> {
     }
     
     Err(anyhow!("無効な位置: {:?}", position))
+}
+
+// セマンティックトークンリクエストのハンドラ
+fn semantic_tokens_request(state: &ServerState, params: SemanticTokensParams) -> Result<Option<SemanticTokens>, ResponseError> {
+    let uri = params.text_document.uri.to_string();
+    
+    Ok(state.syntax_highlighter.generate_semantic_tokens(&uri))
 }

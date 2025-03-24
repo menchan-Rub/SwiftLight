@@ -469,11 +469,159 @@ impl X86_64Optimizer {
     fn detect_available_simd_instruction_sets() -> HashSet<String> {
         let mut sets = HashSet::new();
         
-        // 基本的なセットは常に利用可能と仮定
-        sets.insert("SSE".to_string());
-        sets.insert("SSE2".to_string());
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::*;
+            
+            // CPUID 基本情報を取得
+            let (max_cpuid, vendor_id) = {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid(0, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                let vendor_id = {
+                    let ebx_bytes = ebx.to_le_bytes();
+                    let edx_bytes = edx.to_le_bytes();
+                    let ecx_bytes = ecx.to_le_bytes();
+                    
+                    let mut vendor = Vec::with_capacity(12);
+                    vendor.extend_from_slice(&ebx_bytes);
+                    vendor.extend_from_slice(&edx_bytes);
+                    vendor.extend_from_slice(&ecx_bytes);
+                    
+                    String::from_utf8_lossy(&vendor).to_string()
+                };
+                
+                (eax, vendor_id)
+            };
+            
+            // 基本的な機能フラグを取得
+            if max_cpuid >= 1 {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid(1, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                // EDXレジスタのフラグをチェック
+                if (edx & (1 << 25)) != 0 { sets.insert("SSE".to_string()); }
+                if (edx & (1 << 26)) != 0 { sets.insert("SSE2".to_string()); }
+                
+                // ECXレジスタのフラグをチェック
+                if (ecx & (1 << 0)) != 0 { sets.insert("SSE3".to_string()); }
+                if (ecx & (1 << 9)) != 0 { sets.insert("SSSE3".to_string()); }
+                if (ecx & (1 << 19)) != 0 { sets.insert("SSE4.1".to_string()); }
+                if (ecx & (1 << 20)) != 0 { sets.insert("SSE4.2".to_string()); }
+                if (ecx & (1 << 28)) != 0 { sets.insert("AVX".to_string()); }
+                if (ecx & (1 << 12)) != 0 { sets.insert("FMA".to_string()); }
+                if (ecx & (1 << 25)) != 0 { sets.insert("AES".to_string()); }
+            }
+            
+            // 拡張機能フラグを取得
+            let (max_extended_cpuid, _) = {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid(0x80000000, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                (eax, (ebx, ecx, edx))
+            };
+            
+            if max_extended_cpuid >= 0x80000001 {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid(0x80000001, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                // ECXレジスタのフラグをチェック
+                if (ecx & (1 << 6)) != 0 { sets.insert("SSE4A".to_string()); }
+                if (ecx & (1 << 16)) != 0 { sets.insert("FMA4".to_string()); }
+                if (ecx & (1 << 11)) != 0 { sets.insert("XOP".to_string()); }
+                
+                // EDXレジスタのフラグをチェック
+                if (edx & (1 << 31)) != 0 { sets.insert("3DNow!".to_string()); }
+                if (edx & (1 << 30)) != 0 { sets.insert("3DNow!Ext".to_string()); }
+                if (edx & (1 << 29)) != 0 { sets.insert("x86-64".to_string()); }
+            }
+            
+            // AVX2とAVX-512の検出
+            if max_cpuid >= 7 {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid_count(7, 0, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                // EBXレジスタのフラグをチェック
+                if (ebx & (1 << 5)) != 0 { sets.insert("AVX2".to_string()); }
+                
+                // AVX-512ファミリー
+                if (ebx & (1 << 16)) != 0 { sets.insert("AVX512F".to_string()); }
+                if (ebx & (1 << 17)) != 0 { sets.insert("AVX512DQ".to_string()); }
+                if (ebx & (1 << 21)) != 0 { sets.insert("AVX512IFMA".to_string()); }
+                if (ebx & (1 << 26)) != 0 { sets.insert("AVX512PF".to_string()); }
+                if (ebx & (1 << 27)) != 0 { sets.insert("AVX512ER".to_string()); }
+                if (ebx & (1 << 28)) != 0 { sets.insert("AVX512CD".to_string()); }
+                if (ebx & (1 << 30)) != 0 { sets.insert("AVX512BW".to_string()); }
+                if (ebx & (1 << 31)) != 0 { sets.insert("AVX512VL".to_string()); }
+                
+                // ECXレジスタのフラグをチェック
+                if (ecx & (1 << 1)) != 0 { sets.insert("AVX512VBMI".to_string()); }
+                if (ecx & (1 << 6)) != 0 { sets.insert("AVX512VBMI2".to_string()); }
+                if (ecx & (1 << 11)) != 0 { sets.insert("AVX512VNNI".to_string()); }
+                if (ecx & (1 << 12)) != 0 { sets.insert("AVX512BITALG".to_string()); }
+                if (ecx & (1 << 14)) != 0 { sets.insert("AVX512VPOPCNTDQ".to_string()); }
+                
+                // EDXレジスタのフラグをチェック
+                if (edx & (1 << 2)) != 0 { sets.insert("AVX5124VNNIW".to_string()); }
+                if (edx & (1 << 3)) != 0 { sets.insert("AVX5124FMAPS".to_string()); }
+            }
+            
+            // AMDの特定命令セットを検出
+            if vendor_id == "AuthenticAMD" {
+                if max_extended_cpuid >= 0x80000001 {
+                    let mut eax: u32 = 0;
+                    let mut ebx: u32 = 0;
+                    let mut ecx: u32 = 0;
+                    let mut edx: u32 = 0;
+                    
+                    __cpuid(0x80000001, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                    
+                    if (ecx & (1 << 6)) != 0 { sets.insert("SSE4A".to_string()); }
+                    if (ecx & (1 << 16)) != 0 { sets.insert("FMA4".to_string()); }
+                    if (ecx & (1 << 11)) != 0 { sets.insert("XOP".to_string()); }
+                }
+            }
+            
+            // 最新のAMD Zen命令セットを検出
+            if vendor_id == "AuthenticAMD" && max_cpuid >= 7 {
+                let mut eax: u32 = 0;
+                let mut ebx: u32 = 0;
+                let mut ecx: u32 = 0;
+                let mut edx: u32 = 0;
+                
+                __cpuid_count(7, 0, &mut eax, &mut ebx, &mut ecx, &mut edx);
+                
+                if (ebx & (1 << 8)) != 0 { sets.insert("BMI2".to_string()); }
+                if (ebx & (1 << 19)) != 0 { sets.insert("ADX".to_string()); }
+            }
+        }
         
-        // TODO: 実際のCPU機能検出を実装
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // x86_64以外のアーキテクチャでは基本的なセットのみを仮定
+            sets.insert("SSE".to_string());
+            sets.insert("SSE2".to_string());
+        }
         
         sets
     }

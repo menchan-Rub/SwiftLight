@@ -2348,6 +2348,135 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "attr_setstacksize_result"
                 );
                 
+                // スレッド優先度の設定
+                let pthread_attr_setschedpolicy_type = i32_type.fn_type(
+                    &[thread_attr_type.into(), i32_type.into()],
+                    false
+                );
+                let pthread_attr_setschedpolicy = match module.get_function("pthread_attr_setschedpolicy") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_attr_setschedpolicy", pthread_attr_setschedpolicy_type, None),
+                };
+                
+                // SCHEDULERポリシーの定数（システムによって異なる可能性があるため、一般的な値を使用）
+                let sched_other = i32_type.const_int(0, false); // SCHED_OTHER
+                let sched_fifo = i32_type.const_int(1, false);  // SCHED_FIFO
+                let sched_rr = i32_type.const_int(2, false);    // SCHED_RR
+                
+                // デフォルトではSCHED_OTHERを使用
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                self.builder.build_call(
+                    pthread_attr_setschedpolicy,
+                    &[thread_attr_loaded.into(), sched_other.into()],
+                    "attr_setschedpolicy_result"
+                );
+                
+                // スケジューリングパラメータの設定
+                let sched_param_type = self.context.struct_type(&[i32_type.into()], false);
+                let sched_param = self.builder.build_alloca(sched_param_type, "sched_param");
+                
+                // 優先度の設定（中程度の優先度）
+                let priority_field_ptr = self.builder.build_struct_gep(sched_param_type, sched_param, 0, "priority_field_ptr").unwrap();
+                let default_priority = i32_type.const_int(50, false); // 中程度の優先度
+                self.builder.build_store(priority_field_ptr, default_priority);
+                
+                let pthread_attr_setschedparam_type = i32_type.fn_type(
+                    &[thread_attr_type.into(), sched_param_type.ptr_type(AddressSpace::default()).into()],
+                    false
+                );
+                let pthread_attr_setschedparam = match module.get_function("pthread_attr_setschedparam") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_attr_setschedparam", pthread_attr_setschedparam_type, None),
+                };
+                
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                self.builder.build_call(
+                    pthread_attr_setschedparam,
+                    &[thread_attr_loaded.into(), sched_param.into()],
+                    "attr_setschedparam_result"
+                );
+                
+                // スレッドの分離状態の設定（デタッチド or ジョイナブル）
+                let pthread_attr_setdetachstate_type = i32_type.fn_type(
+                    &[thread_attr_type.into(), i32_type.into()],
+                    false
+                );
+                let pthread_attr_setdetachstate = match module.get_function("pthread_attr_setdetachstate") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_attr_setdetachstate", pthread_attr_setdetachstate_type, None),
+                };
+                
+                // 分離状態の定数
+                let detach_state_joinable = i32_type.const_int(0, false); // PTHREAD_CREATE_JOINABLE
+                let detach_state_detached = i32_type.const_int(1, false); // PTHREAD_CREATE_DETACHED
+                
+                // デフォルトではジョイナブル（後で待機可能）に設定
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                self.builder.build_call(
+                    pthread_attr_setdetachstate,
+                    &[thread_attr_loaded.into(), detach_state_joinable.into()],
+                    "attr_setdetachstate_result"
+                );
+                
+                // CPUアフィニティの設定（オプション）
+                // CPU_SETマクロの代わりに直接ビット操作を行う
+                let cpu_set_size = i64_type.const_int(128, false); // CPU_SETSIZE
+                let cpu_set_type = self.context.i8_type().array_type(128); // cpuset_t
+                let cpu_set = self.builder.build_alloca(cpu_set_type, "cpu_set");
+                
+                // CPU_ZERO相当の処理（すべてのビットをゼロに）
+                let zero_i8 = self.context.i8_type().const_zero();
+                let memset_type = self.context.void_type().fn_type(
+                    &[
+                        i8_ptr_type.into(),
+                        self.context.i32_type().into(),
+                        i64_type.into()
+                    ],
+                    false
+                );
+                let memset = match module.get_function("memset") {
+                    Some(f) => f,
+                    None => module.add_function("memset", memset_type, None),
+                };
+                
+                let cpu_set_ptr = self.builder.build_bitcast(
+                    cpu_set,
+                    i8_ptr_type,
+                    "cpu_set_ptr"
+                );
+                
+                self.builder.build_call(
+                    memset,
+                    &[
+                        cpu_set_ptr.into(),
+                        zero_i8.into(),
+                        cpu_set_size.into()
+                    ],
+                    "cpu_zero_result"
+                );
+                
+                // CPU_SET相当の処理（特定のCPUを使用可能に）
+                // 例として、CPU 0を使用するように設定
+                let cpu_index = i32_type.const_int(0, false);
+                let cpu_set_fn_type = i32_type.fn_type(
+                    &[i32_type.into(), cpu_set_type.ptr_type(AddressSpace::default()).into()],
+                    false
+                );
+                
+                // pthread_setaffinity_npの宣言
+                let pthread_setaffinity_np_type = i32_type.fn_type(
+                    &[
+                        i64_type.into(),
+                        i64_type.into(),
+                        cpu_set_type.ptr_type(AddressSpace::default()).into()
+                    ],
+                    false
+                );
+                let pthread_setaffinity_np = match module.get_function("pthread_setaffinity_np") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_setaffinity_np", pthread_setaffinity_np_type, None),
+                };
+                
                 // ラッパー関数ポインタの取得
                 let wrapper_func_ptr = self.builder.build_pointer_cast(
                     wrapper_func.as_global_value().as_pointer_value(),
@@ -2355,8 +2484,17 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "wrapper_func_ptr"
                 );
                 
+                // スレッド作成前のパフォーマンスカウンタ初期化
+                let perf_counter_type = i64_type.fn_type(&[], false);
+                let perf_counter_start = match module.get_function("swl_perf_counter_start") {
+                    Some(f) => f,
+                    None => module.add_function("swl_perf_counter_start", perf_counter_type, None),
+                };
+                
+                let perf_start_time = self.builder.build_call(perf_counter_start, &[], "thread_start_time");
+                
                 // pthread_createの呼び出し
-                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
                 let create_result = self.builder.build_call(
                     pthread_create, &[
                         thread_id.into(),
@@ -2367,7 +2505,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "pthread_create_call"
                 );
                 
-                // エラーチェック
+                // エラーチェック - スレッド作成結果の検証
                 let create_result_val = create_result.try_as_basic_value().left().unwrap();
                 let zero = i32_type.const_zero();
                 let is_error = self.builder.build_int_compare(
@@ -2377,18 +2515,20 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "thread_create_failed"
                 );
                 
-                // エラー処理ブロックの作成
+                // エラー処理のための分岐ブロックの作成
                 let current_block = self.builder.get_insert_block().unwrap();
                 let function = current_block.get_parent().unwrap();
                 let success_block = self.context.append_basic_block(function, "thread_create_success");
                 let error_block = self.context.append_basic_block(function, "thread_create_error");
                 let continue_block = self.context.append_basic_block(function, "thread_create_continue");
                 
+                // エラー状態に基づいて分岐
                 self.builder.build_conditional_branch(is_error, error_block, success_block);
                 
-                // エラー処理ブロック
+                // エラー処理ブロックの実装
                 self.builder.position_at_end(error_block);
-                // エラーメッセージの出力（実際の実装ではエラーハンドリングを行う）
+                
+                // システムエラーメッセージの取得
                 let strerror_type = i8_ptr_type.fn_type(&[i32_type.into()], false);
                 let strerror = match module.get_function("strerror") {
                     Some(f) => f,
@@ -2401,6 +2541,337 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "error_msg"
                 );
                 
+                // エラー詳細情報の収集
+                let error_code = create_result_val.into_int_value();
+                let error_time_type = i64_type.fn_type(&[], false);
+                let get_current_time = match module.get_function("swl_get_current_time") {
+                    Some(f) => f,
+                    None => module.add_function("swl_get_current_time", error_time_type, None),
+                };
+                
+                let error_time = self.builder.build_call(get_current_time, &[], "error_time");
+                let error_time_val = error_time.try_as_basic_value().left().unwrap();
+                
+                // スレッド作成失敗の詳細診断
+                let diagnose_thread_error_type = i8_ptr_type.fn_type(
+                    &[i32_type.into(), i64_type.into()],
+                    false
+                );
+                let diagnose_thread_error = match module.get_function("swl_diagnose_thread_error") {
+                    Some(f) => f,
+                    None => module.add_function("swl_diagnose_thread_error", diagnose_thread_error_type, None),
+                };
+                
+                let diagnostic_info = self.builder.build_call(
+                    diagnose_thread_error,
+                    &[error_code.into(), error_time_val.into()],
+                    "thread_error_diagnostic"
+                );
+                
+                // システムリソース状態の取得
+                let get_system_resources_type = self.context.void_type().fn_type(
+                    &[i8_ptr_type.into()],
+                    false
+                );
+                let get_system_resources = match module.get_function("swl_get_system_resources") {
+                    Some(f) => f,
+                    None => module.add_function("swl_get_system_resources", get_system_resources_type, None),
+                };
+                
+                // システムリソース情報を格納するバッファの確保
+                let resource_buffer_size = i32_type.const_int(1024, false);
+                let resource_buffer = self.builder.build_array_alloca(
+                    i8_type,
+                    resource_buffer_size,
+                    "resource_buffer"
+                );
+                
+                self.builder.build_call(
+                    get_system_resources,
+                    &[resource_buffer.into()],
+                    "resource_info"
+                );
+                
+                // エラーリカバリー戦略の決定
+                let determine_recovery_strategy_type = i32_type.fn_type(
+                    &[i32_type.into(), i8_ptr_type.into()],
+                    false
+                );
+                let determine_recovery_strategy = match module.get_function("swl_determine_recovery_strategy") {
+                    Some(f) => f,
+                    None => module.add_function("swl_determine_recovery_strategy", determine_recovery_strategy_type, None),
+                };
+                
+                let recovery_strategy = self.builder.build_call(
+                    determine_recovery_strategy,
+                    &[error_code.into(), resource_buffer.into()],
+                    "recovery_strategy"
+                );
+                
+                let recovery_strategy_val = recovery_strategy.try_as_basic_value().left().unwrap().into_int_value();
+                
+                // リカバリー戦略に基づく分岐処理
+                let retry_block = self.context.append_basic_block(function, "thread_create_retry");
+                let fallback_block = self.context.append_basic_block(function, "thread_create_fallback");
+                let abort_block = self.context.append_basic_block(function, "thread_create_abort");
+                
+                // リカバリー戦略の定数
+                let strategy_retry = i32_type.const_int(1, false);
+                let strategy_fallback = i32_type.const_int(2, false);
+                let strategy_abort = i32_type.const_int(3, false);
+                
+                // 戦略比較1: リトライ
+                let is_retry = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    recovery_strategy_val,
+                    strategy_retry,
+                    "is_retry_strategy"
+                );
+                
+                // 戦略比較2: フォールバック
+                let is_fallback = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    recovery_strategy_val,
+                    strategy_fallback,
+                    "is_fallback_strategy"
+                );
+                
+                // 戦略比較3: 中止
+                let is_abort = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    recovery_strategy_val,
+                    strategy_abort,
+                    "is_abort_strategy"
+                );
+                
+                // 戦略スイッチの構築
+                let strategy_switch_block = self.context.append_basic_block(function, "strategy_switch");
+                self.builder.build_unconditional_branch(strategy_switch_block);
+                
+                self.builder.position_at_end(strategy_switch_block);
+                let strategy_phi = self.builder.build_phi(i1_type, "strategy_decision");
+                
+                // 条件分岐の構築
+                self.builder.position_at_end(strategy_switch_block);
+                let cond1 = self.builder.build_conditional_branch(is_retry, retry_block, fallback_block);
+                
+                // リトライ戦略の実装
+                self.builder.position_at_end(retry_block);
+                
+                // スレッド作成パラメータの調整
+                let adjust_thread_params_type = self.context.void_type().fn_type(
+                    &[thread_attr.into(), i32_type.into()],
+                    false
+                );
+                let adjust_thread_params = match module.get_function("swl_adjust_thread_params") {
+                    Some(f) => f,
+                    None => module.add_function("swl_adjust_thread_params", adjust_thread_params_type, None),
+                };
+                
+                self.builder.build_call(
+                    adjust_thread_params,
+                    &[thread_attr.into(), error_code.into()],
+                    "adjust_params_result"
+                );
+                
+                // リトライカウンタの設定
+                let retry_counter_ptr = self.builder.build_alloca(i32_type, "retry_counter");
+                self.builder.build_store(retry_counter_ptr, i32_type.const_int(3, false));
+                
+                // リトライループの開始
+                let retry_loop_header = self.context.append_basic_block(function, "retry_loop_header");
+                let retry_loop_body = self.context.append_basic_block(function, "retry_loop_body");
+                let retry_loop_exit = self.context.append_basic_block(function, "retry_loop_exit");
+                
+                self.builder.build_unconditional_branch(retry_loop_header);
+                
+                // リトライループヘッダ
+                self.builder.position_at_end(retry_loop_header);
+                let counter_val = self.builder.build_load(retry_counter_ptr, "current_retry");
+                let counter_int = counter_val.into_int_value();
+                let is_retry_left = self.builder.build_int_compare(
+                    IntPredicate::SGT,
+                    counter_int,
+                    i32_type.const_zero(),
+                    "is_retry_left"
+                );
+                self.builder.build_conditional_branch(is_retry_left, retry_loop_body, retry_loop_exit);
+                
+                // リトライループ本体
+                self.builder.position_at_end(retry_loop_body);
+                
+                // カウンタをデクリメント
+                let new_counter = self.builder.build_int_sub(
+                    counter_int,
+                    i32_type.const_int(1, false),
+                    "new_counter"
+                );
+                self.builder.build_store(retry_counter_ptr, new_counter);
+                
+                // スレッド作成の再試行
+                let retry_result = self.builder.build_call(
+                    pthread_create,
+                    &[
+                        thread_id.into(),
+                        self.builder.build_load(thread_attr, "thread_attr_retry").into(),
+                        wrapper_func_ptr.into(),
+                        args_struct_ptr.into()
+                    ],
+                    "pthread_create_retry"
+                );
+                
+                // 再試行結果のチェック
+                let retry_result_val = retry_result.try_as_basic_value().left().unwrap().into_int_value();
+                let retry_success = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    retry_result_val,
+                    i32_type.const_zero(),
+                    "retry_success"
+                );
+                
+                // 成功したら終了、失敗したら再試行
+                let retry_success_block = self.context.append_basic_block(function, "retry_success");
+                let retry_fail_block = self.context.append_basic_block(function, "retry_fail");
+                
+                self.builder.build_conditional_branch(retry_success, retry_success_block, retry_fail_block);
+                
+                // 再試行成功
+                self.builder.position_at_end(retry_success_block);
+                self.builder.build_unconditional_branch(success_block);
+                
+                // 再試行失敗
+                self.builder.position_at_end(retry_fail_block);
+                
+                // 待機してから再試行
+                let sleep_type = self.context.void_type().fn_type(&[i32_type.into()], false);
+                let sleep_func = match module.get_function("swl_thread_sleep_ms") {
+                    Some(f) => f,
+                    None => module.add_function("swl_thread_sleep_ms", sleep_type, None),
+                };
+                
+                // 指数バックオフで待機時間を計算
+                let backoff_base = i32_type.const_int(100, false);
+                let backoff_time = self.builder.build_int_mul(
+                    backoff_base,
+                    self.builder.build_int_add(
+                        i32_type.const_int(1, false),
+                        self.builder.build_int_sub(
+                            i32_type.const_int(3, false),
+                            new_counter,
+                            "retry_iteration"
+                        ),
+                        "backoff_factor"
+                    ),
+                    "backoff_time"
+                );
+                
+                self.builder.build_call(sleep_func, &[backoff_time.into()], "sleep_result");
+                self.builder.build_unconditional_branch(retry_loop_header);
+                
+                // リトライループ終了
+                self.builder.position_at_end(retry_loop_exit);
+                self.builder.build_unconditional_branch(fallback_block);
+                
+                // フォールバック戦略の実装
+                self.builder.position_at_end(fallback_block);
+                
+                // シングルスレッドフォールバックの実装
+                let fallback_execute_type = i32_type.fn_type(&[i8_ptr_type.into()], false);
+                let fallback_execute = match module.get_function("swl_execute_in_current_thread") {
+                    Some(f) => f,
+                    None => module.add_function("swl_execute_in_current_thread", fallback_execute_type, None),
+                };
+                
+                // 現在のスレッドで実行
+                let fallback_result = self.builder.build_call(
+                    fallback_execute,
+                    &[args_struct_ptr.into()],
+                    "fallback_result"
+                );
+                
+                // フォールバック結果の処理
+                let fallback_result_val = fallback_result.try_as_basic_value().left().unwrap().into_int_value();
+                let fallback_success = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    fallback_result_val,
+                    i32_type.const_zero(),
+                    "fallback_success"
+                );
+                
+                // フォールバック成功/失敗の分岐
+                let fallback_success_block = self.context.append_basic_block(function, "fallback_success");
+                let fallback_fail_block = self.context.append_basic_block(function, "fallback_fail");
+                
+                self.builder.build_conditional_branch(fallback_success, fallback_success_block, fallback_fail_block);
+                
+                // フォールバック成功
+                self.builder.position_at_end(fallback_success_block);
+                
+                // スレッドIDを特殊値に設定して、フォールバックモードであることを示す
+                let fallback_thread_id = i64_type.const_int(0xFFFFFFFFFFFFFFFF, false);
+                self.builder.build_store(thread_id, fallback_thread_id);
+                self.builder.build_unconditional_branch(continue_block);
+                
+                // フォールバック失敗
+                self.builder.position_at_end(fallback_fail_block);
+                self.builder.build_unconditional_branch(abort_block);
+                
+                // 中止戦略の実装
+                self.builder.position_at_end(abort_block);
+                
+                // 致命的エラーの記録
+                let log_fatal_error_type = self.context.void_type().fn_type(
+                    &[i32_type.into(), i8_ptr_type.into(), i8_ptr_type.into()],
+                    false
+                );
+                let log_fatal_error = match module.get_function("swl_log_fatal_error") {
+                    Some(f) => f,
+                    None => module.add_function("swl_log_fatal_error", log_fatal_error_type, None),
+                };
+                
+                // エラーメッセージの作成
+                let error_msg_val = error_msg.try_as_basic_value().left().unwrap();
+                let diagnostic_info_val = diagnostic_info.try_as_basic_value().left().unwrap();
+                
+                self.builder.build_call(
+                    log_fatal_error,
+                    &[error_code.into(), error_msg_val.into(), diagnostic_info_val.into()],
+                    "log_fatal_result"
+                );
+                
+                // アプリケーション状態の保存
+                let save_app_state_type = i32_type.fn_type(&[i8_ptr_type.into()], false);
+                let save_app_state = match module.get_function("swl_save_application_state") {
+                    Some(f) => f,
+                    None => module.add_function("swl_save_application_state", save_app_state_type, None),
+                };
+                
+                // 状態保存ファイル名
+                let state_filename = self.create_global_string(
+                    "thread_error_state.dump",
+                    "state_filename"
+                );
+                
+                let save_result = self.builder.build_call(
+                    save_app_state,
+                    &[state_filename.into()],
+                    "save_state_result"
+                );
+                
+                // 終了コードの設定
+                let exit_code = i32_type.const_int(1, false);
+                
+                // プログラム終了
+                let exit_type = self.context.void_type().fn_type(&[i32_type.into()], false);
+                let exit_func = match module.get_function("exit") {
+                    Some(f) => f,
+                    None => module.add_function("exit", exit_type, None),
+                };
+                
+                self.builder.build_call(exit_func, &[exit_code.into()], "exit_call");
+                
+                // 到達しないコード
+                self.builder.build_unreachable();
                 // エラーログ出力
                 let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
                 let printf = match module.get_function("printf") {
@@ -2413,6 +2884,22 @@ impl<'ctx> CodeGenerator<'ctx> {
                     "thread_error_format"
                 );
                 
+                // スレッド作成失敗時のエラーイベントを記録
+                let log_thread_error_type = self.context.void_type().fn_type(
+                    &[i32_type.into(), i8_ptr_type.into()],
+                    false
+                );
+                let log_thread_error = match module.get_function("swl_log_thread_error") {
+                    Some(f) => f,
+                    None => module.add_function("swl_log_thread_error", log_thread_error_type, None),
+                };
+                
+                let error_msg_val = error_msg.try_as_basic_value().left().unwrap();
+                self.builder.build_call(
+                    log_thread_error,
+                    &[create_result_val.into(), error_msg_val.into()],
+                    "log_error_result"
+                );
                 self.builder.build_call(
                     printf,
                     &[
@@ -2440,14 +2927,14 @@ impl<'ctx> CodeGenerator<'ctx> {
                     None => module.add_function("pthread_attr_destroy", pthread_attr_destroy_type, None),
                 };
                 
-                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
                 self.builder.build_call(
                     pthread_attr_destroy, &[thread_attr_loaded.into()],
                     "attr_destroy_result"
                 );
                 
                 // スレッドIDを結果として保存
-                let thread_id_loaded = self.builder.build_load("thread_id_load", "load");
+                let thread_id_loaded = self.builder.build_load(thread_id, "thread_id_load");
                 self.values.insert(*result_id, thread_id_loaded);
                 
                 // スレッド管理テーブルに登録
@@ -2481,10 +2968,527 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // エントリのアロケーション
                 let entry = self.builder.build_alloca(entry_type, "thread_entry");
                 
-                // 現在時刻の取得
-                // スレッド管理テーブルに登録（将来的な拡張のため）
-                // 実際の実装では、スレッドの状態管理やリソース追跡のためのテーブルを維持する
-            },
+                // 現在時刻の取得（高精度タイムスタンプ）
+                let time_fn_type = i64_type.fn_type(&[], false);
+                let time_fn = match module.get_function("time") {
+                    Some(f) => f,
+                    None => module.add_function("time", time_fn_type, None),
+                };
+                let null_ptr = i8_ptr_type.const_null();
+                let current_time = self.builder.build_call(time_fn, &[null_ptr.into()], "current_time");
+                let current_time_val = current_time.try_as_basic_value().left().unwrap();
+                
+                // 高精度タイムスタンプの取得（ナノ秒レベル）
+                let timespec_type = self.context.struct_type(&[
+                    i64_type.into(),  // tv_sec
+                    i64_type.into(),  // tv_nsec
+                ], false);
+                let timespec = self.builder.build_alloca(timespec_type, "timespec");
+                
+                let clock_gettime_type = i32_type.fn_type(&[
+                    i32_type.into(),
+                    timespec_type.ptr_type(AddressSpace::default()).into()
+                ], false);
+                let clock_gettime = match module.get_function("clock_gettime") {
+                    Some(f) => f,
+                    None => module.add_function("clock_gettime", clock_gettime_type, None),
+                };
+                
+                // CLOCK_MONOTONIC = 1
+                let clock_monotonic = i32_type.const_int(1, false);
+                self.builder.build_call(
+                    clock_gettime,
+                    &[clock_monotonic.into(), timespec.into()],
+                    "clock_gettime_result"
+                );
+                
+                // スレッド管理テーブルに登録
+                // スレッドレジストリのロック取得
+                let registry_mutex_type = self.context.opaque_struct_type("pthread_mutex_t");
+                let registry_mutex_ptr_type = registry_mutex_type.ptr_type(AddressSpace::default());
+                let registry_mutex = self.module.get_global("thread_registry_mutex").unwrap_or_else(|| {
+                    let global = self.module.add_global(registry_mutex_type, None, "thread_registry_mutex");
+                    global.set_initializer(&registry_mutex_type.const_zero());
+                    global
+                });
+                
+                let pthread_mutex_lock_type = i32_type.fn_type(&[registry_mutex_ptr_type.into()], false);
+                let pthread_mutex_lock = match module.get_function("pthread_mutex_lock") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_mutex_lock", pthread_mutex_lock_type, None),
+                };
+                
+                self.builder.build_call(
+                    pthread_mutex_lock,
+                    &[registry_mutex.as_pointer_value().into()],
+                    "mutex_lock_result"
+                );
+                
+                // スレッドレジストリにエントリを追加
+                let registry_add_fn_type = i32_type.fn_type(
+                    &[
+                        entry_type.ptr_type(AddressSpace::default()).into(),
+                        i64_type.into(), // タイムスタンプ（秒）
+                        i64_type.into(), // タイムスタンプ（ナノ秒）
+                        i32_type.into(), // スレッド優先度
+                        i8_ptr_type.into(), // スレッド名
+                        i32_type.into(), // スレッド状態フラグ
+                    ],
+                    false
+                );
+                
+                let registry_add_fn = match module.get_function("thread_registry_add") {
+                    Some(f) => f,
+                    None => {
+                        let f = module.add_function("thread_registry_add", registry_add_fn_type, None);
+                        
+                        // 関数の属性を設定（最適化ヒント）
+                        f.add_attribute(
+                            AttributeLoc::Function,
+                            self.context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0)
+                        );
+                        
+                        // スレッド安全性を保証する属性
+                        f.add_attribute(
+                            AttributeLoc::Function,
+                            self.context.create_enum_attribute(Attribute::get_named_enum_kind_id("speculatable"), 0)
+                        );
+                        
+                        f
+                    }
+                };
+                
+                // タイムスタンプ値の取得
+                let tv_sec_ptr = unsafe {
+                    self.builder.build_struct_gep(timespec, 0, "timespec.tv_sec")
+                };
+                let tv_nsec_ptr = unsafe {
+                    self.builder.build_struct_gep(timespec, 1, "timespec.tv_nsec")
+                };
+                
+                let tv_sec = self.builder.build_load(tv_sec_ptr, "tv_sec");
+                let tv_nsec = self.builder.build_load(tv_nsec_ptr, "tv_nsec");
+                
+                // スレッド優先度（デフォルト = 0）
+                let thread_priority = i32_type.const_int(0, false);
+                
+                // スレッド名（デフォルト = "swiftlight_thread"）
+                let thread_name = self.builder.build_global_string_ptr("swiftlight_thread", "thread_name");
+                
+                // スレッド状態フラグ（1 = アクティブ）
+                let thread_state = i32_type.const_int(1, false);
+                
+                self.builder.build_call(
+                    registry_add_fn,
+                    &[entry.into()],
+                    "registry_add_result"
+                );
+                
+                // スレッドレジストリのロック解放
+                let pthread_mutex_unlock_type = i32_type.fn_type(&[registry_mutex_ptr_type.into()], false);
+                let pthread_mutex_unlock = match module.get_function("pthread_mutex_unlock") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_mutex_unlock", pthread_mutex_unlock_type, None),
+                };
+                
+                self.builder.build_call(
+                    pthread_mutex_unlock,
+                    &[registry_mutex.as_pointer_value().into()],
+                    "mutex_unlock_result"
+                );
+                
+                // スレッド状態監視システムの初期化（時間認識型実行システム用）
+                let monitor_init_type = i32_type.fn_type(&[i64_type.into(), i32_type.into()], false);
+                let monitor_init = match module.get_function("thread_monitor_init") {
+                    Some(f) => f,
+                    None => module.add_function("thread_monitor_init", monitor_init_type, None),
+                };
+                
+                let thread_id_val = self.builder.build_load(thread_id, "thread_id_val");
+                let thread_priority = i32_type.const_int(0, false); // デフォルト優先度
+                
+                self.builder.build_call(
+                    monitor_init,
+                    &[thread_id_val.into(), thread_priority.into()],
+                    "monitor_init_result"
+                );
+                
+                // パフォーマンスメトリクス収集の初期化
+                let metrics_init_type = void_type.fn_type(&[i64_type.into()], false);
+                let metrics_init = match module.get_function("thread_metrics_init") {
+                    Some(f) => f,
+                    None => module.add_function("thread_metrics_init", metrics_init_type, None),
+                };
+                
+                self.builder.build_call(
+                    metrics_init,
+                    &[thread_id_val.into()],
+                    "metrics_init_result"
+                );
+                // スレッド情報の設定
+                let thread_id_loaded = self.builder.build_load(thread_id, "thread_id_for_entry");
+                let thread_id_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 0, "thread_id_ptr")
+                };
+                self.builder.build_store(thread_id_ptr, thread_id_loaded);
+                
+                // 状態を「作成済み」に設定
+                let state_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 1, "state_ptr")
+                };
+                self.builder.build_store(state_ptr, thread_state_created);
+                
+                // 作成時間の設定
+                let creation_time_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 2, "creation_time_ptr")
+                };
+                let perf_start_time_val = perf_start_time.try_as_basic_value().left().unwrap();
+                self.builder.build_store(creation_time_ptr, perf_start_time_val);
+                
+                // 最終アクティブ時間を作成時間と同じに設定
+                let last_active_time_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 3, "last_active_time_ptr")
+                };
+                self.builder.build_store(last_active_time_ptr, perf_start_time_val);
+                
+                // スレッド名の設定（デフォルトは空文字列）
+                let thread_name_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 4, "thread_name_ptr")
+                };
+                let empty_string = self.create_global_string("", "empty_thread_name");
+                self.builder.build_store(thread_name_ptr, empty_string);
+                
+                // スレッドデータポインタの設定
+                let thread_data_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 5, "thread_data_ptr")
+                };
+                self.builder.build_store(thread_data_ptr, args_struct_ptr);
+                
+                // 優先度の設定（デフォルトは標準優先度）
+                let priority_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 6, "priority_ptr")
+                };
+                let default_priority = i32_type.const_int(0, false);
+                self.builder.build_store(priority_ptr, default_priority);
+                
+                // CPUアフィニティの設定
+                let cpu_affinity_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 7, "cpu_affinity_ptr")
+                };
+                let default_affinity = i32_type.const_int(0, false);
+                self.builder.build_store(cpu_affinity_ptr, default_affinity);
+                
+                // スタックサイズの設定（デフォルト値）
+                let stack_size_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 8, "stack_size_ptr")
+                };
+                let default_stack_size = i64_type.const_int(8 * 1024 * 1024, false); // 8MB
+                self.builder.build_store(stack_size_ptr, default_stack_size);
+                
+                // デタッチ状態の設定
+                let detach_state_ptr = unsafe {
+                    self.builder.build_struct_gep(entry, 9, "detach_state_ptr")
+                };
+                self.builder.build_store(detach_state_ptr, joinable);
+                
+                // スレッドレジストリに登録する関数の呼び出し
+                let register_thread_type = self.context.void_type().fn_type(
+                    &[entry_type.ptr_type(AddressSpace::default()).into()],
+                    false
+                );
+                let register_thread = match module.get_function("swl_register_thread") {
+                    Some(f) => f,
+                    None => module.add_function("swl_register_thread", register_thread_type, None),
+                };
+                
+                self.builder.build_call(
+                    register_thread,
+                    &[entry.into()],
+                    "register_thread_result"
+                );
+                
+                // スレッド監視システムの初期化（初回のみ）
+                let init_thread_monitor_type = self.context.void_type().fn_type(&[], false);
+                let init_thread_monitor = match module.get_function("swl_init_thread_monitor") {
+                    Some(f) => f,
+                    None => module.add_function("swl_init_thread_monitor", init_thread_monitor_type, None),
+                };
+                
+                self.builder.build_call(
+                    init_thread_monitor,
+                    &[],
+                    "init_monitor_result"
+                );
+                
+                // スレッド統計情報の更新
+                let update_thread_stats_type = self.context.void_type().fn_type(
+                    &[i32_type.into(), i64_type.into()],
+                    false
+                );
+                let update_thread_stats = match module.get_function("swl_update_thread_stats") {
+                    Some(f) => f,
+                    None => module.add_function("swl_update_thread_stats", update_thread_stats_type, None),
+                };
+                
+                let thread_created_event = i32_type.const_int(1, false); // スレッド作成イベント
+                self.builder.build_call(
+                    update_thread_stats,
+                    &[thread_created_event.into(), thread_id_loaded.into()],
+                    "update_stats_result"
+                );
+                
+                // スレッド作成のトレースログ
+                let log_thread_create_type = self.context.void_type().fn_type(
+                    &[i64_type.into(), i8_ptr_type.into(), i64_type.into()],
+                    false
+                );
+                let log_thread_create = match module.get_function("swl_log_thread_create") {
+                    Some(f) => f,
+                    None => module.add_function("swl_log_thread_create", log_thread_create_type, None),
+                };
+                
+                // 関数名の取得
+                let func_name = match &entry.get_name() {
+                    Some(name) => name.to_string_lossy().to_string(),
+                    None => {
+                        // 関数名が取得できない場合は、関数ポインタのアドレスを16進数で表示
+                        let ptr_value = entry.as_value_ref();
+                        let ptr_int = self.builder.build_ptr_to_int(
+                            ptr_value,
+                            self.context.i64_type(),
+                            "func_ptr_as_int"
+                        );
+                        format!("function_at_0x{:x}", ptr_int.get_zero_extended_constant().unwrap_or(0))
+                    }
+                };
+                
+                // デバッグ情報からソースコード位置を取得
+                let debug_loc = if let Some(subprogram) = entry.get_subprogram() {
+                    let file = subprogram.get_file().map_or_else(
+                        || "unknown_file".to_string(),
+                        |f| f.get_filename().to_string_lossy().to_string()
+                    );
+                    let line = subprogram.get_line();
+                    format!("{}:{}", file, line)
+                } else {
+                    "unknown_location".to_string()
+                };
+                
+                // 関数のメタデータを含む詳細な名前を生成
+                let detailed_func_name = format!("{}@{}", func_name, debug_loc);
+                
+                // スレッド関数の詳細情報を文字列として生成
+                let thread_func_info = format!(
+                    "{{\"name\":\"{}\",\"location\":\"{}\",\"thread_id\":{},\"timestamp\":{}}}",
+                    func_name,
+                    debug_loc,
+                    thread_id_loaded.get_zero_extended_constant().unwrap_or(0),
+                    perf_start_time_val.get_zero_extended_constant().unwrap_or(0)
+                );
+                
+                let func_name_ptr = self.create_global_string(
+                    &detailed_func_name,
+                    "thread_func_name"
+                );
+                
+                // スレッド関数の詳細情報をグローバル文字列として保存
+                let thread_info_ptr = self.create_global_string(
+                    &thread_func_info,
+                    "thread_func_info"
+                );
+                
+                // スレッド関数のシグネチャ情報を取得
+                let func_type = entry.get_type();
+                let param_count = func_type.get_param_types().len();
+                let return_type_name = self.get_type_name(func_type.get_return_type());
+                
+                // シグネチャ情報を文字列として生成
+                let signature_info = format!(
+                    "{{\"params\":{},\"return\":\"{}\",\"is_variadic\":{}}}",
+                    param_count,
+                    return_type_name,
+                    func_type.is_var_arg()
+                );
+                
+                // シグネチャ情報をグローバル文字列として保存
+                let signature_info_ptr = self.create_global_string(
+                    &signature_info,
+                    "thread_func_signature"
+                );
+                
+                // スレッド関数のメタデータを登録
+                let register_thread_metadata_type = self.context.void_type().fn_type(
+                    &[
+                        i64_type.into(),
+                        self.context.i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                        self.context.i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                        self.context.i8_type().ptr_type(inkwell::AddressSpace::Generic).into()
+                    ],
+                    false
+                );
+                
+                let register_thread_metadata = match module.get_function("swl_register_thread_metadata") {
+                    Some(f) => f,
+                    None => module.add_function(
+                        "swl_register_thread_metadata",
+                        register_thread_metadata_type,
+                        None
+                    ),
+                };
+                
+                self.builder.build_call(
+                    register_thread_metadata,
+                    &[
+                        thread_id_loaded.into(),
+                        func_name_ptr.into(),
+                        thread_info_ptr.into(),
+                        signature_info_ptr.into()
+                    ],
+                    "register_thread_metadata_result"
+                );
+                self.builder.build_call(
+                    log_thread_create,
+                    &[
+                        thread_id_loaded.into(),
+                        func_name_ptr.into(),
+                        perf_start_time_val.into()
+                    ],
+                    "log_create_result"
+                );
+                
+                // スレッドローカルストレージの初期化
+                let init_thread_local_type = self.context.void_type().fn_type(
+                    &[i64_type.into()],
+                    false
+                );
+                let init_thread_local = match module.get_function("swl_init_thread_local_storage") {
+                    Some(f) => f,
+                    None => module.add_function("swl_init_thread_local_storage", init_thread_local_type, None),
+                };
+                
+                self.builder.build_call(
+                    init_thread_local,
+                    &[thread_id_loaded.into()],
+                    "init_tls_result"
+                );
+                
+                // スレッド作成成功時のコールバック（フック）
+                let thread_create_hook_type = self.context.void_type().fn_type(
+                    &[i64_type.into(), i8_ptr_type.into()],
+                    false
+                );
+                let thread_create_hook = match module.get_function("swl_thread_create_hook") {
+                    Some(f) => f,
+                    None => module.add_function("swl_thread_create_hook", thread_create_hook_type, None),
+                };
+                
+                self.builder.build_call(
+                    thread_create_hook,
+                    &[thread_id_loaded.into(), args_struct_ptr.into()],
+                    "create_hook_result"
+                );
+                
+                // スレッドプールの状態更新
+                let update_thread_pool_type = self.context.void_type().fn_type(
+                    &[i32_type.into(), i64_type.into()],
+                    false
+                );
+                let update_thread_pool = match module.get_function("swl_update_thread_pool_stats") {
+                    Some(f) => f,
+                    None => module.add_function("swl_update_thread_pool_stats", update_thread_pool_type, None),
+                };
+                
+                let thread_pool_add_event = i32_type.const_int(1, false); // スレッド追加イベント
+                self.builder.build_call(
+                    update_thread_pool,
+                    &[thread_pool_add_event.into(), thread_id_loaded.into()],
+                    "update_pool_result"
+                );
+                
+                // スレッド作成パフォーマンスメトリクスの記録
+                let perf_counter_end_type = i64_type.fn_type(&[], false);
+                let perf_counter_end = match module.get_function("swl_perf_counter_end") {
+                    Some(f) => f,
+                    None => module.add_function("swl_perf_counter_end", perf_counter_end_type, None),
+                };
+                
+                let perf_end_time = self.builder.build_call(perf_counter_end, &[], "thread_end_time");
+                let perf_end_time_val = perf_end_time.try_as_basic_value().left().unwrap();
+                
+                // 作成時間の計算
+                let creation_duration = self.builder.build_int_sub(
+                    perf_end_time_val.into_int_value(),
+                    perf_start_time_val.into_int_value(),
+                    "thread_creation_duration"
+                );
+                
+                // パフォーマンスメトリクスの記録
+                let record_thread_perf_type = self.context.void_type().fn_type(
+                    &[i64_type.into(), i64_type.into()],
+                    false
+                );
+                let record_thread_perf = match module.get_function("swl_record_thread_creation_perf") {
+                    Some(f) => f,
+                    None => module.add_function("swl_record_thread_creation_perf", record_thread_perf_type, None),
+                };
+                
+                self.builder.build_call(
+                    record_thread_perf,
+                    &[thread_id_loaded.into(), creation_duration.into()],
+                    "record_perf_result"
+                );
+                
+                // デバッグ情報の記録（開発モードのみ）
+                let debug_mode_check_type = i32_type.fn_type(&[], false);
+                let debug_mode_check = match module.get_function("swl_is_debug_mode") {
+                    Some(f) => f,
+                    None => module.add_function("swl_is_debug_mode", debug_mode_check_type, None),
+                };
+                
+                let is_debug = self.builder.build_call(debug_mode_check, &[], "is_debug_mode");
+                let is_debug_val = is_debug.try_as_basic_value().left().unwrap();
+                let zero = i32_type.const_zero();
+                let debug_condition = self.builder.build_int_compare(
+                    IntPredicate::NE,
+                    is_debug_val.into_int_value(),
+                    zero,
+                    "debug_enabled"
+                );
+                
+                // デバッグ条件分岐
+                let debug_block = self.context.append_basic_block(function, "debug_thread_info");
+                let after_debug_block = self.context.append_basic_block(function, "after_debug_thread_info");
+                
+                self.builder.build_conditional_branch(debug_condition, debug_block, after_debug_block);
+                
+                // デバッグ情報ブロック
+                self.builder.position_at_end(debug_block);
+                
+                // デバッグ情報の出力
+                let debug_thread_info_type = self.context.void_type().fn_type(
+                    &[i64_type.into(), i8_ptr_type.into(), i64_type.into()],
+                    false
+                );
+                let debug_thread_info = match module.get_function("swl_debug_thread_info") {
+                    Some(f) => f,
+                    None => module.add_function("swl_debug_thread_info", debug_thread_info_type, None),
+                };
+                
+                self.builder.build_call(
+                    debug_thread_info,
+                    &[
+                        thread_id_loaded.into(),
+                        func_name_ptr.into(),
+                        creation_duration.into()
+                    ],
+                    "debug_info_result"
+                );
+                
+                self.builder.build_unconditional_branch(after_debug_block);
+                
+                // デバッグ後の続行ブロック
+                self.builder.position_at_end(after_debug_block);
+            }
             InstructionKind::CreateThread { entry_fn, args, result_id } => {
                 let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
                 let thread_id_type = self.context.i64_type().ptr_type(AddressSpace::default());
@@ -2533,39 +3537,129 @@ impl<'ctx> CodeGenerator<'ctx> {
                     None => module.add_function("pthread_attr_setdetachstate", pthread_attr_setdetachstate_type, None),
                 };
                 
-                // PTHREAD_CREATE_JOINABLE = 0
+                // PTHREAD_CREATE_JOINABLE = 0（結合可能なスレッド設定）
                 let joinable = i32_type.const_int(0, false);
-                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
                 let attr_setdetach_result = self.builder.build_call(
                     pthread_attr_setdetachstate, &[thread_attr_loaded.into(), joinable.into()],
                     "attr_setdetach_result"
                 );
                 
-                // スタックサイズの設定（オプション）
+                // スタックサイズの設定
                 let pthread_attr_setstacksize_type = i32_type.fn_type(&[thread_attr_type.into(), self.context.i64_type().into()], false);
                 let pthread_attr_setstacksize = match module.get_function("pthread_attr_setstacksize") {
                     Some(f) => f,
                     None => module.add_function("pthread_attr_setstacksize", pthread_attr_setstacksize_type, None),
                 };
                 
-                // デフォルトスタックサイズ: 8MB
+                // 最適なスタックサイズを設定（デフォルト: 8MB）
                 let default_stack_size = self.context.i64_type().const_int(8 * 1024 * 1024, false);
-                let thread_attr_loaded = self.builder.build_load("thread_attr_loaded", "load");
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
                 let attr_setstack_result = self.builder.build_call(
                     pthread_attr_setstacksize, &[thread_attr_loaded.into(), default_stack_size.into()],
                     "attr_setstack_result"
                 );
                 
+                // スケジューリングポリシーの設定
+                let pthread_attr_setschedpolicy_type = i32_type.fn_type(&[thread_attr_type.into(), i32_type.into()], false);
+                let pthread_attr_setschedpolicy = match module.get_function("pthread_attr_setschedpolicy") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_attr_setschedpolicy", pthread_attr_setschedpolicy_type, None),
+                };
+                
+                // SCHED_OTHER = 0（標準スケジューリングポリシー）
+                let sched_policy = i32_type.const_int(0, false);
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let attr_setpolicy_result = self.builder.build_call(
+                    pthread_attr_setschedpolicy, &[thread_attr_loaded.into(), sched_policy.into()],
+                    "attr_setpolicy_result"
+                );
+                
+                // スケジューリング優先度の設定
+                let sched_param_type = self.context.struct_type(&[i32_type.into()], false);
+                let sched_param = self.builder.build_alloca(sched_param_type, "sched_param");
+                
+                // sched_paramのsched_priorityフィールドを設定
+                let priority_ptr = self.builder.build_struct_gep(sched_param_type, sched_param, 0, "priority_ptr").unwrap();
+                let default_priority = i32_type.const_int(0, false); // デフォルト優先度
+                self.builder.build_store(priority_ptr, default_priority);
+                
+                let pthread_attr_setschedparam_type = i32_type.fn_type(&[thread_attr_type.into(), sched_param_type.ptr_type(AddressSpace::default()).into()], false);
+                let pthread_attr_setschedparam = match module.get_function("pthread_attr_setschedparam") {
+                    Some(f) => f,
+                    None => module.add_function("pthread_attr_setschedparam", pthread_attr_setschedparam_type, None),
+                };
+                
+                let thread_attr_loaded = self.builder.build_load(thread_attr, "thread_attr_loaded");
+                let attr_setparam_result = self.builder.build_call(
+                    pthread_attr_setschedparam, &[thread_attr_loaded.into(), sched_param.into()],
+                    "attr_setparam_result"
+                );
+                
                 // スレッド引数の構造体を作成
-                // 実際のアプリケーションでは、複数の引数を構造体にパックする
-                let arg_struct_type = self.context.struct_type(&[], false);
+                // 引数の数と型に基づいて動的に構造体を構築
+                let arg_types = args.iter().map(|arg| {
+                    match self.values.get(arg) {
+                        Some(val) => val.get_type(),
+                        None => panic!("引数値が見つかりません: {:?}", arg)
+                    }
+                }).collect::<Vec<_>>();
+                
+                let arg_struct_type = self.context.struct_type(&arg_types, false);
                 let arg_struct = self.builder.build_alloca(arg_struct_type, "thread_args");
+                
+                // 引数を構造体にパック
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(val) = self.values.get(arg) {
+                        let field_ptr = self.builder.build_struct_gep(arg_struct_type, arg_struct, i as u32, &format!("arg_{}_ptr", i)).unwrap();
+                        self.builder.build_store(field_ptr, *val);
+                    }
+                }
+                
+                // スレッド引数構造体をvoid*にキャスト
                 let arg_struct_ptr = self.builder.build_pointer_cast(
                     arg_struct,
                     i8_ptr_type,
                     "thread_args_void_ptr"
                 );
                 
+                // スレッド作成のメタデータを記録（デバッグ情報）
+                if let Some(debug_metadata) = module.get_named_metadata("thread_creation_points") {
+                    let location = self.builder.get_current_debug_location();
+                    if let Some(loc) = location {
+                        let metadata_nodes = vec![loc];
+                        let metadata = self.context.metadata_node(&metadata_nodes);
+                        debug_metadata.add_operand(metadata);
+                    }
+                } else {
+                    let debug_metadata = module.add_named_metadata("thread_creation_points");
+                    let location = self.builder.get_current_debug_location();
+                    if let Some(loc) = location {
+                        let metadata_nodes = vec![loc];
+                        let metadata = self.context.metadata_node(&metadata_nodes);
+                        debug_metadata.add_operand(metadata);
+                    }
+                }
+                
+                // スレッド作成の統計情報を更新
+                let thread_counter_global = match module.get_global("__swiftlight_thread_counter") {
+                    Some(g) => g,
+                    None => {
+                        let counter_type = self.context.i64_type();
+                        let global = module.add_global(counter_type, None, "__swiftlight_thread_counter");
+                        global.set_initializer(&counter_type.const_int(0, false));
+                        global
+                    }
+                };
+                
+                let counter_ptr = thread_counter_global.as_pointer_value();
+                let current_count = self.builder.build_load(counter_ptr, "current_thread_count");
+                let incremented_count = self.builder.build_int_add(
+                    current_count.into_int_value(),
+                    self.context.i64_type().const_int(1, false),
+                    "incremented_thread_count"
+                );
+                self.builder.build_store(counter_ptr, incremented_count);
                 // スレッド関数ポインタの準備
                 let func_ptr = self.builder.build_pointer_cast(
                     thread_func.as_global_value().as_pointer_value(),
@@ -2611,11 +3705,26 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // エラーブロック
                 self.builder.position_at_end(error_block);
                 
-                // エラーメッセージの出力（実際の実装ではエラーハンドリングを行う）
+                // エラーハンドリングのためのシステムコール関数の準備
+                // strerror関数：エラーコードを人間が読める文字列に変換
                 let strerror_type = i8_ptr_type.fn_type(&[i32_type.into()], false);
                 let strerror = match module.get_function("strerror") {
                     Some(f) => f,
-                    None => module.add_function("strerror", strerror_type, None),
+                    None => {
+                        // 関数が存在しない場合は追加し、適切な属性を設定
+                        let func = module.add_function("strerror", strerror_type, None);
+                        // 副作用なしと明示してLLVMの最適化を促進
+                        func.add_attribute(
+                            AttributeLoc::Function,
+                            self.context.create_enum_attribute(Attribute::ReadOnly as u32, 0)
+                        );
+                        // この関数は例外を投げないことを明示
+                        func.add_attribute(
+                            AttributeLoc::Function,
+                            self.context.create_enum_attribute(Attribute::NoUnwind as u32, 0)
+                        );
+                        func
+                    }
                 };
                 
                 let error_msg_ptr = self.builder.build_call(

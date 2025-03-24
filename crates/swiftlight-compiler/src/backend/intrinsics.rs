@@ -459,6 +459,8 @@ impl IntrinsicManager {
                 Type::Pointer(Box::new(Type::Any), false), // プリフェッチするメモリアドレス
                 Type::Integer(32, false),                 // プリフェッチタイプ (0=読み込み, 1=書き込み)
                 Type::Integer(32, false),                 // 局所性レベル (0=非局所的, 3=高局所性)
+                Type::Integer(32, false),                 // キャッシュレベル (0=L1, 1=L2, 2=L3)
+                Type::Integer(32, false),                 // 優先度 (0=低, 10=最高)
             ],
             return_type: Type::Void,
             attributes: IntrinsicAttributes {
@@ -466,7 +468,104 @@ impl IntrinsicManager {
                 referentially_transparent: true,
                 memory_access: false, // 実際のメモリアクセスはない（ヒント）
                 thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string(), "riscv64".to_string(), "wasm32".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - 高度なプリフェッチ
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AdvancedPrefetch,
+            name: "swiftlight_advanced_prefetch".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // プリフェッチするメモリアドレス
+                Type::Integer(64, false),                 // データサイズ
+                Type::Integer(32, false),                 // アクセスパターン (0=シーケンシャル, 1=ストライド, 2=ランダム, 3=リバース)
+                Type::Integer(32, false),                 // ストライド幅（アクセスパターンがストライドの場合）
+                Type::Integer(32, false),                 // 優先度 (0=低, 10=最高)
+                Type::Boolean,                           // 投機的実行フラグ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string(), "riscv64".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - キャッシュライン無効化
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::CacheLineInvalidate,
+            name: "swiftlight_cache_invalidate".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // 無効化するメモリアドレス
+                Type::Integer(32, false),                 // キャッシュレベル (0=L1, 1=L2, 2=L3, 3=全レベル)
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
                 available_targets: vec!["x86_64".to_string(), "aarch64".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - キャッシュラインフラッシュ
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::CacheLineFlush,
+            name: "swiftlight_cache_flush".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // フラッシュするメモリアドレス
+                Type::Integer(32, false),                 // キャッシュレベル (0=L1, 1=L2, 2=L3, 3=全レベル)
+                Type::Boolean,                           // 同期フラグ（trueの場合、フラッシュ完了まで待機）
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string(), "riscv64".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - 非時間的メモリアクセス
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::NonTemporalStore,
+            name: "swiftlight_non_temporal_store".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // 書き込み先アドレス
+                Type::Any,                                // 書き込むデータ
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string(), "aarch64".to_string()],
+            },
+        });
+
+        // メモリ最適化イントリンシック - メモリアクセスヒント
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::MemoryAccessHint,
+            name: "swiftlight_memory_hint".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Any), false), // メモリ領域の開始アドレス
+                Type::Integer(64, false),                 // サイズ
+                Type::Integer(32, false),                 // アクセスパターン (0=一度だけ, 1=繰り返し読み込み, 2=繰り返し書き込み, 3=ストリーミング)
+                Type::Integer(32, false),                 // 優先度 (0=低, 10=最高)
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
             },
         });
 
@@ -484,7 +583,154 @@ impl IntrinsicManager {
                 referentially_transparent: true,
                 memory_access: false,
                 thread_safe: true,
-                available_targets: vec!["x86_64_aesni".to_string()],
+                available_targets: vec!["x86_64_aesni".to_string(), "aarch64_crypto".to_string()],
+            },
+        });
+
+        // 暗号化イントリンシック - AES復号
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AESDecrypt,
+            name: "swiftlight_aes_decrypt".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Integer(8, false)), 16), // 暗号文ブロック
+                Type::Vector(Box::new(Type::Integer(8, false)), 16), // 暗号化キー
+            ],
+            return_type: Type::Vector(Box::new(Type::Integer(8, false)), 16), // 平文
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_aesni".to_string(), "aarch64_crypto".to_string()],
+            },
+        });
+
+        // 暗号化イントリンシック - SHA256ハッシュ
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::SHA256,
+            name: "swiftlight_sha256".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(8, false)), false), // データポインタ
+                Type::Integer(64, false),                               // データ長
+            ],
+            return_type: Type::Vector(Box::new(Type::Integer(8, false)), 32), // 256ビットハッシュ
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["x86_64_sha".to_string(), "aarch64_crypto".to_string(), "all".to_string()],
+            },
+        });
+
+        // SIMD操作イントリンシック - ベクトル加算
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::VectorAdd,
+            name: "swiftlight_vector_add".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル1
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル2
+            ],
+            return_type: Type::Vector(Box::new(Type::Float(32)), 4), // 結果ベクトル
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_avx".to_string(), "aarch64_neon".to_string(), "all".to_string()],
+            },
+        });
+
+        // SIMD操作イントリンシック - ベクトル乗算
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::VectorMul,
+            name: "swiftlight_vector_mul".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル1
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル2
+            ],
+            return_type: Type::Vector(Box::new(Type::Float(32)), 4), // 結果ベクトル
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_avx".to_string(), "aarch64_neon".to_string(), "all".to_string()],
+            },
+        });
+
+        // SIMD操作イントリンシック - ベクトル内積
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::VectorDot,
+            name: "swiftlight_vector_dot".to_string(),
+            parameter_types: vec![
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル1
+                Type::Vector(Box::new(Type::Float(32)), 4), // ベクトル2
+            ],
+            return_type: Type::Float(32), // スカラー結果
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_avx".to_string(), "aarch64_neon".to_string(), "all".to_string()],
+            },
+        });
+
+        // 並行処理イントリンシック - アトミック比較交換
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AtomicCmpXchg,
+            name: "swiftlight_atomic_cmpxchg".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(64, false)), false), // ポインタ
+                Type::Integer(64, false),                               // 期待値
+                Type::Integer(64, false),                               // 新値
+            ],
+            return_type: Type::Tuple(vec![
+                Type::Integer(64, false),  // 前の値
+                Type::Boolean,             // 成功したかどうか
+            ]),
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 並行処理イントリンシック - アトミック加算
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::AtomicAdd,
+            name: "swiftlight_atomic_add".to_string(),
+            parameter_types: vec![
+                Type::Pointer(Box::new(Type::Integer(64, false)), false), // ポインタ
+                Type::Integer(64, false),                               // 加算値
+            ],
+            return_type: Type::Integer(64, false), // 前の値
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 並行処理イントリンシック - メモリバリア
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::MemoryBarrier,
+            name: "swiftlight_memory_barrier".to_string(),
+            parameter_types: vec![
+                Type::Integer(32, false), // バリアタイプ (0=全バリア, 1=読み込みバリア, 2=書き込みバリア)
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
             },
         });
 
@@ -521,121 +767,250 @@ impl IntrinsicManager {
                 available_targets: vec!["all".to_string()],
             },
         });
-    }
-    /// イントリンシック関数を登録
-    pub fn register(&mut self, intrinsic: IntrinsicFunction) {
-        self.intrinsics.insert(intrinsic.kind, intrinsic);
-    }
-    
-    /// イントリンシック関数を検索
-    pub fn lookup(&self, kind: IntrinsicKind) -> Option<&IntrinsicFunction> {
-        self.intrinsics.get(&kind)
-    }
-    
-    /// イントリンシック関数をIR関数に変換
-    pub fn to_ir_function(&self, kind: IntrinsicKind) -> Result<Function> {
-        let intrinsic = self.lookup(kind)
-            .ok_or_else(|| format!("イントリンシック関数が見つかりません: {:?}", kind))?;
-            
-        // パラメータの作成
-        let mut parameters = Vec::new();
-        for (i, param_type) in intrinsic.parameter_types.iter().enumerate() {
-            parameters.push(Parameter {
-                name: format!("param{}", i),
-                ty: param_type.clone(),
-                id: i,
-                location: SourceLocation::builtin(),
-            });
-        }
-        
-        // 関数IDの生成
-        let function_id = generate_unique_id();
-        // イントリンシック関数の作成
-        Ok(Function {
-            id: function_id,
-            name: Identifier::from(intrinsic.name.clone()),  // StringからIdentifierへの変換
-            parameters,
-            return_type: Some(intrinsic.return_type.clone()), // Optionでラップ
-            basic_blocks: Vec::new(),
-            body: Statement::Intrinsic(intrinsic.kind), // Statement型でラップ
-            type_parameters: Vec::new(),
-            visibility: Visibility::Public,
-            is_async: false,
-            is_extern: true,
-            location: SourceLocation::builtin(),
-            attributes: vec![FunctionAttribute::Intrinsic(intrinsic.kind)],
-            is_declaration: true,  // イントリンシックは宣言のみ
-            is_intrinsic: true,    // イントリンシック関数
-        })
-    }
-    /// イントリンシック関数の呼び出しを生成
-    pub fn generate_call(&self, kind: IntrinsicKind, arguments: Vec<Value>) -> Result<Value> {
-        let intrinsic = self.lookup(kind)
-            .ok_or_else(|| format!("イントリンシック関数が見つかりません: {:?}", kind))?;
-            
-        // 引数の数と型をチェック
-        if arguments.len() != intrinsic.parameter_types.len() {
-            return Err(CompilerError::new(
-                format!("イントリンシック関数 {:?} の引数の数が一致しません (期待値: {}, 実際: {})", 
-                    kind, 
-                    intrinsic.parameter_types.len(), 
-                    arguments.len()
-                )
-            ));
-        }
-        
-        // 引数の型を厳密にチェック
-        for (i, (arg, param_type)) in arguments.iter().zip(&intrinsic.parameter_types).enumerate() {
-            if &arg.ty != param_type {
-                return Err(CompilerError::new(
-                    format!("イントリンシック関数 {:?} の{}番目の引数の型が不一致\n期待: {:?}\n実際: {:?}",
-                        kind,
-                        i + 1,
-                        param_type,
-                        arg.ty
-                    )
-                ));
-            }
-        }
-        
-        // 呼び出しを生成
-        let call_id = generate_unique_id();
-        let function_ref = Value::FunctionRef(intrinsic.name.clone(), intrinsic.return_type.clone());
-        
-        // 呼び出し命令を生成
-        let call_instr = Instruction::Call {
-            function: Box::new(function_ref),
-            arguments: arguments.clone(),
-            result_type: intrinsic.return_type.clone(),
-            is_tail_call: false,
-            calling_convention: CallingConvention::C,
-        };
-        
-        // 結果値を生成
-        Ok(Value::InstructionResult(call_id, intrinsic.return_type.clone(), Box::new(call_instr)))
-    }
-    
-    /// イントリンシック関数が特定のターゲットで利用可能かチェック
-    pub fn is_available_for_target(&self, kind: IntrinsicKind, target: &str) -> bool {
-        if let Some(intrinsic) = self.lookup(kind) {
-            intrinsic.attributes.available_targets.iter().any(|t| t == "all" || t == target)
-        } else {
-            false
-        }
-    }
-    
-    /// すべてのイントリンシック関数をIRモジュールに追加
-    pub fn add_all_to_module(&self, module: &mut crate::middleend::ir::Module) -> Result<()> {
-        for (kind, _) in &self.intrinsics {
-            let function = self.to_ir_function(*kind)?;
-            module.functions.push(function);
-        }
-        Ok(())
-    }
-}
 
-// 特定のイントリンシック関数の実装
-// 実際の実装ではこのようなモジュールが多数定義される
+        // 時間認識イントリンシック - 高精度タイマー
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::HighPrecisionTimer,
+            name: "swiftlight_high_precision_timer".to_string(),
+            parameter_types: vec![],
+            return_type: Type::Integer(64, false), // ナノ秒単位のタイムスタンプ
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: false, // 時間に依存
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 時間認識イントリンシック - スリープ
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::Sleep,
+            name: "swiftlight_sleep".to_string(),
+            parameter_types: vec![
+                Type::Integer(64, false), // ナノ秒単位のスリープ時間
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 時間認識イントリンシック - デッドライン付き実行
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::ExecuteWithDeadline,
+            name: "swiftlight_execute_with_deadline".to_string(),
+            parameter_types: vec![
+                Type::Function(
+                    vec![],
+                    Box::new(Type::Any),
+                    vec![],
+                ), // 実行する関数
+                Type::Integer(64, false), // ナノ秒単位のデッドライン
+            ],
+            return_type: Type::Tuple(vec![
+                Type::Any,       // 関数の戻り値
+                Type::Boolean,   // デッドライン内に完了したか
+            ]),
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // ガベージコレクション制御イントリンシック
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::GCControl,
+            name: "swiftlight_gc_control".to_string(),
+            parameter_types: vec![
+                Type::Integer(32, false), // 操作タイプ (0=GC実行, 1=GC一時停止, 2=GC再開, 3=統計取得)
+            ],
+            return_type: Type::Integer(64, false), // 操作結果または統計情報
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: false, // GC操作は通常スレッドセーフではない
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // ハードウェア特化イントリンシック - RDTSC (タイムスタンプカウンタ読み取り)
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::RDTSC,
+            name: "swiftlight_rdtsc".to_string(),
+            parameter_types: vec![],
+            return_type: Type::Integer(64, false), // 64ビットカウンタ値
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: false, // 実行時間に依存
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64".to_string()],
+            },
+        });
+
+        // ハードウェア特化イントリンシック - RDRAND (ハードウェア乱数生成)
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::RDRAND,
+            name: "swiftlight_rdrand".to_string(),
+            parameter_types: vec![],
+            return_type: Type::Tuple(vec![
+                Type::Integer(64, false), // 乱数値
+                Type::Boolean,            // 成功フラグ
+            ]),
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: false,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["x86_64_rdrand".to_string()],
+            },
+        });
+
+        // 依存型サポートイントリンシック - 型レベル計算
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::TypeLevelComputation,
+            name: "swiftlight_type_level_compute".to_string(),
+            parameter_types: vec![
+                Type::TypeValue,                  // 計算する型
+                Type::Integer(32, false),         // 操作タイプ
+            ],
+            return_type: Type::TypeValue,         // 結果の型
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 依存型サポートイントリンシック - 実行時型情報
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::RuntimeTypeInfo,
+            name: "swiftlight_runtime_type_info".to_string(),
+            parameter_types: vec![
+                Type::Any,                        // 型情報を取得する値
+            ],
+            return_type: Type::TypeDescriptor,    // 型記述子
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // メタプログラミングイントリンシック - AST操作
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::ASTManipulation,
+            name: "swiftlight_ast_manipulate".to_string(),
+            parameter_types: vec![
+                Type::ASTNode,                    // 操作対象のASTノード
+                Type::Integer(32, false),         // 操作タイプ
+                Type::Any,                        // 操作パラメータ
+            ],
+            return_type: Type::ASTNode,           // 結果のASTノード
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // メタプログラミングイントリンシック - コンパイル時評価
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::CompileTimeEval,
+            name: "swiftlight_compile_time_eval".to_string(),
+            parameter_types: vec![
+                Type::Function(
+                    vec![],
+                    Box::new(Type::Any),
+                    vec![],
+                ), // 評価する関数
+            ],
+            return_type: Type::Any,               // 評価結果
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 投機的実行イントリンシック - 分岐予測ヒント
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::BranchPredictionHint,
+            name: "swiftlight_branch_prediction_hint".to_string(),
+            parameter_types: vec![
+                Type::Boolean,                    // 条件
+                Type::Integer(32, false),         // ヒントタイプ (0=likely, 1=unlikely)
+            ],
+            return_type: Type::Boolean,           // 元の条件をそのまま返す
+            attributes: IntrinsicAttributes {
+                readonly: true,
+                referentially_transparent: true,
+                memory_access: false,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 投機的実行イントリンシック - 投機的実行
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::SpeculativeExecution,
+            name: "swiftlight_speculative_execute".to_string(),
+            parameter_types: vec![
+                Type::Function(
+                    vec![],
+                    Box::new(Type::Any),
+                    vec![],
+                ), // 投機的に実行する関数
+                Type::Function(
+                    vec![],
+                    Box::new(Type::Any),
+                    vec![],
+                ), // フォールバック関数
+            ],
+            return_type: Type::Any,               // 実行結果
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
+
+        // 自己適応型最適化イントリンシック - プロファイル情報収集
+        self.register(IntrinsicFunction {
+            kind: IntrinsicKind::ProfileInfoCollect,
+            name: "swiftlight_profile_info_collect".to_string(),
+            parameter_types: vec![
+                Type::Integer(64, false),         // プロファイルポイントID
+                Type::Any,                        // プロファイル情報
+            ],
+            return_type: Type::Void,
+            attributes: IntrinsicAttributes {
+                readonly: false,
+                referentially_transparent: false,
+                memory_access: true,
+                thread_safe: true,
+                available_targets: vec!["all".to_string()],
+            },
+        });
 
 /// メモリ操作イントリンシック
 pub mod memory {

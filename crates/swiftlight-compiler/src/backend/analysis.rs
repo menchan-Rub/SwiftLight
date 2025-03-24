@@ -4951,12 +4951,198 @@ impl ConstantPropagationAnalysis {
     }
     
     /// 特定のモジュール内の変数の定数値を取得
+    /// 
+    /// モジュール間の変数参照を解決し、変数の定数値を取得します。
+    /// 変数が別のモジュールからインポートされた場合や、モジュール階層を横断する場合も
+    /// 正確に追跡し、最終的な定数値を返します。
+    ///
+    /// # 引数
+    /// * `var_id` - 変数ID
+    /// * `module_id` - 変数が存在するモジュールID
+    ///
+    /// # 戻り値
+    /// * `Result<Option<&ConstantValue>>` - 変数の定数値（存在する場合）
     fn get_variable_constant_in_module(&self, var_id: &VariableId, module_id: ModuleId) -> Result<Option<&ConstantValue>> {
-        // モジュール内の変数の定数値を取得するロジック
-        // 実際の実装では、モジュール間の変数参照を解決する必要がある
-        Ok(self.variable_constants.get(var_id))
+        // まず直接変数テーブルを確認
+        if let Some(constant) = self.variable_constants.get(var_id) {
+            return Ok(Some(constant));
+        }
+        
+        // 変数の定義元を追跡
+        let mut visited_modules = HashSet::new();
+        visited_modules.insert(module_id);
+        
+        // 変数の参照解決を再帰的に行う
+        self.resolve_variable_reference(var_id, module_id, &mut visited_modules)
     }
     
+    /// 変数参照を再帰的に解決し、最終的な定数値を取得
+    fn resolve_variable_reference(&self, var_id: &VariableId, current_module: ModuleId, 
+                                 visited: &mut HashSet<ModuleId>) -> Result<Option<&ConstantValue>> {
+        // 変数がインポートされたものかチェック
+        if let Some(import_info) = self.module_imports.get(&(current_module, *var_id)) {
+            // 循環参照の検出
+            if visited.contains(&import_info.source_module) {
+                return Err(Error::new(
+                    ErrorKind::CircularReference,
+                    format!("変数 {:?} の解決中に循環参照を検出しました", var_id)
+                ));
+            }
+            
+            // 訪問済みモジュールを記録
+            visited.insert(import_info.source_module);
+            
+            // 元のモジュールで変数を解決
+            return self.resolve_variable_reference(&import_info.source_var, import_info.source_module, visited);
+        }
+        
+        // 変数がエイリアスかチェック
+        if let Some(alias_info) = self.variable_aliases.get(&(current_module, *var_id)) {
+            return self.resolve_variable_reference(&alias_info.target_var, current_module, visited);
+        }
+        
+        // 変数が定数テーブルに存在するか最終チェック
+        if let Some(constant) = self.variable_constants.get(var_id) {
+            return Ok(Some(constant));
+        }
+        
+        // 変数が部分的に評価された定数かチェック
+        if let Some(partial_constant) = self.partial_constants.get(&(current_module, *var_id)) {
+            // 部分的に評価された定数の場合、依存関係を解決
+            let mut all_deps_constant = true;
+            let mut dep_values = HashMap::new();
+            
+            for (dep_var, dep_module) in &partial_constant.dependencies {
+                if let Some(dep_value) = self.resolve_variable_reference(dep_var, *dep_module, visited)? {
+                    dep_values.insert(*dep_var, dep_value.clone());
+                } else {
+                    all_deps_constant = false;
+                    break;
+                }
+            }
+            
+            if all_deps_constant {
+                // 全ての依存関係が解決できた場合、部分評価を完了
+                let evaluator = PartialConstantEvaluator::new(&dep_values);
+                
+                // 評価コンテキストを作成して最適化レベルを設定
+                let mut eval_context = EvaluationContext::new();
+                eval_context.set_optimization_level(OptimizationLevel::Maximum);
+                eval_context.enable_feature(EvaluationFeature::AdvancedPatternMatching);
+                eval_context.enable_feature(EvaluationFeature::RecursionLimit(100));
+                
+                // 式の複雑さを分析
+                let complexity = ExpressionComplexityAnalyzer::analyze(&partial_constant.expression);
+                
+                // 複雑さに応じて評価戦略を選択
+                let evaluation_strategy = if complexity.is_high() {
+                    // 複雑な式は段階的評価を使用
+                    EvaluationStrategy::Incremental {
+                        max_steps: 1000,
+                        timeout_ms: 500,
+                    }
+                } else {
+                    // 単純な式は直接評価
+                    EvaluationStrategy::Direct
+                };
+                
+                eval_context.set_strategy(evaluation_strategy);
+                
+                // 式を評価
+                match evaluator.evaluate_with_context(&partial_constant.expression, &eval_context) {
+                    Ok(Some(final_value)) => {
+                        // 評価に成功した場合、結果を検証
+                        if let Err(validation_error) = TypeValidator::validate_constant_value(&final_value, &partial_constant.expected_type) {
+                            // 型検証エラーをログに記録
+                            log::warn!("定数評価の結果が期待される型と一致しません: {}", validation_error);
+                            // フォールバック: キャッシュされた値を使用
+                            return Ok(Some(&partial_constant.cached_value));
+                        }
+                        
+                        // 最適化: 結果が前回のキャッシュと同じ場合はキャッシュを再利用
+                        if final_value.equals(&partial_constant.cached_value) {
+                            return Ok(Some(&partial_constant.cached_value));
+                        }
+                        
+                        // 内部可変性を使用して評価結果をキャッシュ
+                        let constants_cell = self.variable_constants_cell.borrow_mut();
+                        let mut constants = constants_cell.borrow_mut();
+                        
+                        // 評価結果の最適化を実行
+                        let optimized_value = ConstantOptimizer::optimize(&final_value);
+                        
+                        // メモリ使用量を分析
+                        let memory_footprint = MemoryAnalyzer::estimate_size(&optimized_value);
+                        
+                        // メモリ使用量が閾値を超える場合は圧縮版を保存
+                        let value_to_store = if memory_footprint > self.memory_threshold {
+                            log::debug!("大きな定数値 ({} バイト) を圧縮します: {:?}", memory_footprint, var_id);
+                            ConstantCompressor::compress(&optimized_value)
+                        } else {
+                            optimized_value
+                        };
+                        
+                        // 評価結果をグローバルキャッシュに保存
+                        constants.insert(*var_id, value_to_store.clone());
+                        
+                        // モジュール固有のキャッシュも更新
+                        let module_cache_key = (current_module, *var_id);
+                        self.module_constant_cache.insert(module_cache_key, value_to_store.clone());
+                        
+                        // 評価統計を更新
+                        self.evaluation_stats.record_successful_evaluation(
+                            current_module,
+                            *var_id,
+                            EvaluationMetrics {
+                                complexity: complexity,
+                                evaluation_time_ns: eval_context.get_elapsed_time(),
+                                result_size: memory_footprint,
+                                optimization_gain: eval_context.get_optimization_gain(),
+                            }
+                        );
+                        
+                        // 依存関係グラフを更新
+                        for dep in &partial_constant.dependencies {
+                            self.constant_dependency_graph.add_dependency(*var_id, dep.0);
+                        }
+                        
+                        // 評価結果を返す
+                        return Ok(constants.get(var_id));
+                    },
+                    Ok(None) => {
+                        // 評価できなかった場合はキャッシュされた値を使用
+                        log::debug!("変数 {:?} の部分評価が完了できませんでした。キャッシュされた値を使用します。", var_id);
+                        return Ok(Some(&partial_constant.cached_value));
+                    },
+                    Err(eval_error) => {
+                        // 評価エラーが発生した場合
+                        log::error!("変数 {:?} の評価中にエラーが発生しました: {}", var_id, eval_error);
+                        
+                        // エラーの種類に応じた処理
+                        match eval_error.kind() {
+                            ErrorKind::Timeout => {
+                                // タイムアウトの場合はキャッシュされた値を使用
+                                log::warn!("変数 {:?} の評価がタイムアウトしました。キャッシュされた値を使用します。", var_id);
+                                return Ok(Some(&partial_constant.cached_value));
+                            },
+                            ErrorKind::RecursionLimitExceeded => {
+                                // 再帰制限超過の場合はキャッシュされた値を使用
+                                log::warn!("変数 {:?} の評価が再帰制限を超えました。キャッシュされた値を使用します。", var_id);
+                                return Ok(Some(&partial_constant.cached_value));
+                            },
+                            _ => {
+                                // その他のエラーは上位に伝播
+                                return Err(eval_error);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 変数が定数でない場合
+        Ok(None)
+    }
     /// モジュールが定数かどうかを判定（全てのエクスポートが定数）
     fn is_module_constant(&self, module_id: ModuleId, module: &Module) -> Result<bool> {
         let exports = module.get_module_exports(module_id)?;

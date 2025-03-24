@@ -1,0 +1,9 @@
+[package]
+name = "gui_sample"
+version = "0.1.0"
+edition = "2021"
+authors = ["SwiftLight Team"]
+description = "GUIサンプルアプリケーション for SwiftLight"
+
+[dependencies]
+swiftlight-stdlib = { path = "../../crates/swiftlight-stdlib" } 

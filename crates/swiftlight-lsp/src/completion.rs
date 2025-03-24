@@ -15,6 +15,7 @@ use swiftlight_compiler::{
     frontend::{
         lexer::{tokenize, Token},
         parser,
+        parser::context_parser::{ContextParser, CompletionContext, CompletionContextKind},
         source_map::SourceMap,
     },
     frontend::semantic::{
@@ -59,127 +60,96 @@ pub async fn handle_completion(
         .and_then(|name| name.to_str())
         .unwrap_or("unknown.swl");
     
-    // 現在の位置のコンテキストを解析
-    let completion_context = analyze_completion_context(&content, position)?;
+    // 位置をバイトオフセットに変換
+    let offset = position_to_offset(&content, position)?;
+    
+    // コンテキスト認識型パーサーを使用して現在の位置のコンテキストを解析
+    let mut context_parser = ContextParser::new(&content, offset);
+    let completion_context = context_parser.analyze_context()?;
     
     // コンテキストに基づいて補完候補を生成
-    let completion_items = match completion_context {
-        CompletionContext::Empty => {
-            // 空の状態では、キーワードや基本的な構文要素を提案
+    let completion_items = match completion_context.kind {
+        CompletionContextKind::Empty => {
+            // 空の状態では、キーワードやトップレベル宣言を提案
             get_keyword_completions()
         },
-        CompletionContext::AfterDot(expr) => {
+        CompletionContextKind::TopLevel => {
+            // トップレベルではキーワードや宣言を提案
+            get_keyword_completions()
+        },
+        CompletionContextKind::MemberAccess { expr, inferred_type } => {
             // ドット演算子の後では、メンバーアクセスを提案
-            get_member_completions(&expr, &content, file_name)
+            get_member_completions(&expr, inferred_type.as_deref(), &content, file_name)
         },
-        CompletionContext::AfterDoubleColon(typename) => {
+        CompletionContextKind::StaticAccess { type_name } => {
             // 二重コロンの後では、静的メンバーやEnum値を提案
-            get_static_completions(&typename, &content, file_name)
+            get_static_completions(&type_name, &content, file_name)
         },
-        CompletionContext::TypeAnnotation => {
+        CompletionContextKind::TypeAnnotation { current_input, .. } => {
             // 型アノテーションのコンテキストでは、型名を提案
-            get_type_completions(&content, file_name)
+            get_type_completions(&content, file_name, current_input.as_deref())
         },
-        CompletionContext::Import => {
+        CompletionContextKind::Import { path_prefix } => {
             // importステートメントでは、モジュール名を提案
             get_module_completions(&state)
         },
-        CompletionContext::Normal => {
+        CompletionContextKind::FunctionArgument { function_name, arg_index } => {
+            // 関数引数では、適切な型の値や変数を提案
+            get_function_argument_completions(&function_name, arg_index, &content)
+        },
+        CompletionContextKind::BlockStatement { block_kind, local_variables } => {
+            // ブロック内のコンテキストに応じた候補を提案
+            get_block_statement_completions(&block_kind, &local_variables, &content)
+        },
+        CompletionContextKind::Normal { visible_locals, current_input } => {
             // 通常のコンテキストでは、ローカル変数、関数、型などを提案
-            let mut completions = get_local_completions(&content, position, file_name);
+            let mut completions = get_local_completions(&visible_locals, current_input.as_deref());
             completions.extend(get_keyword_completions());
             completions
         },
+        _ => {
+            // その他のコンテキスト
+            get_keyword_completions()
+        }
     };
     
     Ok(Some(CompletionResponse::Array(completion_items)))
 }
 
-/// 補完のコンテキスト
-enum CompletionContext {
-    /// 空のドキュメントまたは行の先頭
-    Empty,
-    /// ドット演算子の後（メンバーアクセス）
-    AfterDot(String),
-    /// 二重コロンの後（静的メンバーアクセス）
-    AfterDoubleColon(String),
-    /// 型アノテーションのコンテキスト
-    TypeAnnotation,
-    /// インポートステートメント
-    Import,
-    /// 通常のコンテキスト
-    Normal,
-}
-
-/// 補完コンテキストを解析
-fn analyze_completion_context(content: &str, position: Position) -> Result<CompletionContext> {
+/// 位置をバイトオフセットに変換
+fn position_to_offset(text: &str, position: Position) -> Result<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    
     let line_idx = position.line as usize;
-    let lines: Vec<&str> = content.lines().collect();
-    
     if line_idx >= lines.len() {
-        return Ok(CompletionContext::Empty);
+        // 指定された行がテキストの範囲外
+        return Ok(text.len());
     }
     
-    let line = lines[line_idx];
+    // 前の行までのバイト数を計算
+    let mut offset = 0;
+    for i in 0..line_idx {
+        offset += lines[i].len() + 1; // +1 for the newline character
+    }
+    
+    // 現在の行の列位置までのバイト数を追加
     let char_idx = position.character as usize;
+    let line = lines[line_idx];
     
-    if char_idx == 0 || line.is_empty() {
-        return Ok(CompletionContext::Empty);
-    }
+    // 列位置が行の長さを超える場合は行の末尾に設定
+    let char_idx = char_idx.min(line.chars().count());
     
-    let line_prefix = &line[..char_idx.min(line.len())];
-    
-    // ドット演算子の後かチェック
-    if let Some(prefix) = line_prefix.strip_suffix('.') {
-        // 前の部分から式を抽出
-        let expr = extract_expression(prefix);
-        return Ok(CompletionContext::AfterDot(expr));
-    }
-    
-    // 二重コロンの後かチェック
-    if let Some(prefix) = line_prefix.strip_suffix("::") {
-        // 前の部分から型名を抽出
-        let typename = extract_typename(prefix);
-        return Ok(CompletionContext::AfterDoubleColon(typename));
-    }
-    
-    // 型アノテーションのコンテキストかチェック
-    if line_prefix.contains(':') && !line_prefix.contains('=') {
-        return Ok(CompletionContext::TypeAnnotation);
-    }
-    
-    // インポートステートメントかチェック
-    if line_prefix.trim_start().starts_with("import ") || 
-       line_prefix.trim_start().starts_with("use ") {
-        return Ok(CompletionContext::Import);
-    }
-    
-    // それ以外は通常のコンテキスト
-    Ok(CompletionContext::Normal)
-}
-
-/// 式を抽出（単純な実装）
-fn extract_expression(text: &str) -> String {
-    // 最後の識別子を取得（実際の実装ではASTを使うべき）
-    let mut result = String::new();
-    let mut chars = text.chars().rev();
-    
-    // 最初の非英数字で終了
-    while let Some(c) = chars.next() {
-        if c.is_alphanumeric() || c == '_' {
-            result.push(c);
-        } else {
-            break;
+    // UTF-8文字列のバイト位置を計算
+    let mut char_count = 0;
+    for (idx, _) in line.char_indices() {
+        if char_count >= char_idx {
+            return Ok(offset + idx);
         }
+        char_count += 1;
     }
     
-    // 逆順にしたので戻す
-    result.chars().rev().collect()
-}
-
-/// 型名を抽出（単純な実装）
-fn extract_typename(text: &str) -> String {
-    extract_expression(text) // 簡易実装では同じロジック
+    // 行の末尾
+    Ok(offset + line.len())
 }
 
 /// キーワード補完の取得
@@ -234,7 +204,7 @@ fn get_keyword_completions() -> Vec<CompletionItem> {
 }
 
 /// メンバー補完の取得
-fn get_member_completions(expr: &str, content: &str, file_name: &str) -> Vec<CompletionItem> {
+fn get_member_completions(expr: &str, inferred_type: Option<&str>, content: &str, file_name: &str) -> Vec<CompletionItem> {
     // 実装では型推論を使って式の型を特定し、そのメンバーを提案する
     // ここでは簡易版
     match expr {
@@ -287,7 +257,7 @@ fn get_static_completions(typename: &str, content: &str, file_name: &str) -> Vec
 }
 
 /// 型名補完の取得
-fn get_type_completions(content: &str, file_name: &str) -> Vec<CompletionItem> {
+fn get_type_completions(content: &str, file_name: &str, current_input: Option<&str>) -> Vec<CompletionItem> {
     // 基本型とよく使われる型の補完
     let types = [
         ("Int", "整数型"),
@@ -370,16 +340,16 @@ fn get_module_completions(state: &Arc<Mutex<ServerState>>) -> Vec<CompletionItem
 }
 
 /// ローカル補完の取得
-fn get_local_completions(content: &str, position: Position, file_name: &str) -> Vec<CompletionItem> {
+fn get_local_completions(visible_locals: &str, current_input: Option<&str>) -> Vec<CompletionItem> {
     // 現在のスコープでのローカル変数や関数を解析して提供
     // 実際の実装ではシンボルテーブルを使用すべき
     
     // 簡易実装: 行から変数宣言を検出
-    let lines: Vec<&str> = content.lines().collect();
+    let lines: Vec<&str> = visible_locals.lines().collect();
     let mut completions = Vec::new();
     
     for (i, line) in lines.iter().enumerate() {
-        if i as u32 >= position.line {
+        if i as u32 >= current_input.map(|i| i.line).unwrap_or(0) {
             break;
         }
         

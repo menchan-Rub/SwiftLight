@@ -343,35 +343,154 @@ impl ARM64Optimizer {
         while let Some(node) = stack.pop() {
             // 隣接ノードが使用中の色を確認
             let mut used_registers = HashSet::new();
+            let mut neighbor_weights = HashMap::new();
             
             if let Some(neighbors) = interference_graph.get(&node) {
                 for neighbor in neighbors {
                     if let Some(reg) = result.get(neighbor) {
                         used_registers.insert(reg.clone());
+                        
+                        // 隣接ノードの重みを計算（レジスタ割り当て優先度の計算に使用）
+                        let weight = self.calculate_node_weight(*neighbor);
+                        neighbor_weights.insert(reg.clone(), weight);
                     }
                 }
             }
             
-            // ノードが整数型か浮動小数点型かに応じて適切なレジスタセットを選択
-            let register_pool = if self.is_float_var(node) {
-                float_registers
+            // 変数の特性を分析
+            let var_properties = self.analyze_variable_properties(node);
+            let is_float = self.is_float_var(node);
+            let is_vector = self.is_vector_var(node);
+            let is_hot_var = self.is_hot_variable(node);
+            let var_lifetime = self.calculate_variable_lifetime(node);
+            let var_access_pattern = self.analyze_access_pattern(node);
+            
+            // レジスタプールの選択とカスタマイズ
+            let mut register_pool = if is_vector {
+                // ベクトル変数にはSIMDレジスタを割り当て
+                self.get_vector_registers()
+            } else if is_float {
+                float_registers.to_vec()
             } else {
-                general_registers
+                general_registers.to_vec()
             };
             
-            // 使用されていないレジスタを探す
-            let assigned_register = register_pool.iter()
-                .find(|reg| !used_registers.contains(*reg) && !reserved_registers.contains(*reg))
-                .cloned();
+            // 変数の使用パターンに基づいてレジスタの優先順位を調整
+            self.optimize_register_order(&mut register_pool, &var_properties, is_hot_var, var_access_pattern);
             
-            if let Some(reg) = assigned_register {
-                result.insert(node, reg.to_string());
-            } else {
-                // レジスタ割り当てに失敗した場合はスピル処理
-                // （実際はスピル処理として変数をスタックにオフロードする）
-                result.insert(node, format!("spill_{}", node));
+            // 呼び出し規約に基づく制約を適用
+            let calling_convention_constraints = self.apply_calling_convention_constraints(node);
+            
+            // ハードウェア特性に基づく最適化
+            let hw_constraints = self.apply_hardware_specific_constraints(node, is_float, is_vector);
+            
+            // 使用されていないレジスタを探す（最適化された優先順位に基づく）
+            let mut best_register = None;
+            let mut best_score = f64::NEG_INFINITY;
+            
+            for reg in register_pool.iter() {
+                if !used_registers.contains(*reg) && !reserved_registers.contains(*reg) &&
+                   calling_convention_constraints.allows_register(*reg) &&
+                   hw_constraints.allows_register(*reg) {
+                    
+                    // レジスタ割り当てスコアを計算
+                    let score = self.calculate_register_assignment_score(
+                        *reg, 
+                        node, 
+                        &var_properties, 
+                        var_lifetime,
+                        is_hot_var,
+                        &neighbor_weights
+                    );
+                    
+                    if score > best_score {
+                        best_score = score;
+                        best_register = Some(*reg);
+                    }
+                }
             }
+            
+            // コンテキスト認識型スピル決定
+            if best_register.is_none() {
+                // スピル候補を評価
+                let spill_decision = self.make_intelligent_spill_decision(
+                    node, 
+                    &result, 
+                    interference_graph,
+                    is_hot_var,
+                    var_lifetime,
+                    var_access_pattern
+                );
+                
+                match spill_decision {
+                    SpillDecision::SpillCurrent => {
+                        // 現在の変数をスピル
+                        let spill_location = self.allocate_optimal_spill_location(node, is_float, is_vector);
+                        result.insert(node, format!("spill_{}", spill_location));
+                        self.register_spill_code(node, spill_location);
+                    },
+                    SpillDecision::SpillOther(other_node) => {
+                        // 他の変数をスピルして、そのレジスタを再利用
+                        if let Some(other_reg) = result.get(&other_node).cloned() {
+                            if !other_reg.starts_with("spill_") {
+                                let spill_location = self.allocate_optimal_spill_location(other_node, 
+                                                                                         self.is_float_var(other_node), 
+                                                                                         self.is_vector_var(other_node));
+                                result.insert(other_node, format!("spill_{}", spill_location));
+                                self.register_spill_code(other_node, spill_location);
+                                result.insert(node, other_reg);
+                            } else {
+                                // 既にスピルされている場合は現在の変数もスピル
+                                let spill_location = self.allocate_optimal_spill_location(node, is_float, is_vector);
+                                result.insert(node, format!("spill_{}", spill_location));
+                                self.register_spill_code(node, spill_location);
+                            }
+                        }
+                    },
+                    SpillDecision::Rematerialize(remat_node) => {
+                        // 再具体化が可能な変数を処理
+                        if let Some(remat_reg) = result.get(&remat_node).cloned() {
+                            if !remat_reg.starts_with("spill_") {
+                                self.register_rematerialization_code(remat_node);
+                                result.insert(node, remat_reg);
+                                result.insert(remat_node, format!("remat_{}", remat_node));
+                            } else {
+                                // 既にスピルされている場合は現在の変数もスピル
+                                let spill_location = self.allocate_optimal_spill_location(node, is_float, is_vector);
+                                result.insert(node, format!("spill_{}", spill_location));
+                                self.register_spill_code(node, spill_location);
+                            }
+                        }
+                    },
+                    SpillDecision::SplitLiveRange(split_node, split_points) => {
+                        // ライブ範囲分割を適用
+                        self.register_live_range_split(split_node, split_points);
+                        // 分割後に現在のノードにレジスタを割り当て
+                        if let Some(freed_reg) = self.get_register_after_split(split_node) {
+                            result.insert(node, freed_reg);
+                        } else {
+                            // 分割が成功しなかった場合はスピル
+                            let spill_location = self.allocate_optimal_spill_location(node, is_float, is_vector);
+                            result.insert(node, format!("spill_{}", spill_location));
+                            self.register_spill_code(node, spill_location);
+                        }
+                    }
+                }
+            } else {
+                // 最適なレジスタを割り当て
+                let reg = best_register.unwrap();
+                result.insert(node, reg.to_string());
+                
+                // レジスタ割り当て後の最適化機会を記録
+                self.register_post_allocation_optimization_opportunities(node, reg);
+            }
+            
+            // レジスタ割り当て決定を記録（後の分析用）
+            self.record_allocation_decision(node, result.get(&node).unwrap().clone(), is_hot_var, var_lifetime);
         }
+        
+        // 最終的な割り当て結果に対して後処理最適化を適用
+        self.apply_post_allocation_optimizations(&mut result, interference_graph);
         
         Ok(result)
     }
@@ -994,56 +1113,92 @@ impl ARM64Optimizer {
     fn detect_loop_patterns(&self, block: &BasicBlock) -> Vec<LoopPattern> {
         let mut patterns = Vec::new();
         
-        // ループの基本パターン検出のためのシンプルな解析
-        // 実際の実装では制御フロー解析とループ検出アルゴリズムが必要
+        // 高度なループ検出アルゴリズムの実装
+        // 制御フロー解析とデータフロー解析を組み合わせて使用
         
-        // ここではシンプルな例として、連続したメモリアクセスパターンを持つ
-        // 命令シーケンスを検出する。
+        // ループ構造の識別
+        let loop_info = self.analyze_loop_structure(block);
         
-        let mut current_pattern = LoopPattern::default();
-        let mut in_pattern = false;
-        
-        for inst in &block.instructions {
-            match &inst.kind {
-                InstructionKind::Load { address, .. } | InstructionKind::Store { address, .. } => {
-                    // メモリアクセスが配列インデックス計算のパターンかチェック
-                    if self.is_array_access(address) {
-                        if !in_pattern {
-                            // 新しいパターンの開始
-                            current_pattern = LoopPattern {
-                                start_idx: 0, // 実際はブロック内の命令インデックス
-                                length: 1,
-                                stride: self.calculate_stride(address),
-                                element_size: self.get_element_size(inst),
-                                operation_type: self.determine_operation_type(inst),
-                            };
-                            in_pattern = true;
-                        } else {
-                            // 既存パターンの延長
-                            current_pattern.length += 1;
-                        }
-                    } else if in_pattern {
-                        // パターンの終了
-                        patterns.push(current_pattern.clone());
-                        in_pattern = false;
-                    }
-                },
-                _ => {
-                    // 他の命令はパターンを中断する可能性がある
-                    if in_pattern {
-                        // 特定の算術命令はパターンに含められるかチェック
-                        if self.is_vectorizable_operation(inst) {
-                            current_pattern.length += 1;
-                        } else {
-                            // パターンの終了
-                            patterns.push(current_pattern.clone());
-                            in_pattern = false;
-                        }
-                    }
-                }
+        // 各ループに対して詳細な分析を実行
+        for loop_data in &loop_info {
+            // ループ内のメモリアクセスパターンを分析
+            let memory_patterns = self.analyze_memory_access_patterns(block, loop_data);
+            
+            // ループ内の計算パターンを分析
+            let computation_patterns = self.analyze_computation_patterns(block, loop_data);
+            
+            // 依存関係分析
+            let dependency_info = self.analyze_dependencies(block, loop_data);
+            
+            // ベクトル化可能性の詳細評価
+            if self.is_vectorizable_loop(loop_data, &memory_patterns, &dependency_info) {
+                // ストライド計算
+                let stride = self.calculate_precise_stride(&memory_patterns);
+                
+                // 要素サイズとアライメント分析
+                let element_info = self.analyze_element_properties(&memory_patterns);
+                
+                // 最適なSIMD命令セットの選択（Neon vs SVE）
+                let simd_target = self.determine_optimal_simd_target(
+                    &memory_patterns, 
+                    &computation_patterns,
+                    element_info.size
+                );
+                
+                // ループの反復回数分析
+                let iteration_info = self.analyze_iteration_count(loop_data);
+                
+                // 残余ループ処理の必要性を評価
+                let needs_remainder = iteration_info.count % simd_target.vector_width != 0;
+                
+                // ベクトル化戦略の決定
+                let strategy = self.determine_vectorization_strategy(
+                    &memory_patterns,
+                    &computation_patterns,
+                    &dependency_info,
+                    simd_target,
+                    needs_remainder
+                );
+                
+                // ループパターン情報の構築
+                let pattern = LoopPattern {
+                    start_idx: loop_data.header_idx,
+                    length: loop_data.body_length,
+                    stride,
+                    element_size: element_info.size,
+                    operation_type: self.determine_dominant_operation(&computation_patterns),
+                    memory_access_pattern: memory_patterns,
+                    computation_pattern: computation_patterns,
+                    dependencies: dependency_info,
+                    vectorization_strategy: strategy,
+                    simd_target,
+                    iteration_info,
+                    alignment_info: element_info.alignment,
+                    data_layout: self.analyze_data_layout(&memory_patterns),
+                    reduction_operations: self.detect_reduction_operations(block, loop_data),
+                    conditional_execution: self.analyze_conditional_execution(block, loop_data),
+                    loop_carried_dependencies: self.analyze_loop_carried_dependencies(loop_data),
+                    prefetch_distance: self.calculate_optimal_prefetch_distance(&memory_patterns),
+                    unroll_factor: self.determine_optimal_unroll_factor(loop_data, &memory_patterns),
+                };
+                
+                patterns.push(pattern);
             }
         }
         
+        // 非ループコンテキストでのベクトル化可能なパターンも検出
+        let sequential_patterns = self.detect_sequential_simd_patterns(block);
+        patterns.extend(sequential_patterns);
+        
+        // 検出されたパターンの最適化機会を評価
+        self.rank_vectorization_opportunities(&mut patterns);
+        
+        // 競合するパターンの解決（重複や入れ子になったパターンの処理）
+        self.resolve_pattern_conflicts(&mut patterns);
+        
+        // 最終的なベクトル化パターンのリストを返す
+        patterns
+    }
         // 最後のパターンを追加
         if in_pattern {
             patterns.push(current_pattern);
@@ -1054,19 +1209,81 @@ impl ARM64Optimizer {
     
     /// アドレス計算が配列アクセスパターンかチェック
     fn is_array_access(&self, address: &ValueId) -> bool {
-        // 簡易的な実装：実際は命令列を調査し、ベースアドレス+インデックス×要素サイズの
-        // パターンかどうかを判断する必要がある
-        match address {
-            ValueId::Variable(_) => true, // 変数アドレスを単純化のためtrueとする
-            _ => false,
+        // 命令列を解析して配列アクセスパターンを検出
+        if let Some(def_inst) = self.get_defining_instruction(address) {
+            match &def_inst.kind {
+                // ベースアドレス + インデックス×要素サイズ の形式を検出
+                InstructionKind::BinaryOp { op: BinaryOperator::Add, lhs, rhs } => {
+                    // 左辺がベースアドレス、右辺がインデックス計算の場合
+                    if self.is_base_address(lhs) && self.is_index_calculation(rhs) {
+                        return true;
+                    }
+                    // または逆の場合
+                    if self.is_base_address(rhs) && self.is_index_calculation(lhs) {
+                        return true;
+                    }
+                },
+                // ポインタ演算の場合（ptr + offset）
+                InstructionKind::GetElementPtr { base, indices, .. } => {
+                    // インデックスが変数または定数の場合
+                    return !indices.is_empty() && indices.iter().any(|idx| self.is_loop_variant(idx));
+                },
+                // 配列添字アクセス
+                InstructionKind::ArrayAccess { array, index } => {
+                    // インデックスが変数または定数の場合
+                    return self.is_loop_variant(index);
+                },
+                _ => {}
+            }
         }
+        false
     }
     
     /// メモリアクセスの間隔（ストライド）を計算
     fn calculate_stride(&self, address: &ValueId) -> usize {
-        // 実際の実装では命令列から間隔を計算
-        // 例えばアドレス計算が base + i*4 のような形式であれば、4がストライド
-        4 // デフォルト値
+        if let Some(def_inst) = self.get_defining_instruction(address) {
+            match &def_inst.kind {
+                // ベースアドレス + インデックス×要素サイズ
+                InstructionKind::BinaryOp { op: BinaryOperator::Add, lhs, rhs } => {
+                    // 右辺がインデックス計算の場合
+                    if self.is_index_calculation(rhs) {
+                        return self.extract_stride_from_index_calculation(rhs);
+                    }
+                    // 左辺がインデックス計算の場合
+                    if self.is_index_calculation(lhs) {
+                        return self.extract_stride_from_index_calculation(lhs);
+                    }
+                },
+                // ポインタ演算の場合
+                InstructionKind::GetElementPtr { base, indices, element_type } => {
+                    // 要素サイズ × インデックスの増分
+                    let element_size = self.get_type_size(element_type);
+                    if let Some(idx) = indices.last() {
+                        if let Some(step) = self.get_induction_variable_step(idx) {
+                            return element_size * step;
+                        }
+                    }
+                    return element_size; // デフォルトは要素サイズ
+                },
+                // 配列添字アクセス
+                InstructionKind::ArrayAccess { array, index } => {
+                    if let Some(array_type) = self.get_value_type(array) {
+                        if let Type::Array(element_type, _) = array_type {
+                            let element_size = self.get_type_size(&element_type);
+                            if let Some(step) = self.get_induction_variable_step(index) {
+                                return element_size * step;
+                            }
+                            return element_size;
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        
+        // データフロー解析で特定できない場合は、
+        // 命令パターンから推測するヒューリスティックを適用
+        self.estimate_stride_from_context(address)
     }
     
     /// 要素サイズを取得
@@ -1075,10 +1292,600 @@ impl ARM64Optimizer {
             InstructionKind::Load { ty, .. } | InstructionKind::Store { ty, .. } => {
                 self.get_type_size(ty)
             },
-            _ => 4, // デフォルト値
+            InstructionKind::ArrayAccess { array, .. } => {
+                if let Some(array_type) = self.get_value_type(array) {
+                    if let Type::Array(element_type, _) = array_type {
+                        return self.get_type_size(&element_type);
+                    }
+                }
+                self.default_element_size()
+            },
+            InstructionKind::GetElementPtr { element_type, .. } => {
+                self.get_type_size(element_type)
+            },
+            InstructionKind::BinaryOp { lhs, rhs, .. } => {
+                // 両オペランドの型サイズが一致すると仮定
+                if let Some(ty) = self.get_value_type(lhs) {
+                    return self.get_type_size(&ty);
+                }
+                if let Some(ty) = self.get_value_type(rhs) {
+                    return self.get_type_size(&ty);
+                }
+                self.default_element_size()
+            },
+            InstructionKind::UnaryOp { operand, .. } => {
+                if let Some(ty) = self.get_value_type(operand) {
+                    return self.get_type_size(&ty);
+                }
+                self.default_element_size()
+            },
+            _ => self.default_element_size(),
         }
     }
     
+    /// 型のサイズを取得（バイト単位）
+    fn get_type_size(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Int(width) => (width + 7) / 8, // ビット幅からバイト数へ（切り上げ）
+            Type::Float32 => 4,
+            Type::Float64 => 8,
+            Type::Bool => 1,
+            Type::Char => 1,
+            Type::Pointer(_) => 8, // ARM64では64ビット（8バイト）
+            Type::Array(element_type, size) => {
+                if let Some(s) = size {
+                    self.get_type_size(element_type) * (*s as usize)
+                } else {
+                    self.get_type_size(element_type) // サイズ不明の場合は要素サイズのみ
+                }
+            },
+            Type::Struct(fields) => {
+                // 構造体フィールドのアラインメントを考慮したサイズ計算
+                let mut total_size = 0;
+                let mut max_align = 1;
+                
+                for field_type in fields {
+                    let field_size = self.get_type_size(field_type);
+                    let field_align = self.get_type_alignment(field_type);
+                    
+                    // アラインメント調整
+                    total_size = (total_size + field_align - 1) / field_align * field_align;
+                    total_size += field_size;
+                    max_align = max_align.max(field_align);
+                }
+                
+                // 構造体全体のアラインメント調整
+                (total_size + max_align - 1) / max_align * max_align
+            },
+            Type::Tuple(types) => {
+                // タプルもアラインメントを考慮
+                let mut total_size = 0;
+                let mut max_align = 1;
+                
+                for element_type in types {
+                    let element_size = self.get_type_size(element_type);
+                    let element_align = self.get_type_alignment(element_type);
+                    
+                    // アラインメント調整
+                    total_size = (total_size + element_align - 1) / element_align * element_align;
+                    total_size += element_size;
+                    max_align = max_align.max(element_align);
+                }
+                
+                // タプル全体のアラインメント調整
+                (total_size + max_align - 1) / max_align * max_align
+            },
+            Type::Union(types) => {
+                // 共用体は最大のフィールドサイズ
+                let mut max_size = 0;
+                let mut max_align = 1;
+                
+                for ty in types {
+                    let size = self.get_type_size(ty);
+                    let align = self.get_type_alignment(ty);
+                    max_size = max_size.max(size);
+                    max_align = max_align.max(align);
+                }
+                
+                // アラインメント調整
+                (max_size + max_align - 1) / max_align * max_align
+            },
+            Type::Function(_, _) => 8, // 関数ポインタは64ビット
+            Type::Void => 0,
+            Type::Unknown => self.default_element_size(),
+            // 依存型など高度な型システムのサポート
+            Type::Dependent(_) => self.resolve_dependent_type_size(ty),
+            Type::TypeVar(_) => self.default_element_size(), // 型変数はコンテキストから解決
+            Type::Existential(_) => self.default_element_size(), // 存在型
+        }
+    }
+    
+    /// 型のアラインメントを取得
+    fn get_type_alignment(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Int(width) => {
+                let size = (width + 7) / 8; // ビット幅からバイト数へ
+                // 2のべき乗にアラインする
+                if size <= 1 { 1 }
+                else if size <= 2 { 2 }
+                else if size <= 4 { 4 }
+                else { 8 }
+            },
+            Type::Float32 => 4,
+            Type::Float64 => 8,
+            Type::Bool => 1,
+            Type::Char => 1,
+            Type::Pointer(_) => 8,
+            Type::Array(element_type, _) => self.get_type_alignment(element_type),
+            Type::Struct(fields) => {
+                // 構造体のアラインメントは最大のフィールドアラインメント
+                fields.iter()
+                    .map(|field_type| self.get_type_alignment(field_type))
+                    .max()
+                    .unwrap_or(1)
+            },
+            Type::Tuple(types) => {
+                // タプルのアラインメントも最大の要素アラインメント
+                types.iter()
+                    .map(|element_type| self.get_type_alignment(element_type))
+                    .max()
+                    .unwrap_or(1)
+            },
+            Type::Union(types) => {
+                // 共用体のアラインメントも最大のフィールドアラインメント
+                types.iter()
+                    .map(|ty| self.get_type_alignment(ty))
+                    .max()
+                    .unwrap_or(1)
+            },
+            Type::Function(_, _) => 8,
+            Type::Void => 1,
+            Type::Unknown => 8, // 不明な場合は最大アラインメントを仮定
+            Type::Dependent(_) => self.resolve_dependent_type_alignment(ty),
+            Type::TypeVar(_) => 8, // 型変数は最大アラインメントを仮定
+            Type::Existential(_) => 8, // 存在型も最大アラインメントを仮定
+        }
+    }
+    
+    /// 依存型のサイズを解決
+    fn resolve_dependent_type_size(&self, ty: &Type) -> usize {
+        if let Type::Dependent(expr) = ty {
+            // 依存型式の評価を試みる
+            match self.evaluate_dependent_type_expr(expr) {
+                Some(evaluated_type) => {
+                    // 評価された型のサイズを返す
+                    return self.get_type_size(&evaluated_type);
+                },
+                None => {
+                    // 式の部分評価を試みる
+                    if let Some(partial_result) = self.partially_evaluate_dependent_expr(expr) {
+                        // 部分評価の結果に基づいてサイズを計算
+                        if let Some(size) = self.compute_size_from_partial_evaluation(&partial_result) {
+                            return size;
+                        }
+                        
+                        // 部分評価から型制約を抽出
+                        let constraints = self.extract_type_constraints(&partial_result);
+                        if let Some(min_size) = self.derive_minimum_size_from_constraints(&constraints) {
+                            return min_size;
+                        }
+                    }
+                    
+                    // 型レベルの数値定数を抽出して計算
+                    if let Some(constant_size) = self.extract_constant_size_from_expr(expr) {
+                        return constant_size;
+                    }
+                    
+                    // 依存型の構造解析
+                    if let Some(structural_size) = self.analyze_dependent_type_structure(expr) {
+                        return structural_size;
+                    }
+                    
+                    // キャッシュされた評価結果を確認
+                    if let Some(cached_size) = self.lookup_cached_dependent_type_size(expr) {
+                        return cached_size;
+                    }
+                    
+                    // 型推論システムに問い合わせ
+                    if let Some(inferred_size) = self.query_type_inference_system(expr) {
+                        // 結果をキャッシュして返す
+                        self.cache_dependent_type_size(expr, inferred_size);
+                        return inferred_size;
+                    }
+                }
+            }
+        }
+        
+        // 解決できない場合はコンテキストに基づいて最適なデフォルト値を選択
+        let context_size = self.determine_context_appropriate_size(ty);
+        if context_size > 0 {
+            return context_size;
+        }
+        
+        // 最終的なフォールバック
+        self.default_element_size()
+    }
+    
+    /// 依存型のアラインメントを解決
+    fn resolve_dependent_type_alignment(&self, ty: &Type) -> usize {
+        if let Type::Dependent(expr) = ty {
+            if let Some(evaluated_type) = self.evaluate_dependent_type_expr(expr) {
+                return self.get_type_alignment(&evaluated_type);
+            }
+        }
+        8 // 解決できない場合は最大アラインメント
+    }
+    
+    /// 依存型式を評価
+    fn evaluate_dependent_type_expr(&self, expr: &DependentTypeExpr) -> Option<Type> {
+        // 依存型式の評価ロジック
+        // コンパイル時計算を実行
+        match expr {
+            // 型レベル関数適用
+            DependentTypeExpr::Apply(func, args) => {
+                // 関数と引数を評価
+                self.evaluate_type_level_function(func, args)
+            },
+            // 型レベル条件分岐
+            DependentTypeExpr::If(cond, then_type, else_type) => {
+                if self.evaluate_type_level_condition(cond) {
+                    Some(then_type.clone())
+                } else {
+                    Some(else_type.clone())
+                }
+            },
+            // 他の依存型式...
+            _ => None,
+        }
+    }
+    
+    /// デフォルトの要素サイズを返す
+    fn default_element_size(&self) -> usize {
+        4 // 32ビット（4バイト）をデフォルトとする
+    }
+    
+    /// 値の定義命令を取得
+    fn get_defining_instruction(&self, value: &ValueId) -> Option<&Instruction> {
+        // データフローグラフを使用して値を定義している命令を探索
+        // キャッシュを確認して高速アクセスを実現
+        if let Some(cached_inst) = self.instruction_cache.get(value) {
+            return Some(cached_inst);
+        }
+        
+        // 関数のデータフローグラフから定義命令を取得
+        let result = match value {
+            ValueId::Instruction(id) => {
+                // 命令IDから直接命令を取得
+                self.function.instructions.get(id)
+            },
+            ValueId::Parameter(param_idx) => {
+                // パラメータは定義命令を持たないのでNone
+                None
+            },
+            ValueId::Constant(_) => {
+                // 定数は定義命令を持たないのでNone
+                None
+            },
+            ValueId::GlobalVariable(name) => {
+                // グローバル変数の場合、モジュールレベルの定義を検索
+                self.module.get_global_variable_definition(name)
+            },
+            ValueId::TemporarySSA(temp_id) => {
+                // SSA一時変数の定義命令を探索
+                self.function.get_ssa_definition(*temp_id)
+            },
+            ValueId::PhiNode(block_id, phi_idx) => {
+                // Phi節点の場合、対応するブロックからPhi命令を取得
+                self.function.get_phi_instruction(*block_id, *phi_idx)
+            },
+            ValueId::VirtualRegister(reg_id) => {
+                // 仮想レジスタの最後の定義命令を取得
+                self.function.get_virtual_register_definition(*reg_id)
+            },
+            ValueId::DependentValue(expr) => {
+                // 依存値の場合、式を評価して対応する命令を取得
+                if let Some(evaluated) = self.evaluate_dependent_value_expr(expr) {
+                    self.get_defining_instruction(&evaluated)
+                } else {
+                    None
+                }
+            },
+        };
+        
+        // 結果をキャッシュに格納して将来のアクセスを高速化
+        if let Some(inst) = &result {
+            self.instruction_cache.insert(value.clone(), inst.clone());
+        }
+        
+        result
+    }
+    /// 値の型を取得
+    fn get_value_type(&self, value: &ValueId) -> Option<Type> {
+        // 値の型情報を取得
+        self.function.get_value_type(value)
+    }
+    
+    /// ベースアドレスかどうかを判定
+    fn is_base_address(&self, value: &ValueId) -> bool {
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            match &def_inst.kind {
+                // 配列や構造体のアドレス
+                InstructionKind::GetElementPtr { .. } => true,
+                // 変数のアドレス
+                InstructionKind::AddressOf { .. } => true,
+                // グローバル変数
+                InstructionKind::GlobalVariable { .. } => true,
+                // アロケーション
+                InstructionKind::Alloca { .. } => true,
+                // 他のベースアドレスパターン
+                _ => false,
+            }
+        } else {
+            // 関数パラメータなどの場合
+            matches!(value, ValueId::Parameter(_))
+        }
+    }
+    
+    /// インデックス計算かどうかを判定
+    fn is_index_calculation(&self, value: &ValueId) -> bool {
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            match &def_inst.kind {
+                // インデックス × 要素サイズ
+                InstructionKind::BinaryOp { op: BinaryOperator::Mul, lhs, rhs } => {
+                    (self.is_loop_variant(lhs) && self.is_constant_or_size(rhs)) ||
+                    (self.is_loop_variant(rhs) && self.is_constant_or_size(lhs))
+                },
+                // シフト演算（インデックス << 2 など）
+                InstructionKind::BinaryOp { op: BinaryOperator::Shl, lhs, rhs } => {
+                    self.is_loop_variant(lhs) && self.is_constant(rhs)
+                },
+                // 他のインデックス計算パターン
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+    
+    /// ループ変数かどうかを判定
+    fn is_loop_variant(&self, value: &ValueId) -> bool {
+        // ループのインダクション変数かどうかを判定
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            match &def_inst.kind {
+                // PHI命令はループ変数の可能性が高い
+                InstructionKind::Phi { .. } => true,
+                // インクリメント/デクリメント
+                InstructionKind::BinaryOp { op, lhs, rhs } => {
+                    if matches!(op, BinaryOperator::Add | BinaryOperator::Sub) {
+                        // i = i + 1 または i = i - 1 のパターン
+                        (self.is_self_reference(lhs, value) && self.is_constant(rhs)) ||
+                        (self.is_self_reference(rhs, value) && self.is_constant(lhs))
+                    } else {
+                        false
+                    }
+                },
+                // 他のループ変数パターン
+                _ => false,
+            }
+        } else {
+            // 関数パラメータなどの場合
+            matches!(value, ValueId::Parameter(_))
+        }
+    }
+    
+    /// 定数または要素サイズを表す値かどうかを判定
+    fn is_constant_or_size(&self, value: &ValueId) -> bool {
+        self.is_constant(value) || self.is_element_size_value(value)
+    }
+    
+    /// 定数かどうかを判定
+    fn is_constant(&self, value: &ValueId) -> bool {
+        matches!(value, ValueId::Constant(_)) ||
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            matches!(def_inst.kind, InstructionKind::Constant { .. })
+        } else {
+            false
+        }
+    }
+    
+    /// 要素サイズを表す値かどうかを判定
+    fn is_element_size_value(&self, value: &ValueId) -> bool {
+        // 要素サイズを表す定数かどうかを判定
+        // 例: 4, 8, sizeof(T) など
+        if let Some(constant_value) = self.get_constant_value(value) {
+            // 2のべき乗チェック（要素サイズは通常2のべき乗）
+            constant_value > 0 && (constant_value & (constant_value - 1)) == 0
+        } else {
+            false
+        }
+    }
+    
+    /// 定数値を取得
+    fn get_constant_value(&self, value: &ValueId) -> Option<usize> {
+        match value {
+            ValueId::Constant(c) => Some(*c as usize),
+            _ => {
+                if let Some(def_inst) = self.get_defining_instruction(value) {
+                    match &def_inst.kind {
+                        InstructionKind::Constant { value: c, .. } => {
+                            match c {
+                                ConstantValue::Int(i) => Some(*i as usize),
+                                _ => None,
+                            }
+                        },
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+    
+    /// 自己参照かどうかを判定
+    fn is_self_reference(&self, value: &ValueId, reference: &ValueId) -> bool {
+        value == reference
+    }
+    
+    /// インデックス計算からストライドを抽出
+    fn extract_stride_from_index_calculation(&self, value: &ValueId) -> usize {
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            match &def_inst.kind {
+                // インデックス × 要素サイズ
+                InstructionKind::BinaryOp { op: BinaryOperator::Mul, lhs, rhs } => {
+                    if self.is_loop_variant(lhs) && self.is_constant_or_size(rhs) {
+                        return self.get_constant_value(rhs).unwrap_or(1);
+                    }
+                    if self.is_loop_variant(rhs) && self.is_constant_or_size(lhs) {
+                        return self.get_constant_value(lhs).unwrap_or(1);
+                    }
+                },
+                // シフト演算（インデックス << 2 は × 4 と同等）
+                InstructionKind::BinaryOp { op: BinaryOperator::Shl, lhs, rhs } => {
+                    if self.is_loop_variant(lhs) && self.is_constant(rhs) {
+                        if let Some(shift) = self.get_constant_value(rhs) {
+                            return 1 << shift;
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        1 // デフォルトストライド
+    }
+    
+    /// インダクション変数のステップサイズを取得
+    fn get_induction_variable_step(&self, value: &ValueId) -> Option<usize> {
+        if let Some(def_inst) = self.get_defining_instruction(value) {
+            match &def_inst.kind {
+                InstructionKind::Phi { incoming } => {
+                    // PHI命令の入力を解析してステップサイズを特定
+                    for (val, _) in incoming {
+                        if let Some(update_inst) = self.get_defining_instruction(val) {
+                            match &update_inst.kind {
+                                InstructionKind::BinaryOp { op: BinaryOperator::Add, lhs, rhs } => {
+                                    // i = i + step パターン
+                                    if self.is_self_reference(lhs, value) && self.is_constant(rhs) {
+                                        return self.get_constant_value(rhs);
+                                    }
+                                    if self.is_self_reference(rhs, value) && self.is_constant(lhs) {
+                                        return self.get_constant_value(lhs);
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        None
+    }
+    
+    /// コンテキストからストライドを推測
+    fn estimate_stride_from_context(&self, address: &ValueId) -> usize {
+        // 周囲のコードパターンからストライドを推測
+        // 例: 連続したメモリアクセスのパターンを検出
+        
+        // 同じブロック内の類似アドレス計算を探す
+        let mut stride_candidates = Vec::new();
+        
+        // 現在の関数内の全命令を走査
+        for block in &self.function.blocks {
+            for inst in &block.instructions {
+                match &inst.kind {
+                    InstructionKind::Load { address: addr, .. } | 
+                    InstructionKind::Store { address: addr, .. } => {
+                        if addr != address && self.is_array_access(addr) {
+                            // 類似のアドレス計算パターンを見つけた
+                            if let Some(stride) = self.analyze_address_difference(address, addr) {
+                                stride_candidates.push(stride);
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+        
+        // 最も頻度の高いストライド値を採用
+        if !stride_candidates.is_empty() {
+            let mut stride_counts = std::collections::HashMap::new();
+            for stride in stride_candidates {
+                *stride_counts.entry(stride).or_insert(0) += 1;
+            }
+            
+            return stride_counts.into_iter()
+                .max_by_key(|(_, count)| *count)
+                .map(|(stride, _)| stride)
+                .unwrap_or(4);
+        }
+        
+        // デフォルトストライド
+        4
+    }
+    
+    /// 2つのアドレス計算の差分を解析
+    fn analyze_address_difference(&self, addr1: &ValueId, addr2: &ValueId) -> Option<usize> {
+        // アドレス計算の構造を取得
+        let addr1_structure = self.extract_address_structure(addr1)?;
+        let addr2_structure = self.extract_address_structure(addr2)?;
+        
+        // 同じベースアドレスを使用している場合のみ比較可能
+        if addr1_structure.base != addr2_structure.base {
+            return None;
+        }
+        
+        // インデックス変数が関連している場合（同じ変数または連続した値）
+        if self.are_indices_related(&addr1_structure.index, &addr2_structure.index) {
+            // スケールが同じ場合、それがストライド
+            if addr1_structure.scale == addr2_structure.scale {
+                return Some(addr1_structure.scale);
+            }
+            
+            // スケールが異なる場合、その差分を計算
+            let scale_diff = if addr1_structure.scale > addr2_structure.scale {
+                addr1_structure.scale - addr2_structure.scale
+            } else {
+                addr2_structure.scale - addr1_structure.scale
+            };
+            
+            // 差分が一定のパターンに従っている場合
+            if scale_diff > 0 && (scale_diff & (scale_diff - 1)) == 0 {  // 2のべき乗チェック
+                return Some(scale_diff);
+            }
+        }
+        
+        // オフセットの差分を計算
+        let offset_diff = if addr1_structure.offset > addr2_structure.offset {
+            addr1_structure.offset - addr2_structure.offset
+        } else {
+            addr2_structure.offset - addr1_structure.offset
+        };
+        
+        // オフセットの差分が有意義な値（2のべき乗など）であれば、それをストライドとして採用
+        if offset_diff > 0 {
+            // データ型サイズに基づく一般的なストライド値をチェック
+            let common_strides = [1, 2, 4, 8, 16, 32, 64];
+            if common_strides.contains(&offset_diff) {
+                return Some(offset_diff);
+            }
+            
+            // 2のべき乗チェック（SIMD操作に適したストライド）
+            if (offset_diff & (offset_diff - 1)) == 0 {
+                return Some(offset_diff);
+            }
+        }
+        
+        // 依存関係グラフを解析して、より複雑なパターンを検出
+        if let Some(stride) = self.analyze_dependency_graph(addr1, addr2) {
+            return Some(stride);
+        }
+        
+        // 明確なパターンが見つからない場合
+        None
+    }
     /// 操作タイプを判定
     fn determine_operation_type(&self, inst: &Instruction) -> OperationType {
         match &inst.kind {
@@ -1189,7 +1996,8 @@ impl ARM64Optimizer {
         
         Ok(())
     }
-}
+
+
 
 /// ループパターンの情報
 #[derive(Clone, Default)]

@@ -1283,6 +1283,209 @@ pub enum TypeKind {
         base_class: Option<TypeId>,
         interfaces: Vec<TypeId>,
     },
+    
+    /// 量子計算関連の型
+    Quantum(QuantumType),
+    
+    /// 時相型関連の型
+    Temporal(TemporalType),
+    
+    /// エフェクトシステム関連の型
+    Effect(EffectType),
+    
+    /// リソース管理関連の型
+    Resource(ResourceType),
+}
+
+/// 量子計算関連の型
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuantumType {
+    /// 量子ビット型
+    Qubit,
+    
+    /// 量子レジスタ型（複数の量子ビット）
+    QuantumRegister {
+        size: usize,
+    },
+    
+    /// 量子ゲート型
+    QuantumGate {
+        input_size: usize,
+        output_size: usize,
+        parameters: Vec<TypeId>,
+    },
+    
+    /// 量子回路型
+    QuantumCircuit {
+        gates: Vec<QuantumType>,
+    },
+    
+    /// 量子測定型
+    QuantumMeasurement {
+        basis: Option<String>,
+        result_type: TypeId,
+    },
+    
+    /// 量子状態型
+    QuantumState {
+        dimension: usize,
+        is_mixed: bool,
+    },
+    
+    /// 量子エンタングルメント型
+    QuantumEntanglement {
+        qubits: Vec<TypeId>,
+    },
+    
+    /// 量子スーパーポジション型
+    QuantumSuperposition {
+        basis_states: Vec<TypeId>,
+        phases: Vec<TypeId>,
+    },
+}
+
+/// 時相型関連の型
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemporalType {
+    /// 未来型
+    Future {
+        inner_type: TypeId,
+        time: Option<TypeId>,
+    },
+    
+    /// 過去型
+    Past {
+        inner_type: TypeId,
+        time: Option<TypeId>,
+    },
+    
+    /// 常時型
+    Always {
+        inner_type: TypeId,
+        interval: Option<(TypeId, TypeId)>,
+    },
+    
+    /// 最終型
+    Eventually {
+        inner_type: TypeId,
+        interval: Option<(TypeId, TypeId)>,
+    },
+    
+    /// 時相論理演算子型
+    TemporalOperator {
+        operator: TemporalOperator,
+        operands: Vec<TypeId>,
+    },
+    
+    /// 時相型変数
+    TemporalVariable {
+        name: String,
+        bounds: Vec<TraitBound>,
+    },
+}
+
+/// 時相論理演算子
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemporalOperator {
+    Until,
+    Since,
+    Next,
+    Previous,
+    Always,
+    Eventually,
+    Historically,
+    Once,
+}
+
+/// エフェクトシステム関連の型
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffectType {
+    /// エフェクト型変数
+    EffectVariable {
+        name: String,
+        bounds: Vec<TraitBound>,
+    },
+    
+    /// エフェクト型コンストラクタ
+    EffectConstructor {
+        name: String,
+        parameters: Vec<TypeId>,
+    },
+    
+    /// エフェクト型の和
+    EffectSum {
+        effects: Vec<EffectType>,
+    },
+    
+    /// エフェクト型の積
+    EffectProduct {
+        effects: Vec<EffectType>,
+    },
+    
+    /// エフェクト型の制限
+    EffectRestriction {
+        effect: Box<EffectType>,
+        constraint: TraitBound,
+    },
+    
+    /// エフェクト型の抽象化
+    EffectAbstraction {
+        parameters: Vec<TypeId>,
+        body: Box<EffectType>,
+    },
+    
+    /// エフェクト型の適用
+    EffectApplication {
+        effect: Box<EffectType>,
+        arguments: Vec<TypeId>,
+    },
+}
+
+/// リソース管理関連の型
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceType {
+    /// リソース型変数
+    ResourceVariable {
+        name: String,
+        bounds: Vec<TraitBound>,
+    },
+    
+    /// リソース型コンストラクタ
+    ResourceConstructor {
+        name: String,
+        parameters: Vec<TypeId>,
+    },
+    
+    /// リソース型の所有権
+    ResourceOwnership {
+        resource: TypeId,
+        owner: TypeId,
+    },
+    
+    /// リソース型の借用
+    ResourceBorrow {
+        resource: TypeId,
+        borrower: TypeId,
+        is_mutable: bool,
+    },
+    
+    /// リソース型の共有
+    ResourceShared {
+        resource: TypeId,
+        sharers: Vec<TypeId>,
+    },
+    
+    /// リソース型の移動
+    ResourceMove {
+        resource: TypeId,
+        destination: TypeId,
+    },
+    
+    /// リソース型の解放
+    ResourceRelease {
+        resource: TypeId,
+        finalizer: Option<TypeId>,
+    },
 }
 
 /// フィールド定義

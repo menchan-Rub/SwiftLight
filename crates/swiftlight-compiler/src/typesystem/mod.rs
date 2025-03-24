@@ -697,6 +697,10 @@ pub enum Type {
         operations: Vec<Symbol>,
     },
     MetaType(TypeId),
+    Quantum(QuantumType),
+    Temporal(TemporalType),
+    Effect(EffectType),
+    Resource(ResourceType),
 }
 
 /// 量子ゲート定義
@@ -959,6 +963,326 @@ impl TypeRegistry {
         // 通常の配列型として作成（将来的には依存配列型になる）
         self.array_of_length(base_element_type, length)
     }
+
+    /// 量子型の登録
+    pub fn register_quantum_type(&mut self, quantum_type: QuantumType) -> TypeId {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let type_id = TypeId(id);
+        let type_arc = Arc::new(Type::Quantum(quantum_type));
+        self.types.insert(type_id, type_arc);
+        type_id
+    }
+
+    /// 時相型の登録
+    pub fn register_temporal_type(&mut self, temporal_type: TemporalType) -> TypeId {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let type_id = TypeId(id);
+        let type_arc = Arc::new(Type::Temporal(temporal_type));
+        self.types.insert(type_id, type_arc);
+        type_id
+    }
+
+    /// エフェクト型の登録
+    pub fn register_effect_type(&mut self, effect_type: EffectType) -> TypeId {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let type_id = TypeId(id);
+        let type_arc = Arc::new(Type::Effect(effect_type));
+        self.types.insert(type_id, type_arc);
+        type_id
+    }
+
+    /// リソース型の登録
+    pub fn register_resource_type(&mut self, resource_type: ResourceType) -> TypeId {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let type_id = TypeId(id);
+        let type_arc = Arc::new(Type::Resource(resource_type));
+        self.types.insert(type_id, type_arc);
+        type_id
+    }
+
+    /// 量子型を取得
+    pub fn get_quantum_type(&self) -> Result<TypeId> {
+        let quantum_name = Symbol::intern("Quantum");
+        
+        // 既存の型を探す
+        for (id, ty) in self.types.iter() {
+            if let Type::Named { name, .. } = &**ty {
+                if *name == quantum_name {
+                    return Ok(*id);
+                }
+            }
+        }
+        
+        // 見つからなければ新しく作成
+        let type_id = self.register_named_type(quantum_name, Vec::new(), Kind::Quantum);
+        
+        Ok(type_id)
+    }
+
+    /// 時相型を取得
+    pub fn get_temporal_type(&self) -> Result<TypeId> {
+        let temporal_name = Symbol::intern("Temporal");
+        
+        // 既存の型を探す
+        for (id, ty) in self.types.iter() {
+            if let Type::Named { name, .. } = &**ty {
+                if *name == temporal_name {
+                    return Ok(*id);
+                }
+            }
+        }
+        
+        // 見つからなければ新しく作成
+        let type_id = self.register_named_type(temporal_name, Vec::new(), Kind::Type);
+        
+        Ok(type_id)
+    }
+
+    /// エフェクト型を取得
+    pub fn get_effect_type(&self) -> Result<TypeId> {
+        let effect_name = Symbol::intern("Effect");
+        
+        // 既存の型を探す
+        for (id, ty) in self.types.iter() {
+            if let Type::Named { name, .. } = &**ty {
+                if *name == effect_name {
+                    return Ok(*id);
+                }
+            }
+        }
+        
+        // 見つからなければ新しく作成
+        let type_id = self.register_named_type(effect_name, Vec::new(), Kind::Effect);
+        
+        Ok(type_id)
+    }
+
+    /// リソース型を取得
+    pub fn get_resource_type(&self) -> Result<TypeId> {
+        let resource_name = Symbol::intern("Resource");
+        
+        // 既存の型を探す
+        for (id, ty) in self.types.iter() {
+            if let Type::Named { name, .. } = &**ty {
+                if *name == resource_name {
+                    return Ok(*id);
+                }
+            }
+        }
+        
+        // 見つからなければ新しく作成
+        let type_id = self.register_named_type(resource_name, Vec::new(), Kind::Type);
+        
+        Ok(type_id)
+    }
+
+    /// 量子型の型チェック
+    pub fn check_quantum_type(&self, type_id: TypeId) -> Result<bool> {
+        let ty = self.resolve(type_id);
+        
+        match &*ty {
+            Type::Named { name, .. } => {
+                Ok(name.to_string().contains("Quantum") ||
+                   name.to_string().contains("Qubit") ||
+                   name.to_string().contains("Circuit"))
+            },
+            Type::Quantum(_) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// 時相型の型チェック
+    pub fn check_temporal_type(&self, type_id: TypeId) -> Result<bool> {
+        let ty = self.resolve(type_id);
+        
+        match &*ty {
+            Type::Named { name, .. } => {
+                Ok(name.to_string().contains("Temporal") ||
+                   name.to_string().contains("Future") ||
+                   name.to_string().contains("Past"))
+            },
+            Type::Temporal(_) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// エフェクト型の型チェック
+    pub fn check_effect_type(&self, type_id: TypeId) -> Result<bool> {
+        let ty = self.resolve(type_id);
+        
+        match &*ty {
+            Type::Named { name, .. } => {
+                Ok(name.to_string().contains("Effect") ||
+                   name.to_string().contains("IO") ||
+                   name.to_string().contains("Exception"))
+            },
+            Type::Effect(_) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// リソース型の型チェック
+    pub fn check_resource_type(&self, type_id: TypeId) -> Result<bool> {
+        let ty = self.resolve(type_id);
+        
+        match &*ty {
+            Type::Named { name, .. } => {
+                Ok(name.to_string().contains("Resource") ||
+                   name.to_string().contains("File") ||
+                   name.to_string().contains("Memory"))
+            },
+            Type::Resource(_) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// 量子型の単一化
+    pub fn unify_quantum_types(&self, a: TypeId, b: TypeId) -> Result<TypeId> {
+        let a_ty = self.resolve(a);
+        let b_ty = self.resolve(b);
+        
+        match (&*a_ty, &*b_ty) {
+            (Type::Quantum(q1), Type::Quantum(q2)) => {
+                // 量子型の単一化ロジック
+                if q1.qubits == q2.qubits && q1.operations == q2.operations {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: format!("{:?}", q1),
+                        actual: format!("{:?}", q2),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            (Type::Named { name: n1, .. }, Type::Named { name: n2, .. }) => {
+                if n1.to_string().contains("Quantum") && n2.to_string().contains("Quantum") {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: n1.to_string(),
+                        actual: n2.to_string(),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            _ => Err(TypeError::TypeMismatch {
+                expected: self.type_name(a),
+                actual: self.type_name(b),
+                location: SourceLocation::default(),
+            }),
+        }
+    }
+
+    /// 時相型の単一化
+    pub fn unify_temporal_types(&self, a: TypeId, b: TypeId) -> Result<TypeId> {
+        let a_ty = self.resolve(a);
+        let b_ty = self.resolve(b);
+        
+        match (&*a_ty, &*b_ty) {
+            (Type::Temporal(t1), Type::Temporal(t2)) => {
+                // 時相型の単一化ロジック
+                if t1 == t2 {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: format!("{:?}", t1),
+                        actual: format!("{:?}", t2),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            (Type::Named { name: n1, .. }, Type::Named { name: n2, .. }) => {
+                if n1.to_string().contains("Temporal") && n2.to_string().contains("Temporal") {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: n1.to_string(),
+                        actual: n2.to_string(),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            _ => Err(TypeError::TypeMismatch {
+                expected: self.type_name(a),
+                actual: self.type_name(b),
+                location: SourceLocation::default(),
+            }),
+        }
+    }
+
+    /// エフェクト型の単一化
+    pub fn unify_effect_types(&self, a: TypeId, b: TypeId) -> Result<TypeId> {
+        let a_ty = self.resolve(a);
+        let b_ty = self.resolve(b);
+        
+        match (&*a_ty, &*b_ty) {
+            (Type::Effect(e1), Type::Effect(e2)) => {
+                // エフェクト型の単一化ロジック
+                if e1 == e2 {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: format!("{:?}", e1),
+                        actual: format!("{:?}", e2),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            (Type::Named { name: n1, .. }, Type::Named { name: n2, .. }) => {
+                if n1.to_string().contains("Effect") && n2.to_string().contains("Effect") {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: n1.to_string(),
+                        actual: n2.to_string(),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            _ => Err(TypeError::TypeMismatch {
+                expected: self.type_name(a),
+                actual: self.type_name(b),
+                location: SourceLocation::default(),
+            }),
+        }
+    }
+
+    /// リソース型の単一化
+    pub fn unify_resource_types(&self, a: TypeId, b: TypeId) -> Result<TypeId> {
+        let a_ty = self.resolve(a);
+        let b_ty = self.resolve(b);
+        
+        match (&*a_ty, &*b_ty) {
+            (Type::Resource(r1), Type::Resource(r2)) => {
+                // リソース型の単一化ロジック
+                if r1 == r2 {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: format!("{:?}", r1),
+                        actual: format!("{:?}", r2),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            (Type::Named { name: n1, .. }, Type::Named { name: n2, .. }) => {
+                if n1.to_string().contains("Resource") && n2.to_string().contains("Resource") {
+                    Ok(a)
+                } else {
+                    Err(TypeError::TypeMismatch {
+                        expected: n1.to_string(),
+                        actual: n2.to_string(),
+                        location: SourceLocation::default(),
+                    })
+                }
+            },
+            _ => Err(TypeError::TypeMismatch {
+                expected: self.type_name(a),
+                actual: self.type_name(b),
+                location: SourceLocation::default(),
+            }),
+        }
+    }
 }
 
 /// 量子型システム拡張
@@ -1191,5 +1515,75 @@ mod tests {
         // t1がIntに解決されることを確認
         let resolved_t1 = tm.resolve_type(&t1);
         assert_eq!(resolved_t1, int_type);
+    }
+
+    #[test]
+    fn test_type_registry_quantum() {
+        let mut registry = TypeRegistry::new();
+        
+        // 量子型の取得と登録
+        let quantum_type = registry.get_quantum_type().unwrap();
+        assert!(registry.check_quantum_type(quantum_type).unwrap());
+        
+        // 量子型の単一化
+        let quantum_type2 = registry.get_quantum_type().unwrap();
+        let unified = registry.unify_quantum_types(quantum_type, quantum_type2).unwrap();
+        assert_eq!(unified, quantum_type);
+    }
+
+    #[test]
+    fn test_type_registry_temporal() {
+        let mut registry = TypeRegistry::new();
+        
+        // 時相型の取得と登録
+        let temporal_type = registry.get_temporal_type().unwrap();
+        assert!(registry.check_temporal_type(temporal_type).unwrap());
+        
+        // 時相型の単一化
+        let temporal_type2 = registry.get_temporal_type().unwrap();
+        let unified = registry.unify_temporal_types(temporal_type, temporal_type2).unwrap();
+        assert_eq!(unified, temporal_type);
+    }
+
+    #[test]
+    fn test_type_registry_effect() {
+        let mut registry = TypeRegistry::new();
+        
+        // エフェクト型の取得と登録
+        let effect_type = registry.get_effect_type().unwrap();
+        assert!(registry.check_effect_type(effect_type).unwrap());
+        
+        // エフェクト型の単一化
+        let effect_type2 = registry.get_effect_type().unwrap();
+        let unified = registry.unify_effect_types(effect_type, effect_type2).unwrap();
+        assert_eq!(unified, effect_type);
+    }
+
+    #[test]
+    fn test_type_registry_resource() {
+        let mut registry = TypeRegistry::new();
+        
+        // リソース型の取得と登録
+        let resource_type = registry.get_resource_type().unwrap();
+        assert!(registry.check_resource_type(resource_type).unwrap());
+        
+        // リソース型の単一化
+        let resource_type2 = registry.get_resource_type().unwrap();
+        let unified = registry.unify_resource_types(resource_type, resource_type2).unwrap();
+        assert_eq!(unified, resource_type);
+    }
+
+    #[test]
+    fn test_type_registry_type_mismatch() {
+        let mut registry = TypeRegistry::new();
+        
+        // 異なる型の単一化を試みる
+        let quantum_type = registry.get_quantum_type().unwrap();
+        let temporal_type = registry.get_temporal_type().unwrap();
+        
+        assert!(registry.unify_quantum_types(quantum_type, temporal_type).is_err());
+        assert!(registry.unify_temporal_types(quantum_type, temporal_type).is_err());
+        assert!(registry.unify_effect_types(quantum_type, temporal_type).is_err());
+        assert!(registry.unify_resource_types(quantum_type, temporal_type).is_err());
     }
 }

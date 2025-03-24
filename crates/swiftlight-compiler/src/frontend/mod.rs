@@ -41,6 +41,8 @@ pub mod diagnostic;
 pub mod module;
 #[doc(hidden)]
 pub mod hir;
+#[doc(hidden)]
+pub mod syntax_highlight;
 
 /// フロントエンドの主要インターフェースを統一的にエクスポート
 pub use self::{
@@ -56,7 +58,9 @@ pub use self::{
     source_map::{SourceMap, Span},
     diagnostic::{Diagnostic, DiagnosticLevel, EmissionHandler},
     module::{Module, ModuleGraph},
-    hir::{HirNode, HirTranslator}
+    hir::{HirNode, HirTranslator},
+    syntax_highlight::{SyntaxHighlighter, SyntaxRangeInfo, SymbolInfo},
+    parser::context_parser::{ContextParser, CompletionContext, CompletionContextKind}
 };
 
 /// フロントエンド処理パイプラインのエントリーポイント

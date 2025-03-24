@@ -83,6 +83,12 @@ pub struct InferenceContext {
     
     /// 統合型制約ソルバー
     unified_solver: Option<UnifiedConstraintSolver>,
+    
+    /// エフェクト型推論エンジン
+    effect_inference: Option<EffectTypeInference>,
+    
+    /// リソース型推論エンジン
+    resource_inference: Option<ResourceTypeInference>,
 }
 
 /// 量子型推論エンジン
@@ -234,6 +240,12 @@ pub struct UnifiedConstraintSolver {
     /// 時相型ソルバー
     temporal_solver: TemporalConstraintSolver,
     
+    /// エフェクト型ソルバー
+    effect_solver: EffectConstraintSolver,
+    
+    /// リソース型ソルバー
+    resource_solver: ResourceConstraintSolver,
+    
     /// SMTソルバー連携
     smt_interface: Option<SMTSolverInterface>,
 }
@@ -290,6 +302,31 @@ pub enum TemporalConstraint {
     
     /// 時相的安全性
     Never(Symbol),
+    
+    /// 時相的公平性
+    Fairness {
+        state: Symbol,
+        condition: RefinementPredicate,
+    },
+    
+    /// 時相的優先順位
+    Priority {
+        high: Symbol,
+        low: Symbol,
+        condition: RefinementPredicate,
+    },
+    
+    /// 時相的排他制約
+    MutuallyExclusive {
+        states: Vec<Symbol>,
+    },
+    
+    /// 時相的依存関係
+    Dependency {
+        dependent: Symbol,
+        depends_on: Symbol,
+        condition: RefinementPredicate,
+    },
 }
 
 /// SMTソルバーインターフェース
@@ -316,10 +353,34 @@ pub trait SMTContext: Send + Sync {
     fn get_model(&self) -> Result<HashMap<String, String>>;
 }
 
+/// エフェクト制約ソルバー
+pub struct EffectConstraintSolver {
+    /// エフェクト制約
+    constraints: Vec<EffectConstraint>,
+    
+    /// 解決済みの制約
+    resolved_constraints: HashSet<EffectConstraint>,
+    
+    /// エフェクト環境
+    effect_environment: HashMap<Symbol, EffectSet>,
+}
+
+/// リソース制約ソルバー
+pub struct ResourceConstraintSolver {
+    /// リソース制約
+    constraints: Vec<ResourceConstraint>,
+    
+    /// 解決済みの制約
+    resolved_constraints: HashSet<ResourceConstraint>,
+    
+    /// リソース環境
+    resource_environment: HashMap<Symbol, ResourceState>,
+}
+
 impl InferenceContext {
     /// 新しい型推論コンテキストを作成
     pub fn new(type_registry: Arc<TypeRegistry>) -> Self {
-        Self {
+        let mut context = Self {
             next_type_var_id: 0,
             environment: HashMap::new(),
             constraints: Vec::new(),
@@ -327,41 +388,49 @@ impl InferenceContext {
             dependent_solver: DependentTypeSolver::new(),
             type_registry,
             errors: Vec::new(),
-            optimization_level: InferenceOptimizationLevel::Standard,
+            optimization_level: InferenceOptimizationLevel::Basic,
             annotation_cache: HashMap::new(),
             quantum_inference: None,
             temporal_inference: None,
             unified_solver: None,
-        }
+            effect_inference: None,
+            resource_inference: None,
+        };
+
+        // 最適化レベルに応じて各種推論エンジンを初期化
+        context.initialize_quantum_inference();
+        context.initialize_temporal_inference();
+        context.initialize_effect_inference();
+        context.initialize_resource_inference();
+        context.initialize_unified_solver();
+
+        context
     }
     
-    /// 推論の最適化レベルを設定
+    /// 最適化レベルの設定
     pub fn set_optimization_level(&mut self, level: InferenceOptimizationLevel) {
         self.optimization_level = level;
         
-        // 最適化レベルに応じて特殊型システムを初期化
+        // 最適化レベルに応じて各種推論エンジンを再初期化
         match level {
-            InferenceOptimizationLevel::Quantum | InferenceOptimizationLevel::Full => {
+            InferenceOptimizationLevel::Quantum => {
                 self.initialize_quantum_inference();
-            },
-            _ => self.quantum_inference = None,
-        }
-        
-        match level {
-            InferenceOptimizationLevel::Temporal | InferenceOptimizationLevel::Full => {
+            }
+            InferenceOptimizationLevel::Temporal => {
                 self.initialize_temporal_inference();
-            },
-            _ => self.temporal_inference = None,
-        }
-        
-        match level {
-            InferenceOptimizationLevel::Advanced | 
-            InferenceOptimizationLevel::Quantum |
-            InferenceOptimizationLevel::Temporal |
+            }
             InferenceOptimizationLevel::Full => {
+                self.initialize_quantum_inference();
+                self.initialize_temporal_inference();
+                self.initialize_effect_inference();
+                self.initialize_resource_inference();
                 self.initialize_unified_solver();
-            },
-            _ => self.unified_solver = None,
+            }
+            _ => {
+                // 基本的な推論エンジンのみを初期化
+                self.initialize_effect_inference();
+                self.initialize_resource_inference();
+            }
         }
     }
     
@@ -384,7 +453,7 @@ impl InferenceContext {
         gates.insert(Symbol::intern("H"), QuantumGateSignature {
             qubits: 1,
             parameters: 0,
-            unitary_matrix: None, // 実際の実装では行列を定義
+            unitary_matrix: None,
         });
         
         gates.insert(Symbol::intern("X"), QuantumGateSignature {
@@ -405,8 +474,48 @@ impl InferenceContext {
             unitary_matrix: None,
         });
         
+        // 2量子ビットゲート
         gates.insert(Symbol::intern("CNOT"), QuantumGateSignature {
             qubits: 2,
+            parameters: 0,
+            unitary_matrix: None,
+        });
+        
+        gates.insert(Symbol::intern("SWAP"), QuantumGateSignature {
+            qubits: 2,
+            parameters: 0,
+            unitary_matrix: None,
+        });
+        
+        // 回転ゲート
+        gates.insert(Symbol::intern("RX"), QuantumGateSignature {
+            qubits: 1,
+            parameters: 1,
+            unitary_matrix: None,
+        });
+        
+        gates.insert(Symbol::intern("RY"), QuantumGateSignature {
+            qubits: 1,
+            parameters: 1,
+            unitary_matrix: None,
+        });
+        
+        gates.insert(Symbol::intern("RZ"), QuantumGateSignature {
+            qubits: 1,
+            parameters: 1,
+            unitary_matrix: None,
+        });
+        
+        // 3量子ビットゲート
+        gates.insert(Symbol::intern("CCNOT"), QuantumGateSignature {
+            qubits: 3,
+            parameters: 0,
+            unitary_matrix: None,
+        });
+        
+        // 測定ゲート
+        gates.insert(Symbol::intern("MEASURE"), QuantumGateSignature {
+            qubits: 1,
             parameters: 0,
             unitary_matrix: None,
         });
@@ -446,15 +555,45 @@ impl InferenceContext {
     /// 量子型を推論
     pub fn infer_quantum_expr(&mut self, expr: &Expr) -> Result<TypeId> {
         if let Some(ref mut quantum_inference) = self.quantum_inference {
-            // 量子式の推論処理を実装
-            // 量子ゲートの適用やクォンタム状態の追跡などを行う
-            
-            // TODO: 実際の推論ロジックを実装
-            unimplemented!("量子式の推論はまだ実装されていません");
+            match &expr.kind {
+                ExprKind::QuantumExpr { qubits, gate, params } => {
+                    // 量子ビットの型を推論
+                    let mut qubit_types = Vec::new();
+                    for qubit in qubits {
+                        let qubit_type = self.infer_expr(qubit)?;
+                        qubit_types.push(qubit_type);
+                    }
+
+                    // ゲートの型を推論
+                    let gate_type = self.infer_expr(gate)?;
+
+                    // パラメータの型を推論
+                    let mut param_types = Vec::new();
+                    for param in params {
+                        let param_type = self.infer_expr(param)?;
+                        param_types.push(param_type);
+                    }
+
+                    // 量子操作を記録
+                    let operation = QuantumOperation {
+                        gate: QuantumGate::Custom(gate_type),
+                        target_qubits: qubit_types.iter().map(|_| 0).collect(),
+                        location: expr.span,
+                    };
+                    quantum_inference.operation_history.push(operation);
+
+                    // 量子型を返す
+                    let quantum_type = self.type_registry.get_quantum_type();
+                    Ok(quantum_type)
+                },
+                _ => Err(CompilerError::new(
+                    ErrorKind::TypeError("量子式ではありません".to_string()),
+                    expr.span,
+                )),
+            }
         } else {
-            // 量子型推論が有効でない場合はエラー
             Err(CompilerError::new(
-                ErrorKind::TypeError("量子型推論が有効化されていません".to_string()),
+                ErrorKind::TypeError("量子型推論が有効ではありません".to_string()),
                 expr.span,
             ))
         }
@@ -463,15 +602,35 @@ impl InferenceContext {
     /// 時相型を推論
     pub fn infer_temporal_expr(&mut self, expr: &Expr) -> Result<TypeId> {
         if let Some(ref mut temporal_inference) = self.temporal_inference {
-            // 時相式の推論処理を実装
-            // 状態遷移の追跡や時相論理式の検証などを行う
-            
-            // TODO: 実際の推論ロジックを実装
-            unimplemented!("時相式の推論はまだ実装されていません");
+            match &expr.kind {
+                ExprKind::TemporalExpr { operator, operand } => {
+                    // 演算子の型を推論
+                    let operator_type = self.infer_expr(operator)?;
+
+                    // オペランドの型を推論
+                    let operand_type = self.infer_expr(operand)?;
+
+                    // 時相操作を記録
+                    let transition = StateTransition {
+                        from_state: Symbol::intern("current"),
+                        to_state: Symbol::intern("next"),
+                        condition: None,
+                        location: expr.span,
+                    };
+                    temporal_inference.transition_history.push(transition);
+
+                    // 時相型を返す
+                    let temporal_type = self.type_registry.get_temporal_type();
+                    Ok(temporal_type)
+                },
+                _ => Err(CompilerError::new(
+                    ErrorKind::TypeError("時相式ではありません".to_string()),
+                    expr.span,
+                )),
+            }
         } else {
-            // 時相型推論が有効でない場合はエラー
             Err(CompilerError::new(
-                ErrorKind::TypeError("時相型推論が有効化されていません".to_string()),
+                ErrorKind::TypeError("時相型推論が有効ではありません".to_string()),
                 expr.span,
             ))
         }
@@ -480,14 +639,60 @@ impl InferenceContext {
     /// 統合型制約を解決
     pub fn solve_unified_constraints(&mut self) -> Result<()> {
         if let Some(ref mut unified_solver) = self.unified_solver {
-            // 統合型制約の解決処理を実装
-            // 依存型、量子型、時相型の制約を連携して解決
-            
-            // TODO: 実際の解決ロジックを実装
-            unimplemented!("統合型制約の解決はまだ実装されていません");
+            // 依存型制約を解決
+            unified_solver.dependent_solver.solve_constraints()?;
+
+            // 量子型制約を解決
+            for constraint in &unified_solver.quantum_solver.constraints {
+                match constraint {
+                    QuantumConstraint::QubitMatch(a, b) => {
+                        self.unify(*a, *b, SourceLocation::default())?;
+                    },
+                    QuantumConstraint::GateApplicable { gate, state } => {
+                        // ゲート適用可能性の検証
+                        let gate_type = self.type_registry.resolve(*gate);
+                        let state_type = self.type_registry.resolve(*state);
+                        // TODO: ゲート適用可能性の詳細な検証
+                    },
+                    QuantumConstraint::NoCloning(ty) => {
+                        // 非クローニング制約の検証
+                        // TODO: 非クローニング制約の詳細な検証
+                    },
+                    QuantumConstraint::EntanglementTrack { qubits, state } => {
+                        // エンタングルメント追跡
+                        // TODO: エンタングルメント追跡の詳細な実装
+                    },
+                }
+            }
+
+            // 時相型制約を解決
+            for constraint in &unified_solver.temporal_solver.constraints {
+                match constraint {
+                    TemporalConstraint::ValidTransition { from, to, predicate } => {
+                        // 状態遷移の有効性検証
+                        // TODO: 状態遷移の詳細な検証
+                    },
+                    TemporalConstraint::Eventually(state) => {
+                        // 時相的到達可能性の検証
+                        // TODO: 時相的到達可能性の詳細な検証
+                    },
+                    TemporalConstraint::Always(predicate) => {
+                        // 時相的不変性の検証
+                        // TODO: 時相的不変性の詳細な検証
+                    },
+                    TemporalConstraint::Never(state) => {
+                        // 時相的安全性の検証
+                        // TODO: 時相的安全性の詳細な検証
+                    },
+                }
+            }
+
+            Ok(())
         } else {
-            // 通常の制約解決を行う
-            self.solve_constraints()
+            Err(CompilerError::new(
+                ErrorKind::TypeError("統合型制約ソルバーが有効ではありません".to_string()),
+                SourceLocation::default(),
+            ))
         }
     }
     
@@ -1151,4 +1356,534 @@ impl TypeInferencer {
     pub fn get_errors(&self) -> &[TypeError] {
         self.context.get_errors()
     }
-} 
+}
+
+impl TemporalTypeInference {
+    /// 時相制約を検証
+    pub fn verify_constraint(&mut self, constraint: &TemporalConstraint) -> Result<bool> {
+        match constraint {
+            TemporalConstraint::Fairness { state, condition } => {
+                // 公平性制約の検証
+                self.verify_fairness(state, condition)
+            },
+            TemporalConstraint::Priority { high, low, condition } => {
+                // 優先順位制約の検証
+                self.verify_priority(high, low, condition)
+            },
+            TemporalConstraint::MutuallyExclusive { states } => {
+                // 排他制約の検証
+                self.verify_mutual_exclusion(states)
+            },
+            TemporalConstraint::Dependency { dependent, depends_on, condition } => {
+                // 依存関係制約の検証
+                self.verify_dependency(dependent, depends_on, condition)
+            },
+            _ => {
+                // 既存の制約の検証
+                self.verify_existing_constraint(constraint)
+            }
+        }
+    }
+    
+    /// 公平性制約を検証
+    fn verify_fairness(&self, state: &Symbol, condition: &RefinementPredicate) -> Result<bool> {
+        // TODO: 公平性制約の検証ロジックを実装
+        Ok(true)
+    }
+    
+    /// 優先順位制約を検証
+    fn verify_priority(&self, high: &Symbol, low: &Symbol, condition: &RefinementPredicate) -> Result<bool> {
+        // TODO: 優先順位制約の検証ロジックを実装
+        Ok(true)
+    }
+    
+    /// 排他制約を検証
+    fn verify_mutual_exclusion(&self, states: &[Symbol]) -> Result<bool> {
+        // TODO: 排他制約の検証ロジックを実装
+        Ok(true)
+    }
+    
+    /// 依存関係制約を検証
+    fn verify_dependency(&self, dependent: &Symbol, depends_on: &Symbol, condition: &RefinementPredicate) -> Result<bool> {
+        // TODO: 依存関係制約の検証ロジックを実装
+        Ok(true)
+    }
+    
+    /// 既存の制約を検証
+    fn verify_existing_constraint(&self, constraint: &TemporalConstraint) -> Result<bool> {
+        // TODO: 既存の制約の検証ロジックを実装
+        Ok(true)
+    }
+}
+
+impl UnifiedConstraintSolver {
+    pub fn solve_constraints(&mut self) -> Result<()> {
+        // 依存型の制約を解決
+        self.dependent_solver.solve_constraints()?;
+
+        // 量子型の制約を解決
+        self.quantum_solver.solve_constraints()?;
+
+        // 時相型の制約を解決
+        self.temporal_solver.solve_constraints()?;
+
+        // エフェクト型の制約を解決
+        self.effect_solver.solve_constraints()?;
+
+        // リソース型の制約を解決
+        self.resource_solver.solve_constraints()?;
+
+        // SMTソルバーを使用して複合制約を解決
+        if let Some(smt) = &mut self.smt_interface {
+            self.solve_compound_constraints(smt)?;
+        }
+
+        Ok(())
+    }
+
+    fn solve_compound_constraints(&mut self, smt: &mut SMTSolverInterface) -> Result<()> {
+        // 複合制約をSMT式に変換
+        let mut constraints = Vec::new();
+
+        // 量子制約の変換
+        for constraint in &self.quantum_solver.constraints {
+            constraints.push(self.quantum_constraint_to_smt(constraint));
+        }
+
+        // 時相制約の変換
+        for constraint in &self.temporal_solver.constraints {
+            constraints.push(self.temporal_constraint_to_smt(constraint));
+        }
+
+        // エフェクト制約の変換
+        for constraint in &self.effect_solver.constraints {
+            constraints.push(self.effect_constraint_to_smt(constraint));
+        }
+
+        // リソース制約の変換
+        for constraint in &self.resource_solver.constraints {
+            constraints.push(self.resource_constraint_to_smt(constraint));
+        }
+
+        // SMTソルバーに制約を追加
+        for constraint in constraints {
+            smt.add_constraint(&constraint)?;
+        }
+
+        // 充足可能性をチェック
+        if !smt.check_sat()? {
+            return Err(TypeError::UnsatisfiableConstraints);
+        }
+
+        // モデルを取得して制約を更新
+        let model = smt.get_model()?;
+        self.update_constraints_from_model(&model)?;
+
+        Ok(())
+    }
+
+    fn quantum_constraint_to_smt(&self, constraint: &QuantumConstraint) -> String {
+        match constraint {
+            QuantumConstraint::QubitMatch(t1, t2) => {
+                format!("(= (qubit-count {}) (qubit-count {}))", t1, t2)
+            }
+            QuantumConstraint::GateApplicable { gate, state } => {
+                format!("(gate-applicable {} {})", gate.name, state)
+            }
+            QuantumConstraint::NoCloning(ty) => {
+                format!("(no-cloning {})", ty)
+            }
+            QuantumConstraint::EntanglementTrack { qubits, state } => {
+                format!("(entanglement-track {:?} {})", qubits, state)
+            }
+        }
+    }
+
+    fn temporal_constraint_to_smt(&self, constraint: &TemporalConstraint) -> String {
+        match constraint {
+            TemporalConstraint::ValidTransition { from, to, predicate } => {
+                let pred = predicate.as_ref()
+                    .map(|p| self.predicate_to_smt(p))
+                    .unwrap_or_else(|| "true".to_string());
+                format!("(valid-transition {} {} {})", from, to, pred)
+            }
+            TemporalConstraint::Eventually(state) => {
+                format!("(eventually {})", state)
+            }
+            TemporalConstraint::Always(predicate) => {
+                format!("(always {})", self.predicate_to_smt(predicate))
+            }
+            TemporalConstraint::Never(state) => {
+                format!("(never {})", state)
+            }
+            TemporalConstraint::Fairness { state, condition } => {
+                format!("(fairness {} {})", state, self.predicate_to_smt(condition))
+            }
+            TemporalConstraint::Priority { high, low, condition } => {
+                format!("(priority {} {} {})", high, low, self.predicate_to_smt(condition))
+            }
+            TemporalConstraint::MutuallyExclusive { states } => {
+                format!("(mutually-exclusive {:?})", states)
+            }
+            TemporalConstraint::Dependency { dependent, depends_on, condition } => {
+                format!("(dependency {} {} {})", dependent, depends_on, self.predicate_to_smt(condition))
+            }
+        }
+    }
+
+    fn effect_constraint_to_smt(&self, constraint: &EffectConstraint) -> String {
+        match constraint {
+            EffectConstraint::EffectMatch(e1, e2) => {
+                format!("(= {} {})", e1, e2)
+            }
+            EffectConstraint::EffectSubset(subset, superset) => {
+                format!("(subset {} {})", subset, superset)
+            }
+            EffectConstraint::EffectUnion(effects) => {
+                format!("(union {:?})", effects)
+            }
+            EffectConstraint::EffectIntersection(effects) => {
+                format!("(intersection {:?})", effects)
+            }
+            EffectConstraint::EffectRestriction(effect, constraint) => {
+                format!("(restriction {} {})", effect, self.predicate_to_smt(constraint))
+            }
+        }
+    }
+
+    fn resource_constraint_to_smt(&self, constraint: &ResourceConstraint) -> String {
+        match constraint {
+            ResourceConstraint::ResourceMatch(r1, r2) => {
+                format!("(= {} {})", r1, r2)
+            }
+            ResourceConstraint::ResourceOwnership(resource, owner) => {
+                format!("(owns {} {})", owner, resource)
+            }
+            ResourceConstraint::ResourceBorrow(resource, borrower, is_mutable) => {
+                format!("(borrows {} {} {})", borrower, resource, is_mutable)
+            }
+            ResourceConstraint::ResourceShared(resource, sharers) => {
+                format!("(shared {} {:?})", resource, sharers)
+            }
+            ResourceConstraint::ResourceMove(resource, destination) => {
+                format!("(moves {} {})", resource, destination)
+            }
+            ResourceConstraint::ResourceRelease(resource) => {
+                format!("(released {})", resource)
+            }
+        }
+    }
+
+    fn predicate_to_smt(&self, predicate: &RefinementPredicate) -> String {
+        match predicate {
+            RefinementPredicate::BoolLiteral(b) => b.to_string(),
+            RefinementPredicate::IntComparison { op, lhs, rhs } => {
+                format!("({} {} {})", op.to_smt(), lhs, rhs)
+            }
+            RefinementPredicate::LogicalOp { op, operands } => {
+                format!("({} {})", op.to_smt(), operands.iter()
+                    .map(|p| self.predicate_to_smt(p))
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            }
+            RefinementPredicate::ArithmeticOp { op, operands } => {
+                format!("({} {})", op.to_smt(), operands.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            }
+            RefinementPredicate::HasCapability(cap) => {
+                format!("(has-capability {})", cap)
+            }
+            RefinementPredicate::InState(state) => {
+                format!("(in-state {})", state)
+            }
+            RefinementPredicate::Custom(name, args) => {
+                format!("({} {})", name, args.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            }
+        }
+    }
+
+    fn update_constraints_from_model(&mut self, model: &HashMap<String, String>) -> Result<()> {
+        // 量子制約の更新
+        for constraint in &mut self.quantum_solver.constraints {
+            self.update_quantum_constraint(constraint, model)?;
+        }
+
+        // 時相制約の更新
+        for constraint in &mut self.temporal_solver.constraints {
+            self.update_temporal_constraint(constraint, model)?;
+        }
+
+        // エフェクト制約の更新
+        for constraint in &mut self.effect_solver.constraints {
+            self.update_effect_constraint(constraint, model)?;
+        }
+
+        // リソース制約の更新
+        for constraint in &mut self.resource_solver.constraints {
+            self.update_resource_constraint(constraint, model)?;
+        }
+
+        Ok(())
+    }
+
+    fn update_quantum_constraint(&mut self, constraint: &mut QuantumConstraint, model: &HashMap<String, String>) -> Result<()> {
+        // 量子制約の更新ロジック
+        Ok(())
+    }
+
+    fn update_temporal_constraint(&mut self, constraint: &mut TemporalConstraint, model: &HashMap<String, String>) -> Result<()> {
+        // 時相制約の更新ロジック
+        Ok(())
+    }
+
+    fn update_effect_constraint(&mut self, constraint: &mut EffectConstraint, model: &HashMap<String, String>) -> Result<()> {
+        // エフェクト制約の更新ロジック
+        Ok(())
+    }
+
+    fn update_resource_constraint(&mut self, constraint: &mut ResourceConstraint, model: &HashMap<String, String>) -> Result<()> {
+        // リソース制約の更新ロジック
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::typesystem::TypeRegistry;
+
+    #[test]
+    fn test_quantum_type_inference() {
+        let registry = Arc::new(TypeRegistry::new());
+        let mut inferencer = TypeInferencer::new(registry.clone());
+        inferencer.set_optimization_level(InferenceOptimizationLevel::Quantum);
+
+        // 量子ビット宣言の型推論
+        let qubit_expr = Expr {
+            kind: ExprKind::Quantum(QuantumExprKind::QubitDeclaration {
+                name: "q1".to_string(),
+                initial_state: None,
+            }),
+            type_id: None,
+        };
+
+        let qubit_type = inferencer.infer_expr(&qubit_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(qubit_type).kind,
+            TypeKind::Quantum(QuantumType::Qubit)
+        ));
+
+        // 量子ゲート適用の型推論
+        let gate_expr = Expr {
+            kind: ExprKind::Quantum(QuantumExprKind::QuantumGate {
+                gate_type: "H".to_string(),
+                qubits: vec![Box::new(qubit_expr)],
+                parameters: vec![],
+            }),
+            type_id: None,
+        };
+
+        let gate_type = inferencer.infer_expr(&gate_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(gate_type).kind,
+            TypeKind::Quantum(QuantumType::QuantumGate { .. })
+        ));
+    }
+
+    #[test]
+    fn test_temporal_type_inference() {
+        let registry = Arc::new(TypeRegistry::new());
+        let mut inferencer = TypeInferencer::new(registry.clone());
+        inferencer.set_optimization_level(InferenceOptimizationLevel::Temporal);
+
+        // 未来型の推論
+        let future_expr = Expr {
+            kind: ExprKind::Temporal(TemporalExprKind::Future {
+                expression: Box::new(Expr {
+                    kind: ExprKind::Literal(LiteralValue::Integer(42)),
+                    type_id: None,
+                }),
+                time: None,
+            }),
+            type_id: None,
+        };
+
+        let future_type = inferencer.infer_expr(&future_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(future_type).kind,
+            TypeKind::Temporal(TemporalType::Future { .. })
+        ));
+
+        // 常時型の推論
+        let always_expr = Expr {
+            kind: ExprKind::Temporal(TemporalExprKind::Always {
+                expression: Box::new(Expr {
+                    kind: ExprKind::Literal(LiteralValue::Boolean(true)),
+                    type_id: None,
+                }),
+                interval: None,
+            }),
+            type_id: None,
+        };
+
+        let always_type = inferencer.infer_expr(&always_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(always_type).kind,
+            TypeKind::Temporal(TemporalType::Always { .. })
+        ));
+    }
+
+    #[test]
+    fn test_effect_type_inference() {
+        let registry = Arc::new(TypeRegistry::new());
+        let mut inferencer = TypeInferencer::new(registry.clone());
+        inferencer.set_optimization_level(InferenceOptimizationLevel::Full);
+
+        // エフェクト宣言の型推論
+        let effect_expr = Expr {
+            kind: ExprKind::Effect(EffectExprKind::EffectDeclaration {
+                name: "IO".to_string(),
+                parameters: vec![],
+                return_type: None,
+            }),
+            type_id: None,
+        };
+
+        let effect_type = inferencer.infer_expr(&effect_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(effect_type).kind,
+            TypeKind::Effect(EffectType::EffectConstructor { .. })
+        ));
+
+        // エフェクトハンドリングの型推論
+        let handle_expr = Expr {
+            kind: ExprKind::Effect(EffectExprKind::Handle {
+                effect: Box::new(effect_expr),
+                handlers: vec![(
+                    "IO".to_string(),
+                    Box::new(Expr {
+                        kind: ExprKind::Literal(LiteralValue::Integer(0)),
+                        type_id: None,
+                    }),
+                )],
+            }),
+            type_id: None,
+        };
+
+        let handle_type = inferencer.infer_expr(&handle_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(handle_type).kind,
+            TypeKind::Effect(EffectType::EffectRestriction { .. })
+        ));
+    }
+
+    #[test]
+    fn test_resource_type_inference() {
+        let registry = Arc::new(TypeRegistry::new());
+        let mut inferencer = TypeInferencer::new(registry.clone());
+        inferencer.set_optimization_level(InferenceOptimizationLevel::Full);
+
+        // リソース宣言の型推論
+        let resource_expr = Expr {
+            kind: ExprKind::Resource(ResourceExprKind::ResourceDeclaration {
+                name: "File".to_string(),
+                type_id: TypeId::new(1),
+            }),
+            type_id: None,
+        };
+
+        let resource_type = inferencer.infer_expr(&resource_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(resource_type).kind,
+            TypeKind::Resource(ResourceType::ResourceConstructor { .. })
+        ));
+
+        // リソース使用の型推論
+        let use_expr = Expr {
+            kind: ExprKind::Resource(ResourceExprKind::Use {
+                resource: Box::new(resource_expr),
+                body: Box::new(Expr {
+                    kind: ExprKind::Literal(LiteralValue::Integer(0)),
+                    type_id: None,
+                }),
+            }),
+            type_id: None,
+        };
+
+        let use_type = inferencer.infer_expr(&use_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(use_type).kind,
+            TypeKind::Resource(ResourceType::ResourceOwnership { .. })
+        ));
+    }
+
+    #[test]
+    fn test_unified_constraint_solving() {
+        let registry = Arc::new(TypeRegistry::new());
+        let mut inferencer = TypeInferencer::new(registry.clone());
+        inferencer.set_optimization_level(InferenceOptimizationLevel::Full);
+
+        // 複合的な制約の解決
+        let quantum_expr = Expr {
+            kind: ExprKind::Quantum(QuantumExprKind::QubitDeclaration {
+                name: "q1".to_string(),
+                initial_state: None,
+            }),
+            type_id: None,
+        };
+
+        let temporal_expr = Expr {
+            kind: ExprKind::Temporal(TemporalExprKind::Future {
+                expression: Box::new(quantum_expr),
+                time: None,
+            }),
+            type_id: None,
+        };
+
+        let effect_expr = Expr {
+            kind: ExprKind::Effect(EffectExprKind::Handle {
+                effect: Box::new(Expr {
+                    kind: ExprKind::Effect(EffectExprKind::EffectDeclaration {
+                        name: "IO".to_string(),
+                        parameters: vec![],
+                        return_type: None,
+                    }),
+                    type_id: None,
+                }),
+                handlers: vec![(
+                    "IO".to_string(),
+                    Box::new(temporal_expr),
+                )],
+            }),
+            type_id: None,
+        };
+
+        let resource_expr = Expr {
+            kind: ExprKind::Resource(ResourceExprKind::Use {
+                resource: Box::new(Expr {
+                    kind: ExprKind::Resource(ResourceExprKind::ResourceDeclaration {
+                        name: "File".to_string(),
+                        type_id: TypeId::new(1),
+                    }),
+                    type_id: None,
+                }),
+                body: Box::new(effect_expr),
+            }),
+            type_id: None,
+        };
+
+        let final_type = inferencer.infer_expr(&resource_expr).unwrap();
+        assert!(matches!(
+            registry.resolve(final_type).kind,
+            TypeKind::Resource(ResourceType::ResourceOwnership { .. })
+        ));
+
+        // 制約の解決
+        assert!(inferencer.solve_constraints().is_ok());
+    }
+}

@@ -1122,91 +1122,2100 @@ impl CodeGenerator {
         
         // ループの反復回数を推定する関数
         fn estimate_loop_iterations(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> f64 {
-            // ヒューリスティックに基づくループ反復回数の推定
-            // 1. ループ内の条件分岐を分析
-            // 2. ループカウンタの増減パターンを検出
-            // 3. 配列アクセスパターンを分析
+            // 高度なヒューリスティックに基づくループ反復回数の推定
+            let mut estimated_iterations = 0.0;
+            let mut confidence = 0.0;
             
-            // 簡易実装: デフォルト値を返す
-            // 実際の実装では静的解析やプロファイリングデータを使用
+            // 1. ループカウンタの増減パターンを検出
+            if let Some(counter_info) = analyze_loop_counter(cfg, header, body) {
+                // カウンタベースのループの場合
+                match counter_info {
+                    CounterInfo::Range { start, end, step } => {
+                        // 範囲ベースのループ（for i in start..end by step）
+                        if step != 0.0 {
+                            let iterations = ((end - start) / step).abs();
+                            estimated_iterations += iterations * 0.9; // 90%の信頼度
+                            confidence += 0.9;
+                        }
+                    },
+                    CounterInfo::Condition { initial_value, condition, update } => {
+                        // 条件ベースのループ（while condition）
+                        let typical_iterations = estimate_condition_iterations(initial_value, condition, update);
+                        estimated_iterations += typical_iterations * 0.7; // 70%の信頼度
+                        confidence += 0.7;
+                    }
+                }
+            }
             
-            // ループの種類に基づいて反復回数を推定
-            if is_counted_loop(cfg, header, body) {
-                10.0 // カウントループは平均10回と推定
-            } else if is_collection_iteration(cfg, header, body) {
-                100.0 // コレクション反復は平均100要素と推定
+            // 2. コレクション反復パターンを検出
+            if let Some(collection_size) = analyze_collection_iteration(cfg, header, body) {
+                estimated_iterations += collection_size * 0.8; // 80%の信頼度
+                confidence += 0.8;
+            }
+            
+            // 3. ループ内の条件分岐を分析
+            let branch_factor = analyze_loop_branches(cfg, header, body);
+            if branch_factor > 0.0 {
+                // 分岐が多いループは早期終了の可能性が高い
+                let branch_based_estimate = 10.0 / branch_factor;
+                estimated_iterations += branch_based_estimate * 0.5; // 50%の信頼度
+                confidence += 0.5;
+            }
+            
+            // 4. ループネストレベルを分析
+            let nesting_level = analyze_loop_nesting(cfg, header, body);
+            if nesting_level > 0 {
+                // 深くネストされたループは通常短い
+                let nesting_based_estimate = 20.0 / (nesting_level as f64);
+                estimated_iterations += nesting_based_estimate * 0.4; // 40%の信頼度
+                confidence += 0.4;
+            }
+            
+            // 5. ループ本体のサイズを分析
+            let body_size = body.len() as f64;
+            let size_based_estimate = if body_size < 3.0 {
+                // 小さなループは通常長く実行される
+                100.0
+            } else if body_size < 10.0 {
+                // 中程度のループ
+                50.0
             } else {
-                5.0 // その他のループはデフォルト値
+                // 大きなループは通常短く実行される
+                20.0
+            };
+            estimated_iterations += size_based_estimate * 0.3; // 30%の信頼度
+            confidence += 0.3;
+            
+            // 6. 過去の実行履歴データを活用（もし利用可能なら）
+            if let Some(historical_data) = get_historical_execution_data(header) {
+                estimated_iterations += historical_data * 0.95; // 95%の信頼度
+                confidence += 0.95;
+            }
+            
+            // 7. 機械学習モデルによる予測（もし利用可能なら）
+            if let Some(ml_prediction) = predict_iterations_with_ml(cfg, header, body) {
+                estimated_iterations += ml_prediction * 0.85; // 85%の信頼度
+                confidence += 0.85;
+            }
+            
+            // 信頼度に基づいて加重平均を計算
+            if confidence > 0.0 {
+                estimated_iterations /= confidence;
+            } else {
+                // デフォルト値
+                if is_counted_loop(cfg, header, body) {
+                    return 10.0;
+                } else if is_collection_iteration(cfg, header, body) {
+                    return 100.0;
+                } else {
+                    return 5.0;
+                }
+            }
+            
+            // 最小値と最大値の制約
+            estimated_iterations = estimated_iterations.max(1.0).min(10000.0);
+            
+            estimated_iterations
+        }
+        
+        // ループカウンタ情報の列挙型
+        enum CounterInfo {
+            Range { start: f64, end: f64, step: f64 },
+            Condition { initial_value: f64, condition: ConditionType, update: UpdateType },
+        }
+        
+        // 条件タイプの列挙型
+        enum ConditionType {
+            LessThan(f64),
+            GreaterThan(f64),
+            LessOrEqual(f64),
+            GreaterOrEqual(f64),
+            NotEqual(f64),
+            Custom,
+        }
+        
+        // 更新タイプの列挙型
+        enum UpdateType {
+            Increment(f64),
+            Decrement(f64),
+            Multiply(f64),
+            Divide(f64),
+            Custom,
+        }
+        
+        // ループカウンタを分析する関数
+        fn analyze_loop_counter(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> Option<CounterInfo> {
+            // ループヘッダーブロックを取得
+            let header_block = match cfg.get_block(header) {
+                Ok(block) => block,
+                Err(_) => return None,
+            };
+            
+            // 終了条件を分析
+            if let Some(Terminator::ConditionalBranch { condition, .. }) = &header_block.terminator {
+                // 条件式を分析してカウンタ変数と終了条件を特定
+                match condition {
+                    Value::BinaryOp { op, left, right } => {
+                        // カウンタ変数と終了値を特定
+                        if let (Some(counter_var), Some(end_value)) = (extract_variable(left), extract_constant(right)) {
+                            // カウンタの初期値と更新式を探す
+                            if let Some(initial_value) = find_initial_value(cfg, counter_var) {
+                                if let Some(update) = find_update_expression(cfg, counter_var, body) {
+                                    // 範囲ベースのループを検出
+                                    match (op, update) {
+                                        (BinaryOp::Lt, UpdateType::Increment(step)) => {
+                                            return Some(CounterInfo::Range {
+                                                start: initial_value,
+                                                end: end_value,
+                                                step,
+                                            });
+                                        },
+                                        (BinaryOp::Gt, UpdateType::Decrement(step)) => {
+                                            return Some(CounterInfo::Range {
+                                                start: initial_value,
+                                                end: end_value,
+                                                step: -step,
+                                            });
+                                        },
+                                        _ => {
+                                            // 条件ベースのループ
+                                            let condition = match op {
+                                                BinaryOp::Lt => ConditionType::LessThan(end_value),
+                                                BinaryOp::Gt => ConditionType::GreaterThan(end_value),
+                                                BinaryOp::Le => ConditionType::LessOrEqual(end_value),
+                                                BinaryOp::Ge => ConditionType::GreaterOrEqual(end_value),
+                                                BinaryOp::Ne => ConditionType::NotEqual(end_value),
+                                                _ => ConditionType::Custom,
+                                            };
+                                            
+                                            return Some(CounterInfo::Condition {
+                                                initial_value,
+                                                condition,
+                                                update,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            
+            None
+        }
+        
+        // 変数を抽出する関数
+        fn extract_variable(value: &Value) -> Option<String> {
+            match value {
+                Value::Variable(name) => Some(name.clone()),
+                Value::MemberAccess { object, member } => {
+                    // メンバーアクセス式からも変数を抽出できるようにする
+                    if let Some(obj_name) = extract_variable(object) {
+                        Some(format!("{}.{}", obj_name, member))
+                    } else {
+                        None
+                    }
+                },
+                Value::IndexAccess { array, index } => {
+                    // 配列アクセス式からも変数を抽出
+                    if let Some(arr_name) = extract_variable(array) {
+                        if let Some(idx_val) = extract_constant(index) {
+                            Some(format!("{}[{}]", arr_name, idx_val))
+                        } else if let Some(idx_var) = extract_variable(index) {
+                            Some(format!("{}[{}]", arr_name, idx_var))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                Value::Cast { value, target_type } => {
+                    // キャスト式からも変数を抽出
+                    extract_variable(value)
+                },
+                Value::Unary { op: _, operand } => {
+                    // 単項演算子式からも変数を抽出
+                    extract_variable(operand)
+                },
+                _ => None,
             }
         }
         
-        // カウントループかどうかを判定
-        fn is_counted_loop(cfg: &ControlFlowGraph, _header: usize, _body: &HashSet<usize>) -> bool {
-            // ループ内でカウンタ変数が増減するパターンを検出
-            // 実際の実装では命令パターンを分析
+        // 定数値を抽出する関数
+        fn extract_constant(value: &Value) -> Option<f64> {
+            match value {
+                Value::Constant(ConstantValue::Integer(i)) => Some(*i as f64),
+                Value::Constant(ConstantValue::Float(f)) => Some(*f),
+                Value::Constant(ConstantValue::Boolean(b)) => Some(if *b { 1.0 } else { 0.0 }),
+                Value::Constant(ConstantValue::Character(c)) => Some(*c as u32 as f64),
+                Value::Binary { op, left, right } => {
+                    // 定数畳み込みを行う
+                    if let (Some(l), Some(r)) = (extract_constant(left), extract_constant(right)) {
+                        match op {
+                            BinaryOp::Add => Some(l + r),
+                            BinaryOp::Sub => Some(l - r),
+                            BinaryOp::Mul => Some(l * r),
+                            BinaryOp::Div => if r != 0.0 { Some(l / r) } else { None },
+                            BinaryOp::Mod => if r != 0.0 { Some(l % r) } else { None },
+                            BinaryOp::Pow => Some(l.powf(r)),
+                            BinaryOp::Shl => Some((l as i64).wrapping_shl(r as u32) as f64),
+                            BinaryOp::Shr => Some((l as i64).wrapping_shr(r as u32) as f64),
+                            BinaryOp::BitAnd => Some((l as i64 & r as i64) as f64),
+                            BinaryOp::BitOr => Some((l as i64 | r as i64) as f64),
+                            BinaryOp::BitXor => Some((l as i64 ^ r as i64) as f64),
+                            _ => None, // 比較演算子などは定数値として扱わない
+                        }
+                    } else {
+                        None
+                    }
+                },
+                Value::Unary { op, operand } => {
+                    if let Some(val) = extract_constant(operand) {
+                        match op {
+                            UnaryOp::Neg => Some(-val),
+                            UnaryOp::Not => Some(if val == 0.0 { 1.0 } else { 0.0 }),
+                            UnaryOp::BitNot => Some(!(val as i64) as f64),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                },
+                Value::Cast { value, target_type } => {
+                    // キャスト式からも定数を抽出
+                    extract_constant(value)
+                },
+                _ => None,
+            }
+        }
+        
+        // 変数の初期値を見つける関数
+        fn find_initial_value(cfg: &ControlFlowGraph, variable: &str) -> Option<f64> {
+            // 変数の定義を探すためにCFGを逆順に走査
+            let entry_block = cfg.entry_block()?;
+            let mut visited = HashSet::new();
+            let mut work_list = VecDeque::new();
+            work_list.push_back(entry_block);
             
-            // 簡易実装
+            // 変数の型情報を取得（シンボルテーブルから）
+            let var_type = self.symbol_table.get_variable_type(variable).ok()?;
+            
+            // データフロー分析のための変数
+            let mut reaching_definitions = HashMap::new();
+            let mut constant_propagation = HashMap::new();
+            
+            while let Some(block_id) = work_list.pop_front() {
+                if visited.contains(&block_id) {
+                    continue;
+                }
+                visited.insert(block_id);
+                
+                let block = cfg.get_block(block_id).ok()?;
+                
+                // ブロック内の命令を調べる
+                for instr in &block.instructions {
+                    if let Instruction::Assignment { target, value } = instr {
+                        if target == variable {
+                            // 変数への代入を見つけた
+                            if let Some(constant) = extract_constant(value) {
+                                // 定数値が見つかった場合は即座に返す
+                                return Some(constant);
+                            } else if let Value::FunctionCall { name, args } = value {
+                                // 特定の関数呼び出しの結果を推測
+                                if name == "zero" || name == "default" {
+                                    return Some(0.0);
+                                } else if name == "one" {
+                                    return Some(1.0);
+                                } else if name == "identity" && !args.is_empty() {
+                                    // identity関数は引数をそのまま返す
+                                    if let Some(arg_val) = extract_constant(&args[0]) {
+                                        return Some(arg_val);
+                                    }
+                                } else if name == "min" && args.len() >= 2 {
+                                    // min関数は最小値を返す
+                                    let mut min_val = f64::INFINITY;
+                                    let mut all_constants = true;
+                                    
+                                    for arg in args {
+                                        if let Some(val) = extract_constant(arg) {
+                                            min_val = min_val.min(val);
+                                        } else {
+                                            all_constants = false;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if all_constants {
+                                        return Some(min_val);
+                                    }
+                                } else if name == "max" && args.len() >= 2 {
+                                    // max関数は最大値を返す
+                                    let mut max_val = f64::NEG_INFINITY;
+                                    let mut all_constants = true;
+                                    
+                                    for arg in args {
+                                        if let Some(val) = extract_constant(arg) {
+                                            max_val = max_val.max(val);
+                                        } else {
+                                            all_constants = false;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if all_constants {
+                                        return Some(max_val);
+                                    }
+                                } else if let Some(intrinsic_value) = self.evaluate_intrinsic_function(name, args) {
+                                    // 組み込み関数の評価
+                                    return Some(intrinsic_value);
+                                } else {
+                                    // 関数の純粋性を確認し、純粋関数なら結果をキャッシュから取得
+                                    if self.is_pure_function(name) {
+                                        if let Some(cached_result) = self.function_result_cache.get(&(name.clone(), self.hash_args(args))) {
+                                            return Some(*cached_result);
+                                        }
+                                    }
+                                }
+                            } else if let Value::Conditional { condition, then_value, else_value } = value {
+                                // 条件式の評価を試みる
+                                if let Some(cond_val) = extract_constant(condition) {
+                                    if cond_val != 0.0 {
+                                        return extract_constant(then_value);
+                                    } else {
+                                        return extract_constant(else_value);
+                                    }
+                                }
+                            } else if let Value::Cast { value, target_type } = value {
+                                // キャスト式の評価
+                                if let Some(val) = extract_constant(value) {
+                                    return Some(self.apply_cast(val, target_type));
+                                }
+                            } else {
+                                // 複雑な式の場合、データフロー分析情報を更新
+                                reaching_definitions.insert(variable.to_string(), value.clone());
+                                
+                                // 部分的な定数伝播を試みる
+                                if let Some(propagated_value) = self.try_constant_propagation(value, &constant_propagation) {
+                                    if let Some(const_val) = extract_constant(&propagated_value) {
+                                        return Some(const_val);
+                                    }
+                                }
+                            }
+                        } else {
+                            // 他の変数への代入も追跡して定数伝播に利用
+                            if let Some(const_val) = extract_constant(value) {
+                                constant_propagation.insert(target.clone(), const_val);
+                            }
+                        }
+                    }
+                }
+                
+                // 前任ブロックを調査
+                for pred in cfg.predecessors(block_id) {
+                    work_list.push_back(*pred);
+                }
+            }
+            
+            // 初期値が見つからない場合、型に基づいたデフォルト値を返す
+            match var_type {
+                Type::Integer | Type::Int32 | Type::Int64 | Type::UInt32 | Type::UInt64 => Some(0.0),
+                Type::Float | Type::Float32 | Type::Float64 => Some(0.0),
+                Type::Boolean => Some(0.0), // falseを表す
+                Type::Character => Some(0.0), // NUL文字
+                Type::String => None, // 文字列型は数値として扱えない
+                Type::Array(_) | Type::Tuple(_) | Type::Struct(_) => None, // 複合型は数値として扱えない
+                Type::Function(_) => None, // 関数型は数値として扱えない
+                Type::Optional(inner_type) => {
+                    // Optional型はNoneをデフォルト値とするが、数値としては0を返す
+                    Some(0.0)
+                },
+                Type::Enum(enum_name) => {
+                    // 列挙型の最初の値を取得
+                    if let Some(first_variant_value) = self.symbol_table.get_enum_first_variant_value(enum_name) {
+                        Some(first_variant_value as f64)
+                    } else {
+                        Some(0.0)
+                    }
+                },
+                Type::Generic(_) => {
+                    // ジェネリック型の場合、具体的な型が解決されていれば、その型のデフォルト値を返す
+                    if let Some(resolved_type) = self.symbol_table.resolve_generic_type(var_type) {
+                        self.get_default_value_for_type(&resolved_type)
+                    } else {
+                        Some(0.0)
+                    }
+                },
+                Type::Unknown => Some(0.0),
+                _ => Some(0.0),
+            }
+        }
+        
+        // 変数の更新式を見つける関数
+        fn find_update_expression(cfg: &ControlFlowGraph, variable: &str, body: &HashSet<usize>) -> Option<UpdateType> {
+            for &block_id in body {
+                let block = cfg.get_block(block_id).ok()?;
+                
+                for instr in &block.instructions {
+                    if let Instruction::Assignment { target, value } = instr {
+                        if target == variable {
+                            // 変数への代入を見つけた
+                            match value {
+                                Value::Binary { op: BinaryOp::Add, left, right } => {
+                                    // i = i + step または i = step + i
+                                    if extract_variable(left).as_deref() == Some(variable) {
+                                        if let Some(step) = extract_constant(right) {
+                                            return Some(UpdateType::Increment(step));
+                                        }
+                                    } else if extract_variable(right).as_deref() == Some(variable) {
+                                        if let Some(step) = extract_constant(left) {
+                                            return Some(UpdateType::Increment(step));
+                                        }
+                                    }
+                                },
+                                Value::Binary { op: BinaryOp::Sub, left, right } => {
+                                    // i = i - step
+                                    if extract_variable(left).as_deref() == Some(variable) {
+                                        if let Some(step) = extract_constant(right) {
+                                            return Some(UpdateType::Decrement(step));
+                                        }
+                                    }
+                                },
+                                Value::Binary { op: BinaryOp::Mul, left, right } => {
+                                    // i = i * factor
+                                    if extract_variable(left).as_deref() == Some(variable) {
+                                        if let Some(factor) = extract_constant(right) {
+                                            return Some(UpdateType::Multiply(factor));
+                                        }
+                                    } else if extract_variable(right).as_deref() == Some(variable) {
+                                        if let Some(factor) = extract_constant(left) {
+                                            return Some(UpdateType::Multiply(factor));
+                                        }
+                                    }
+                                },
+                                Value::Binary { op: BinaryOp::Div, left, right } => {
+                                    // i = i / divisor
+                                    if extract_variable(left).as_deref() == Some(variable) {
+                                        if let Some(divisor) = extract_constant(right) {
+                                            if divisor != 0.0 {
+                                                return Some(UpdateType::Divide(divisor));
+                                            }
+                                        }
+                                    }
+                                },
+                                Value::Unary { op: UnaryOp::PreIncrement, operand } |
+                                Value::Unary { op: UnaryOp::PostIncrement, operand } => {
+                                    // ++i または i++
+                                    if extract_variable(operand).as_deref() == Some(variable) {
+                                        return Some(UpdateType::Increment(1.0));
+                                    }
+                                },
+                                Value::Unary { op: UnaryOp::PreDecrement, operand } |
+                                Value::Unary { op: UnaryOp::PostDecrement, operand } => {
+                                    // --i または i--
+                                    if extract_variable(operand).as_deref() == Some(variable) {
+                                        return Some(UpdateType::Decrement(1.0));
+                                    }
+                                },
+                                Value::FunctionCall { name, args } => {
+                                    // 特定の関数呼び出しパターンを認識
+                                    if name == "increment" || name == "inc" {
+                                        if args.len() == 1 && extract_variable(&args[0]).as_deref() == Some(variable) {
+                                            return Some(UpdateType::Increment(1.0));
+                                        } else if args.len() == 2 && extract_variable(&args[0]).as_deref() == Some(variable) {
+                                            if let Some(step) = extract_constant(&args[1]) {
+                                                return Some(UpdateType::Increment(step));
+                                            }
+                                        }
+                                    } else if name == "decrement" || name == "dec" {
+                                        if args.len() == 1 && extract_variable(&args[0]).as_deref() == Some(variable) {
+                                            return Some(UpdateType::Decrement(1.0));
+                                        } else if args.len() == 2 && extract_variable(&args[0]).as_deref() == Some(variable) {
+                                            if let Some(step) = extract_constant(&args[1]) {
+                                                return Some(UpdateType::Decrement(step));
+                                            }
+                                        }
+                                    }
+                                    
+                                    // 一般的な更新関数
+                                    return Some(UpdateType::Custom);
+                                },
+                                _ => {
+                                    // その他の代入パターン
+                                    return Some(UpdateType::Custom);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            None
+        }
+        
+        // 条件ベースのループの反復回数を推定する関数
+        fn estimate_condition_iterations(initial_value: f64, condition: ConditionType, update: UpdateType) -> f64 {
+            match (condition, update) {
+                (ConditionType::LessThan(end), UpdateType::Increment(step)) => {
+                    if step <= 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    ((end - initial_value) / step).ceil().max(0.0)
+                },
+                (ConditionType::GreaterThan(end), UpdateType::Decrement(step)) => {
+                    if step <= 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    ((initial_value - end) / step).ceil().max(0.0)
+                },
+                (ConditionType::LessOrEqual(end), UpdateType::Increment(step)) => {
+                    if step <= 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    ((end - initial_value) / step + 1.0).ceil().max(0.0)
+                },
+                (ConditionType::GreaterOrEqual(end), UpdateType::Decrement(step)) => {
+                    if step <= 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    ((initial_value - end) / step + 1.0).ceil().max(0.0)
+                },
+                (ConditionType::NotEqual(end), UpdateType::Increment(step)) => {
+                    if step == 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if initial_value == end {
+                        return 0.0; // 即座に終了
+                    }
+                    if (end > initial_value && step > 0.0) || (end < initial_value && step < 0.0) {
+                        ((end - initial_value) / step).abs().ceil()
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                (ConditionType::NotEqual(end), UpdateType::Decrement(step)) => {
+                    if step == 0.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if initial_value == end {
+                        return 0.0; // 即座に終了
+                    }
+                    if (end < initial_value && step > 0.0) || (end > initial_value && step < 0.0) {
+                        ((initial_value - end) / step).abs().ceil()
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                (ConditionType::LessThan(end), UpdateType::Multiply(factor)) => {
+                    if factor == 1.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if factor > 1.0 && initial_value > 0.0 {
+                        // 指数関数的増加
+                        (end / initial_value).log(factor).ceil().max(0.0)
+                    } else if factor < 1.0 && factor > 0.0 && initial_value > end {
+                        // 指数関数的減少
+                        (end / initial_value).log(factor).ceil().max(0.0)
+                    } else {
+                        10.0 // デフォルト値
+                    }
+                },
+                (ConditionType::GreaterThan(end), UpdateType::Multiply(factor)) => {
+                    if factor == 1.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if factor < 1.0 && factor > 0.0 && initial_value > 0.0 {
+                        // 指数関数的減少
+                        (end / initial_value).log(factor).ceil().max(0.0)
+                    } else if factor > 1.0 && initial_value < 0.0 && end < 0.0 {
+                        // 負の値の指数関数的増加
+                        (end / initial_value).log(factor).ceil().max(0.0)
+                    } else {
+                        10.0 // デフォルト値
+                    }
+                },
+                (ConditionType::LessThan(end), UpdateType::Divide(divisor)) => {
+                    if divisor == 1.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if divisor > 1.0 && initial_value > 0.0 {
+                        // 指数関数的減少
+                        (initial_value / end).log(divisor).ceil().max(0.0)
+                    } else {
+                        10.0 // デフォルト値
+                    }
+                },
+                (ConditionType::GreaterThan(end), UpdateType::Divide(divisor)) => {
+                    if divisor == 1.0 {
+                        return 1000.0; // 無限ループの可能性
+                    }
+                    if divisor > 1.0 && initial_value > end && end > 0.0 {
+                        // 指数関数的減少
+                        (initial_value / end).log(divisor).ceil().max(0.0)
+                    } else {
+                        10.0 // デフォルト値
+                    }
+                },
+                (ConditionType::Custom, _) => {
+                    // カスタム条件の場合、ヒューリスティックな推定
+                    analyze_custom_condition_iterations(initial_value, update)
+                },
+                (_, UpdateType::Custom) => {
+                    // カスタム更新の場合、ヒューリスティックな推定
+                    analyze_custom_update_iterations(initial_value, condition)
+                },
+                _ => 10.0, // デフォルト値
+            }
+        }
+        
+        // カスタム条件の反復回数を推定する関数
+        fn analyze_custom_condition_iterations(initial_value: f64, update: UpdateType) -> f64 {
+            match update {
+                UpdateType::Increment(step) => {
+                    if step > 0.0 {
+                        100.0 / step // ステップサイズに基づく推定
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                UpdateType::Decrement(step) => {
+                    if step > 0.0 {
+                        initial_value / step // 初期値とステップサイズに基づく推定
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                UpdateType::Multiply(factor) => {
+                    if factor > 1.0 {
+                        20.0 // 指数関数的増加の場合の保守的な推定
+                    } else if factor < 1.0 && factor > 0.0 {
+                        20.0 // 指数関数的減少の場合の保守的な推定
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                UpdateType::Divide(divisor) => {
+                    if divisor > 1.0 {
+                        20.0 // 指数関数的減少の場合の保守的な推定
+                    } else {
+                        1000.0 // 無限ループの可能性
+                    }
+                },
+                UpdateType::Custom => 50.0, // カスタム更新の場合のデフォルト値
+            }
+        }
+        
+        // カスタム更新の反復回数を推定する関数
+        fn analyze_custom_update_iterations(initial_value: f64, condition: ConditionType) -> f64 {
+            match condition {
+                ConditionType::LessThan(end) | ConditionType::LessOrEqual(end) => {
+                    if end > initial_value {
+                        end - initial_value // 条件に基づく推定
+                    } else {
+                        0.0 // 即座に終了
+                    }
+                },
+                ConditionType::GreaterThan(end) | ConditionType::GreaterOrEqual(end) => {
+                    if initial_value > end {
+                        initial_value - end // 条件に基づく推定
+                    } else {
+                        0.0 // 即座に終了
+                    }
+                },
+                ConditionType::NotEqual(end) => {
+                    if initial_value != end {
+                        50.0 // カスタム更新の場合のデフォルト値
+                    } else {
+                        0.0 // 即座に終了
+                    }
+                },
+                ConditionType::Custom => 50.0, // カスタム条件の場合のデフォルト値
+            }
+        }
+        
+        // コレクション反復を分析する関数
+        fn analyze_collection_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> Option<f64> {
+            // コレクション反復パターンを検出
+            if is_collection_iteration(cfg, header, body) {
+                // コレクションの種類に基づいてサイズを推定
+                if is_array_iteration(cfg, header, body) {
+                    return Some(estimate_array_size(cfg, header, body));
+                } else if is_list_iteration(cfg, header, body) {
+                    return Some(estimate_list_size(cfg, header, body));
+                } else if is_map_iteration(cfg, header, body) {
+                    return Some(estimate_map_size(cfg, header, body));
+                } else if is_range_iteration(cfg, header, body) {
+                    return Some(estimate_range_size(cfg, header, body));
+                } else if is_string_iteration(cfg, header, body) {
+                    return Some(estimate_string_length(cfg, header, body));
+                } else if is_generator_iteration(cfg, header, body) {
+                    return Some(estimate_generator_size(cfg, header, body));
+                }
+            }
+            
+            None
+        }
+        
+        // コレクション反復かどうかを判定する関数
+        fn is_collection_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> bool {
+            let block = match cfg.get_block(header) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            
+            // ループヘッダーの命令を分析
+            for instr in &block.instructions {
+                if let Instruction::Assignment { target, value } = instr {
+                    if let Value::FunctionCall { name, args } = value {
+                        // イテレータ関連の関数呼び出しを検出
+                        if name == "next" || name == "iterator" || name == "iter" || 
+                           name == "into_iter" || name == "get_next" || name == "hasNext" ||
+                           name == "moveNext" {
+                            return true;
+                        }
+                    } else if let Value::MemberAccess { object, member } = value {
+                        // イテレータメソッド呼び出しを検出
+                        if member == "next" || member == "iterator" || member == "iter" || 
+                           member == "into_iter" || member == "get_next" || member == "hasNext" ||
+                           member == "moveNext" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            // ループ終了条件を分析
+            if let Some(Terminator::ConditionalBranch { condition, .. }) = &block.terminator {
+                if let Value::Binary { op: BinaryOp::Ne, left, right } = condition {
+                    // イテレータの終了条件を検出
+                    if let Value::Constant(ConstantValue::Null) = **right {
+                        return true;
+                    } else if let Value::Constant(ConstantValue::Null) = **left {
+                        return true;
+                    }
+                } else if let Value::FunctionCall { name, .. } = condition {
+                    // イテレータの終了条件関数を検出
+                    if name == "hasNext" || name == "has_next" || name == "moveNext" || 
+                       name == "move_next" || name == "valid" || name == "is_valid" {
+                        return true;
+                    }
+                } else if let Value::MemberAccess { object: _, member } = condition {
+                    // イテレータの終了条件メソッドを検出
+                    if member == "hasNext" || member == "has_next" || member == "moveNext" || 
+                       member == "move_next" || member == "valid" || member == "is_valid" {
+                        return true;
+                    }
+                }
+            }
+            
+            // for-in/for-each構文の検出
+            for &block_id in body {
+                let block = match cfg.get_block(block_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                
+                for instr in &block.instructions {
+                    if let Instruction::ForEach { collection, variable } = instr {
+                        return true;
+                    }
+                }
+            }
+            
             false
         }
         
-        // コレクション反復ループかどうかを判定
-        fn is_collection_iteration(cfg: &ControlFlowGraph, _header: usize, _body: &HashSet<usize>) -> bool {
-            // コレクション（配列、リストなど）を反復するパターンを検出
-            // 実際の実装では命令パターンを分析
+        // 配列反復かどうかを判定する関数
+        fn is_array_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> bool {
+            let block = match cfg.get_block(header) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
             
-            // 簡易実装
+            // 配列アクセスパターンを検出
+            for &block_id in body {
+                let block = match cfg.get_block(block_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                
+                for instr in &block.instructions {
+                    if let Instruction::Assignment { target: _, value } = instr {
+                        if let Value::IndexAccess { array, index } = value {
+                            // インデックスアクセスを検出
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            // 配列イテレータの検出
+            for instr in &block.instructions {
+                if let Instruction::Assignment { target: _, value } = instr {
+                    if let Value::FunctionCall { name, args } = value {
+                        if name == "array_iterator" || name == "arrayIterator" || 
+                           name == "iter_array" || name == "iterArray" {
+                            return true;
+                        }
+                    } else if let Value::MemberAccess { object: _, member } = value {
+                        if member == "array_iterator" || member == "arrayIterator" || 
+                           member == "iter_array" || member == "iterArray" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            
             false
         }
         
-        // エントリーブロックから探索開始
-        if let Some(entry) = cfg.entry_block() {
-            dfs(entry, cfg, &mut visited, &mut stack, &mut in_stack, &mut loops);
+        // リスト反復かどうかを判定する関数
+        fn is_list_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> bool {
+            let block = match cfg.get_block(header) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            
+            // リストイテレータの検出
+            for instr in &block.instructions {
+                if let Instruction::Assignment { target: _, value } = instr {
+                    if let Value::FunctionCall { name, args } = value {
+                        if name == "list_iterator" || name == "listIterator" || 
+                           name == "iter_list" || name == "iterList" {
+                            return true;
+                        }
+                    } else if let Value::MemberAccess { object: _, member } = value {
+                        if member == "list_iterator" || member == "listIterator" || 
+                           member == "iter_list" || member == "iterList" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            // リスト操作の検出
+            for &block_id in body {
+                let block = match cfg.get_block(block_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                
+                for instr in &block.instructions {
+                    if let Instruction::Assignment { target: _, value } = instr {
+                        if let Value::FunctionCall { name, args } = value {
+                            if name == "get" || name == "add" || name == "remove" || 
+                               name == "insert" || name == "push" || name == "pop" {
+                                return true;
+                            }
+                        } else if let Value::MemberAccess { object: _, member } = value {
+                            if member == "get" || member == "add" || member == "remove" || 
+                               member == "insert" || member == "push" || member == "pop" {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            false
         }
         
-        loops
+        // マップ反復かどうかを判定する関数
+        fn is_map_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> bool {
+            let block = match cfg.get_block(header) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            
+            // マップイテレータの検出
+            for instr in &block.instructions {
+                if let Instruction::Assignment { target: _, value } = instr {
+                    if let Value::FunctionCall { name, args } = value {
+                        if name == "map_iterator" || name == "mapIterator" || 
+                           name == "iter_map" || name == "iterMap" || 
+                           name == "entries" || name == "keys" || name == "values" {
+                            return true;
+                        }
+                    } else if let Value::MemberAccess { object: _, member } = value {
+                        if member == "map_iterator" || member == "mapIterator" || 
+                           member == "iter_map" || member == "iterMap" || 
+                           member == "entries" || member == "keys" || member == "values" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            // マップ操作の検出
+            for &block_id in body {
+                let block = match cfg.get_block(block_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                
+                for instr in &block.instructions {
+                    if let Instruction::Assignment { target: _, value } = instr {
+                        if let Value::FunctionCall { name, args } = value {
+                            if name == "get" || name == "put" || name == "remove" || 
+                               name == "containsKey" || name == "contains_key" ||
+                               name == "containsValue" || name == "contains_value" {
+                                return true;
+                            }
+                        } else if let Value::MemberAccess { object: _, member } = value {
+                            if member == "get" || member == "put" || member == "remove" || 
+                               member == "containsKey" || member == "contains_key" ||
+                               member == "containsValue" || member == "contains_value" {
+                                return true;
+                            }
+                        } else if let Value::IndexAccess { object: _, index: _ } = value {
+                            // マップのインデックスアクセスパターンを検出
+                            // シンボルテーブルを使用して、objectがマップ型かどうかを確認する必要がある
+                            if let Some(symbol_table) = cfg.get_symbol_table() {
+                                if let Some(obj_type) = symbol_table.get_value_type(value) {
+                                    if obj_type.is_map_type() {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // データフロー分析によるマップ操作の検出
+            if let Some(data_flow) = cfg.get_data_flow_analysis() {
+                for &block_id in body {
+                    let uses = data_flow.get_uses_in_block(block_id);
+                    for var in uses {
+                        if let Some(var_type) = data_flow.get_variable_type(&var) {
+                            if var_type.is_map_type() || var_type.is_map_iterator_type() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            false
+        }
+        
+        // 配列サイズを推定する関数
+        fn estimate_array_size(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> f64 {
+            // 静的解析によるサイズ推定
+            if let Some(static_size) = analyze_static_array_size(cfg, header, body) {
+                return static_size as f64;
+            }
+            
+            // ループ境界分析
+            if let Some(loop_bound) = analyze_loop_bounds(cfg, header) {
+                return loop_bound as f64;
+            }
+            
+            // シンボルテーブルから型情報を取得
+            if let Some(symbol_table) = cfg.get_symbol_table() {
+                // ループ内で使用される配列変数を特定
+                let array_vars = find_array_variables(cfg, header, body, symbol_table);
+                
+                for var in array_vars {
+                    if let Some(array_type) = symbol_table.get_variable_type(&var) {
+                        if let Some(size) = array_type.get_static_size() {
+                            return size as f64;
+                        }
+                        
+                        // 配列の使用パターンから推定
+                        if let Some(usage_pattern) = analyze_array_usage_pattern(cfg, body, &var) {
+                            match usage_pattern {
+                                ArrayUsagePattern::SmallConstant => return 10.0,
+                                ArrayUsagePattern::MediumConstant => return 100.0,
+                                ArrayUsagePattern::LargeConstant => return 1000.0,
+                                ArrayUsagePattern::DynamicSmall => return 20.0,
+                                ArrayUsagePattern::DynamicMedium => return 200.0,
+                                ArrayUsagePattern::DynamicLarge => return 2000.0,
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 過去の実行履歴からの推定
+            if let Some(historical_data) = get_historical_array_size_data(header) {
+                return historical_data;
+            }
+            
+            // ヒューリスティックな推定
+            // ループの複雑さに基づいて推定
+            let loop_complexity = analyze_loop_complexity(cfg, header, body);
+            match loop_complexity {
+                LoopComplexity::Simple => 50.0,
+                LoopComplexity::Medium => 200.0,
+                LoopComplexity::Complex => 500.0,
+            }
+        }
+        
+        // リストサイズを推定する関数
+        fn estimate_list_size(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> f64 {
+            // 静的解析によるサイズ推定
+            if let Some(static_size) = analyze_static_list_size(cfg, header, body) {
+                return static_size as f64;
+            }
+            
+            // リスト操作の分析
+            let (additions, removals) = analyze_list_operations(cfg, body);
+            if additions > 0 && removals == 0 {
+                // 追加のみの場合、ループ回数に基づいて推定
+                if let Some(loop_iterations) = estimate_loop_iterations(cfg, header) {
+                    return loop_iterations as f64;
+                }
+            }
+            
+            // シンボルテーブルから型情報を取得
+            if let Some(symbol_table) = cfg.get_symbol_table() {
+                // ループ内で使用されるリスト変数を特定
+                let list_vars = find_list_variables(cfg, header, body, symbol_table);
+                
+                for var in list_vars {
+                    if let Some(list_type) = symbol_table.get_variable_type(&var) {
+                        // リストの初期化パターンから推定
+                        if let Some(init_size) = analyze_list_initialization(&var, symbol_table) {
+                            return init_size as f64;
+                        }
+                        
+                        // リストの使用パターンから推定
+                        if let Some(usage_pattern) = analyze_list_usage_pattern(cfg, body, &var) {
+                            match usage_pattern {
+                                ListUsagePattern::SmallCollection => return 20.0,
+                                ListUsagePattern::MediumCollection => return 100.0,
+                                ListUsagePattern::LargeCollection => return 1000.0,
+                                ListUsagePattern::DynamicSmall => return 50.0,
+                                ListUsagePattern::DynamicMedium => return 250.0,
+                                ListUsagePattern::DynamicLarge => return 2500.0,
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 過去の実行履歴からの推定
+            if let Some(historical_data) = get_historical_list_size_data(header) {
+                return historical_data;
+            }
+            
+            // コンテキスト分析
+            let context = analyze_execution_context(cfg);
+            match context {
+                ExecutionContext::DataProcessing => 500.0,
+                ExecutionContext::UserInterface => 50.0,
+                ExecutionContext::SystemOperation => 200.0,
+                ExecutionContext::Unknown => 100.0,
+            }
+        }
+        
+        // マップサイズを推定する関数
+        fn estimate_map_size(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> f64 {
+            // 静的解析によるサイズ推定
+            if let Some(static_size) = analyze_static_map_size(cfg, header, body) {
+                return static_size as f64;
+            }
+            
+            // マップ操作の分析
+            let (puts, removes) = analyze_map_operations(cfg, body);
+            if puts > 0 && removes == 0 {
+                // 追加のみの場合、ループ回数に基づいて推定
+                if let Some(loop_iterations) = estimate_loop_iterations(cfg, header) {
+                    return loop_iterations as f64;
+                }
+            }
+            
+            // シンボルテーブルから型情報を取得
+            if let Some(symbol_table) = cfg.get_symbol_table() {
+                // ループ内で使用されるマップ変数を特定
+                let map_vars = find_map_variables(cfg, header, body, symbol_table);
+                
+                for var in map_vars {
+                    if let Some(map_type) = symbol_table.get_variable_type(&var) {
+                        // マップの初期化パターンから推定
+                        if let Some(init_size) = analyze_map_initialization(&var, symbol_table) {
+                            return init_size as f64;
+                        }
+                        
+                        // キーの型に基づく推定
+                        if let Some(key_type) = map_type.get_key_type() {
+                            match key_type {
+                                KeyType::Enum => return 10.0, // 列挙型は通常小さい
+                                KeyType::String => return 200.0, // 文字列キーは中程度
+                                KeyType::Integer => return 500.0, // 整数キーは大きい可能性
+                                KeyType::Complex => return 100.0, // 複合キーは中程度
+                            }
+                        }
+                        
+                        // マップの使用パターンから推定
+                        if let Some(usage_pattern) = analyze_map_usage_pattern(cfg, body, &var) {
+                            match usage_pattern {
+                                MapUsagePattern::Configuration => return 20.0,
+                                MapUsagePattern::Cache => return 500.0,
+                                MapUsagePattern::Index => return 1000.0,
+                                MapUsagePattern::Lookup => return 100.0,
+                                MapUsagePattern::DynamicSmall => return 50.0,
+                                MapUsagePattern::DynamicLarge => return 2000.0,
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 過去の実行履歴からの推定
+            if let Some(historical_data) = get_historical_map_size_data(header) {
+                return historical_data;
+            }
+            
+            // アプリケーションドメイン分析
+            let domain = analyze_application_domain(cfg);
+            match domain {
+                ApplicationDomain::WebService => 300.0,
+                ApplicationDomain::DataAnalysis => 1000.0,
+                ApplicationDomain::MobileApp => 100.0,
+                ApplicationDomain::SystemSoftware => 500.0,
+                ApplicationDomain::Unknown => 150.0,
+            }
+        }
+        // ループ内の分岐を分析する関数
+        fn analyze_loop_branches(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> f64 {
+            // ループ内の条件分岐の数をカウント
+            let mut branch_count = 0.0;
+            
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    if let Some(Terminator::ConditionalBranch { .. }) = &block.terminator {
+                        branch_count += 1.0;
+                    }
+                }
+            }
+            
+            // 分岐密度を計算（ブロック数に対する分岐の割合）
+            let body_size = body.len() as f64;
+            if body_size > 0.0 {
+                branch_count / body_size
+            } else {
+                0.0
+            }
+        }
+        
+        // ループのネストレベルを分析する関数
+        fn analyze_loop_nesting(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> usize {
+            // このループ内に含まれる他のループの数をカウント
+            let mut inner_loop_count = 0;
+            
+            for &block_id in body {
+                if block_id != header && is_loop_header(cfg, block_id) {
+                    inner_loop_count += 1;
+                }
+            }
+            
+            inner_loop_count
+        }
+        
+        // ブロックがループヘッダーかどうかを判定する関数
+        fn is_loop_header(cfg: &ControlFlowGraph, block_id: usize) -> bool {
+            // バックエッジの存在を確認
+            for pred in cfg.predecessors(block_id) {
+                if cfg.dominates(block_id, *pred) {
+                    return true;
+                }
+            }
+            
+            false
+        }
+        
+        // 過去の実行履歴データを取得する関数
+        fn get_historical_execution_data(header: usize) -> Option<f64> {
+            // プロファイリングデータベースからループの実行履歴を取得
+            let profile_db = ProfileDatabase::get_instance();
+            
+            // ループヘッダーIDに基づいて実行履歴を検索
+            if let Some(history) = profile_db.query_loop_execution_history(header) {
+                // 実行履歴から平均反復回数を計算
+                let avg_iterations = history.calculate_average_iterations();
+                
+                // 信頼度が閾値を超える場合のみ値を返す
+                if history.confidence_level() >= 0.75 {
+                    return Some(avg_iterations);
+                }
+            }
+            
+            // 十分な履歴データがない場合はNoneを返す
+            None
+        }
+        
+        // 機械学習モデルを使用して反復回数を予測する関数
+        fn predict_iterations_with_ml(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> Option<f64> {
+            // 機械学習予測モデルのインスタンスを取得
+            let ml_predictor = MLLoopPredictor::get_instance();
+            
+            // 予測のための特徴量を抽出
+            let features = extract_loop_features(cfg, header, body);
+            
+            // 予測を実行
+            let prediction_result = ml_predictor.predict(features);
+            
+            // 予測結果を検証
+            if let Some(prediction) = prediction_result {
+                // 予測の信頼度を確認
+                if prediction.confidence >= 0.8 {
+                    // 予測値が合理的な範囲内かチェック
+                    if prediction.value >= 1.0 && prediction.value <= 10000.0 {
+                        return Some(prediction.value);
+                    }
+                }
+            }
+            
+            None
+        }
+        
+        // ループの特徴量を抽出する関数
+        fn extract_loop_features(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> LoopFeatures {
+            // ループの基本的な構造情報
+            let size = body.len();
+            let nesting_level = analyze_loop_nesting(cfg, header, body);
+            let branch_density = analyze_loop_branches(cfg, header, body);
+            
+            // ループ内の命令分析
+            let mut instruction_counts = HashMap::new();
+            let mut memory_access_pattern = MemoryAccessPattern::new();
+            let mut has_function_calls = false;
+            let mut has_floating_point = false;
+            
+            // ループ内の各ブロックを分析
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    // 命令タイプの分布を分析
+                    for instr in &block.instructions {
+                        let instr_type = categorize_instruction(instr);
+                        *instruction_counts.entry(instr_type).or_insert(0) += 1;
+                        
+                        // 関数呼び出しの検出
+                        if let Instruction::Call { .. } = instr {
+                            has_function_calls = true;
+                        }
+                        
+                        // 浮動小数点演算の検出
+                        if is_floating_point_operation(instr) {
+                            has_floating_point = true;
+                        }
+                        
+                        // メモリアクセスパターンの分析
+                        analyze_memory_access(instr, &mut memory_access_pattern);
+                    }
+                }
+            }
+            
+            // 制御フロー複雑性の計算
+            let control_flow_complexity = calculate_cyclomatic_complexity(cfg, body);
+            
+            // データ依存関係の分析
+            let data_dependencies = analyze_data_dependencies(cfg, body);
+            
+            // 帰納変数の特定と分析
+            let induction_variables = identify_induction_variables(cfg, header, body);
+            
+            // 終了条件の分析
+            let exit_conditions = analyze_exit_conditions(cfg, header, body);
+            
+            // 特徴量をまとめて返す
+            LoopFeatures {
+                size,
+                nesting_level,
+                branch_density,
+                instruction_distribution: instruction_counts,
+                memory_access_pattern,
+                has_function_calls,
+                has_floating_point,
+                control_flow_complexity,
+                data_dependencies,
+                induction_variables,
+                exit_conditions,
+            }
+        }
+        
+        // 命令を分類する関数
+        fn categorize_instruction(instr: &Instruction) -> InstructionType {
+            match instr {
+                Instruction::BinaryOp { op, .. } => match op {
+                    BinaryOperator::Add | BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div => {
+                        InstructionType::Arithmetic
+                    }
+                    BinaryOperator::And | BinaryOperator::Or | BinaryOperator::Xor => {
+                        InstructionType::Logical
+                    }
+                    BinaryOperator::Eq | BinaryOperator::Ne | BinaryOperator::Lt | BinaryOperator::Le | 
+                    BinaryOperator::Gt | BinaryOperator::Ge => {
+                        InstructionType::Comparison
+                    }
+                    _ => InstructionType::Other,
+                },
+                Instruction::Load { .. } => InstructionType::MemoryRead,
+                Instruction::Store { .. } => InstructionType::MemoryWrite,
+                Instruction::Call { .. } => InstructionType::FunctionCall,
+                Instruction::Alloca { .. } => InstructionType::MemoryAllocation,
+                Instruction::GetElementPtr { .. } => InstructionType::AddressComputation,
+                Instruction::Phi { .. } => InstructionType::PhiNode,
+                _ => InstructionType::Other,
+            }
+        }
+        
+        // 浮動小数点演算を検出する関数
+        fn is_floating_point_operation(instr: &Instruction) -> bool {
+            match instr {
+                Instruction::BinaryOp { ty, .. } => {
+                    matches!(ty, Type::Float | Type::Double)
+                }
+                Instruction::UnaryOp { ty, .. } => {
+                    matches!(ty, Type::Float | Type::Double)
+                }
+                _ => false,
+            }
+        }
+        
+        // メモリアクセスパターンを分析する関数
+        fn analyze_memory_access(instr: &Instruction, pattern: &mut MemoryAccessPattern) {
+            match instr {
+                Instruction::Load { address, .. } => {
+                    if let Some(access_info) = analyze_address_expression(address) {
+                        pattern.add_read_access(access_info);
+                    }
+                }
+                Instruction::Store { address, .. } => {
+                    if let Some(access_info) = analyze_address_expression(address) {
+                        pattern.add_write_access(access_info);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        // アドレス式を分析する関数
+        fn analyze_address_expression(expr: &Expression) -> Option<MemoryAccessInfo> {
+            match expr {
+                Expression::GetElementPtr { base, indices, .. } => {
+                    // 基本アドレスの種類を特定
+                    let base_type = identify_base_address_type(base);
+                    
+                    // インデックス計算パターンを分析
+                    let index_pattern = analyze_index_pattern(indices);
+                    
+                    // ストライドパターンを検出
+                    let stride_pattern = detect_stride_pattern(indices);
+                    
+                    Some(MemoryAccessInfo {
+                        base_type,
+                        index_pattern,
+                        stride_pattern,
+                        is_aligned: check_alignment(expr),
+                        locality_score: estimate_locality(index_pattern, stride_pattern),
+                    })
+                }
+                _ => None,
+            }
+        }
+        
+        // 循環的複雑度を計算する関数
+        fn calculate_cyclomatic_complexity(cfg: &ControlFlowGraph, body: &HashSet<usize>) -> u32 {
+            // E = エッジ数、N = ノード数、P = 連結成分数（通常は1）
+            // 循環的複雑度 = E - N + 2*P
+            let mut edge_count = 0;
+            
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    // 各ブロックの後続ブロックをカウント
+                    if let Some(terminator) = &block.terminator {
+                        match terminator {
+                            Terminator::Jump { target } => {
+                                if body.contains(target) {
+                                    edge_count += 1;
+                                }
+                            }
+                            Terminator::ConditionalBranch { true_target, false_target, .. } => {
+                                if body.contains(true_target) {
+                                    edge_count += 1;
+                                }
+                                if body.contains(false_target) {
+                                    edge_count += 1;
+                                }
+                            }
+                            Terminator::Switch { cases, default, .. } => {
+                                for (_, target) in cases {
+                                    if body.contains(target) {
+                                        edge_count += 1;
+                                    }
+                                }
+                                if body.contains(default) {
+                                    edge_count += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            
+            // 循環的複雑度の計算
+            let node_count = body.len() as u32;
+            let connected_components = 1; // ループは単一の連結成分
+            
+            edge_count - node_count + 2 * connected_components
+        }
+        
+        // データ依存関係を分析する関数
+        fn analyze_data_dependencies(cfg: &ControlFlowGraph, body: &HashSet<usize>) -> DataDependencyInfo {
+            let mut dependency_graph = DependencyGraph::new();
+            let mut loop_carried_deps = Vec::new();
+            
+            // 各ブロックの命令を分析
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    for (i, instr) in block.instructions.iter().enumerate() {
+                        // 命令の定義と使用を分析
+                        let def = get_defined_variable(instr);
+                        let uses = get_used_variables(instr);
+                        
+                        // 依存関係をグラフに追加
+                        if let Some(def_var) = def {
+                            for use_var in uses {
+                                dependency_graph.add_dependency(use_var, def_var.clone());
+                                
+                                // ループをまたぐ依存関係を検出
+                                if is_loop_carried_dependency(cfg, block_id, i, &use_var, &def_var) {
+                                    loop_carried_deps.push((use_var, def_var.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 依存関係の分析結果
+            let critical_path = find_critical_path(&dependency_graph);
+            let parallelizable_regions = identify_parallelizable_regions(&dependency_graph, &loop_carried_deps);
+            
+            DataDependencyInfo {
+                dependency_graph,
+                loop_carried_dependencies: loop_carried_deps,
+                critical_path,
+                parallelizable_regions,
+            }
+        }
+        
+        // 帰納変数を特定する関数
+        fn identify_induction_variables(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> Vec<InductionVariableInfo> {
+            let mut induction_vars = Vec::new();
+            
+            // ループ内のPhi命令を分析
+            if let Ok(header_block) = cfg.get_block(header) {
+                for instr in &header_block.instructions {
+                    if let Instruction::Phi { variable, incoming } = instr {
+                        // 初期値と更新式を分析
+                        let mut initial_value = None;
+                        let mut update_expr = None;
+                        
+                        for (value, pred_block) in incoming {
+                            if !body.contains(pred_block) {
+                                // ループ外からの値は初期値
+                                initial_value = Some(value.clone());
+                            } else {
+                                // ループ内からの値は更新式
+                                update_expr = Some(value.clone());
+                            }
+                        }
+                        
+                        // 更新パターンを分析
+                        if let (Some(init), Some(update)) = (initial_value, update_expr) {
+                            if let Some(pattern) = analyze_update_pattern(&update, variable) {
+                                induction_vars.push(InductionVariableInfo {
+                                    variable: variable.clone(),
+                                    initial_value: init,
+                                    update_pattern: pattern,
+                                    is_primary: is_primary_induction_variable(&pattern),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 二次帰納変数の検出
+            let mut secondary_induction_vars = Vec::new();
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    for instr in &block.instructions {
+                        if let Instruction::BinaryOp { result, op, lhs, rhs } = instr {
+                            // 一次帰納変数に依存する変数を検出
+                            if is_dependent_on_induction_vars(lhs, &induction_vars) || 
+                               is_dependent_on_induction_vars(rhs, &induction_vars) {
+                                if let Some(pattern) = derive_secondary_pattern(op, lhs, rhs, &induction_vars) {
+                                    secondary_induction_vars.push(InductionVariableInfo {
+                                        variable: result.clone(),
+                                        initial_value: Expression::Unknown,
+                                        update_pattern: pattern,
+                                        is_primary: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 一次と二次の帰納変数を結合
+            induction_vars.extend(secondary_induction_vars);
+            induction_vars
+        }
+        
+        // ループの終了条件を分析する関数
+        fn analyze_exit_conditions(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> Vec<ExitConditionInfo> {
+            let mut exit_conditions = Vec::new();
+            
+            // ループ内の各ブロックを調査
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    if let Some(terminator) = &block.terminator {
+                        match terminator {
+                            Terminator::ConditionalBranch { condition, true_target, false_target } => {
+                                // ループ外に出るエッジを検出
+                                let exit_target = if !body.contains(true_target) {
+                                    Some((true_target, true))
+                                } else if !body.contains(false_target) {
+                                    Some((false_target, false))
+                                } else {
+                                    None
+                                };
+                                
+                                // 終了条件を分析
+                                if let Some((target, is_true_branch)) = exit_target {
+                                    let analyzed_condition = analyze_condition(condition, is_true_branch);
+                                    
+                                    // 帰納変数との関係を分析
+                                    let induction_vars = identify_induction_variables(cfg, header, body);
+                                    let relation = relate_to_induction_variables(&analyzed_condition, &induction_vars);
+                                    
+                                    exit_conditions.push(ExitConditionInfo {
+                                        block_id,
+                                        condition: analyzed_condition,
+                                        target: *target,
+                                        induction_relation: relation,
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            
+            exit_conditions
+        }
+    }
+}
+
+impl CodeGenerator {
+    pub fn generate(&mut self) -> Result<(), Error> {
+        if self.config.parallel {
+            self.logger.info("並列コード生成を実行します");
+            self.generate_parallel()
+        } else {
+            self.logger.info("逐次コード生成を実行します");
+            self.generate_sequential()
+        }
+    }
+
+    fn generate_parallel(&mut self) -> Result<(), Error> {
+        use rayon::prelude::*;
+        use std::sync::{Arc, Mutex};
+
+        self.logger.debug("並列コード生成の最適化レベルを設定: {}", self.config.optimization_level);
+        
+        // モジュールの初期化
+        let module = Arc::new(Mutex::new(Module::new()));
+        
+        // 関数をグループ化して依存関係を分析
+        let function_groups = self.analyze_function_dependencies()?;
+        
+        // 各グループを並列処理
+        let results: Vec<Result<(), Error>> = function_groups
+            .par_iter()
+            .map(|group| {
+                let group_result = group.par_iter().map(|func_id| {
+                    let func = self.ir_module.get_function(*func_id)?;
+                    let mut generator = FunctionGenerator::new(
+                        func,
+                        self.config.clone(),
+                        self.type_registry.clone(),
+                        Arc::clone(&module),
+                    );
+                    generator.generate()
+                }).collect::<Result<Vec<_>, Error>>();
+                
+                // グループ内のすべての関数が生成されたか確認
+                group_result.map(|_| ())
+            })
+            .collect();
+        
+        // エラーがあれば最初のエラーを返す
+        for result in results {
+            if let Err(e) = result {
+                return Err(e);
+            }
+        }
+        
+        // 最適化パスを実行
+        {
+            let mut module = module.lock().unwrap();
+            self.run_optimization_passes(&mut module)?;
+        }
+        
+        // 最終的なWASMバイナリを生成
+        let module = Arc::try_unwrap(module)
+            .map_err(|_| Error::Internal("モジュールの排他的所有権を取得できませんでした".to_string()))?
+            .into_inner()
+            .map_err(|_| Error::Internal("ミューテックスロックの解除に失敗しました".to_string()))?;
+        
+        self.finalize_module(module)
+    }
+
+    fn generate_sequential(&mut self) -> Result<(), Error> {
+        self.logger.debug("逐次コード生成の最適化レベルを設定: {}", self.config.optimization_level);
+        
+        // モジュールの初期化
+        let mut module = Module::new();
+        
+        // すべての関数を処理
+        for func_id in 0..self.ir_module.function_count() {
+            let func = self.ir_module.get_function(func_id)?;
+            let mut generator = FunctionGenerator::new(
+                func,
+                self.config.clone(),
+                self.type_registry.clone(),
+                Arc::new(Mutex::new(module)),
+            );
+            generator.generate()?;
+            
+            // FunctionGeneratorからモジュールを取り出す
+            module = Arc::try_unwrap(generator.module)
+                .map_err(|_| Error::Internal("モジュールの排他的所有権を取得できませんでした".to_string()))?
+                .into_inner()
+                .map_err(|_| Error::Internal("ミューテックスロックの解除に失敗しました".to_string()))?;
+        }
+        
+        // 最適化パスを実行
+        self.run_optimization_passes(&mut module)?;
+        
+        // 最終的なWASMバイナリを生成
+        self.finalize_module(module)
     }
     
-    /// 分岐確率を推定する
-    fn estimate_branch_probabilities(&self, block_id: usize, cfg: &ControlFlowGraph) -> (f64, f64) {
-        // ヒューリスティックに基づく分岐確率の推定
-        // 1. 条件式のパターン分析
-        // 2. ループ終了条件の特別扱い
-        // 3. null/エラーチェックの特別扱い
+    fn analyze_function_dependencies(&self) -> Result<Vec<Vec<usize>>, Error> {
+        // 関数の依存関係グラフを構築
+        let mut dependency_graph = vec![Vec::new(); self.ir_module.function_count()];
+        let mut reverse_deps = vec![Vec::new(); self.ir_module.function_count()];
         
+        for func_id in 0..self.ir_module.function_count() {
+            let func = self.ir_module.get_function(func_id)?;
+            
+            // 関数内の呼び出しを分析
+            for call in func.collect_calls() {
+                dependency_graph[func_id].push(call);
+                reverse_deps[call].push(func_id);
+            }
+        }
+        
+        // 強連結成分を見つけてグループ化
+        let mut visited = vec![false; self.ir_module.function_count()];
+        let mut finish_time = Vec::with_capacity(self.ir_module.function_count());
+        let mut groups = Vec::new();
+        
+        // 第1パス: 完了時間を記録
+        for i in 0..self.ir_module.function_count() {
+            if !visited[i] {
+                self.dfs_first_pass(i, &dependency_graph, &mut visited, &mut finish_time)?;
+            }
+        }
+        
+        // 第2パス: 強連結成分を特定
+        visited = vec![false; self.ir_module.function_count()];
+        
+        for &func_id in finish_time.iter().rev() {
+            if !visited[func_id] {
+                let mut group = Vec::new();
+                self.dfs_second_pass(func_id, &reverse_deps, &mut visited, &mut group)?;
+                groups.push(group);
+            }
+        }
+        
+        Ok(groups)
+    }
+    
+    fn dfs_first_pass(
+        &self,
+        func_id: usize,
+        graph: &[Vec<usize>],
+        visited: &mut [bool],
+        finish_time: &mut Vec<usize>,
+    ) -> Result<(), Error> {
+        visited[func_id] = true;
+        
+        for &neighbor in &graph[func_id] {
+            if !visited[neighbor] {
+                self.dfs_first_pass(neighbor, graph, visited, finish_time)?;
+            }
+        }
+        
+        finish_time.push(func_id);
+        Ok(())
+    }
+    
+    fn dfs_second_pass(
+        &self,
+        func_id: usize,
+        graph: &[Vec<usize>],
+        visited: &mut [bool],
+        group: &mut Vec<usize>,
+    ) -> Result<(), Error> {
+        visited[func_id] = true;
+        group.push(func_id);
+        
+        for &neighbor in &graph[func_id] {
+            if !visited[neighbor] {
+                self.dfs_second_pass(neighbor, graph, visited, group)?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn run_optimization_passes(&self, module: &mut Module) -> Result<(), Error> {
+        match self.config.optimization_level {
+            OptimizationLevel::None => {
+                // 最適化なし
+                self.logger.debug("最適化パスをスキップします");
+            },
+            OptimizationLevel::Basic => {
+                self.logger.debug("基本的な最適化パスを実行します");
+                // 基本的な最適化
+                self.run_basic_optimizations(module)?;
+            },
+            OptimizationLevel::Aggressive => {
+                self.logger.debug("積極的な最適化パスを実行します");
+                // 基本的な最適化に加えて積極的な最適化
+                self.run_basic_optimizations(module)?;
+                self.run_aggressive_optimizations(module)?;
+            },
+            OptimizationLevel::Size => {
+                self.logger.debug("サイズ最適化パスを実行します");
+                // サイズ最適化
+                self.run_size_optimizations(module)?;
+            },
+        }
+        
+        Ok(())
+    }
+    
+    fn run_basic_optimizations(&self, module: &mut Module) -> Result<(), Error> {
+        // 定数畳み込み
+        let mut constant_folder = ConstantFolding::new();
+        constant_folder.run(module)?;
+        
+        // デッドコード除去
+        let mut dce = DeadCodeElimination::new();
+        dce.run(module)?;
+        
+        // 命令の組み合わせ
+        let mut instruction_combiner = InstructionCombiner::new();
+        instruction_combiner.run(module)?;
+        
+        Ok(())
+    }
+    
+    fn run_aggressive_optimizations(&self, module: &mut Module) -> Result<(), Error> {
+        // ループ最適化
+        let mut loop_optimizer = LoopOptimizer::new();
+        loop_optimizer.run(module)?;
+        
+        // インライン化
+        let mut inliner = FunctionInliner::new();
+        inliner.run(module)?;
+        
+        // SIMD最適化
+        if self.config.enable_simd {
+            let mut simd_optimizer = SIMDOptimizer::new();
+            simd_optimizer.run(module)?;
+        }
+        
+        Ok(())
+    }
+    
+    fn run_size_optimizations(&self, module: &mut Module) -> Result<(), Error> {
+        // コード重複除去
+        let mut deduplicator = CodeDeduplicator::new();
+        deduplicator.run(module)?;
+        
+        // 関数マージ
+        let mut function_merger = FunctionMerger::new();
+        function_merger.run(module)?;
+        
+        // 命令エンコーディング最適化
+        let mut encoding_optimizer = EncodingOptimizer::new();
+        encoding_optimizer.run(module)?;
+        
+        Ok(())
+    }
+    
+    fn finalize_module(&self, module: Module) -> Result<(), Error> {
+        self.logger.debug("WASMモジュールを最終化しています");
+        
+        // バリデーション
+        if self.config.validate {
+            self.logger.debug("WASMモジュールを検証しています");
+            module.validate()?;
+        }
+        
+        // バイナリ生成
+        let binary = module.emit_binary()?;
+        
+        // 出力ファイルに書き込み
+        if let Some(output_path) = &self.config.output_path {
+            self.logger.info("WASMバイナリを出力: {}", output_path.display());
+            std::fs::write(output_path, &binary)
+                .map_err(|e| Error::IO(format!("WASMバイナリの書き込みに失敗: {}", e)))?;
+        }
+        
+        // メモリ使用量の最適化
+        if self.config.optimize_memory {
+            self.logger.debug("メモリ使用量を最適化しています");
+            // メモリ最適化のコード
+        }
+        
+        Ok(())
+    }
+}
+
+// イテレータアクセスパターンを検出する関数
+fn has_iterator_element_access(cfg: &ControlFlowGraph, iterator_candidates: &HashSet<usize>, body: &HashSet<usize>) -> bool {
+    let mut has_element_access = false;
+    
+    for &block_id in body {
         let block = match cfg.get_block(block_id) {
             Ok(block) => block,
-            Err(_) => return (0.5, 0.5), // デフォルト値
+            Err(_) => continue,
         };
         
-        if let Some(Terminator::ConditionalBranch { condition, .. }) = &block.terminator {
+        for instr in &block.instructions {
+            if let Instruction::Assign { value, .. } = instr {
+                // コレクション要素アクセスパターン: iter.current() または *iter
+                match value {
+                    Value::MethodCall { object, method_name, .. } => {
+                        if method_name == "current" || method_name == "element" {
+                            if let Value::VarRef(var_id) = object.as_ref() {
+                                if iterator_candidates.contains(var_id) {
+                                    has_element_access = true;
+                                }
+                            }
+                        }
+                    },
+                    Value::UnaryOp { op: UnaryOp::Deref, operand } => {
+                        if let Value::VarRef(var_id) = operand.as_ref() {
+                            if iterator_candidates.contains(var_id) {
+                                has_element_access = true;
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    has_element_access
+}
+
+// 変数がループ内で増加するかどうかをチェック
+fn is_incremented_in_loop(cfg: &ControlFlowGraph, var_id: usize, body: &HashSet<usize>) -> bool {
+    for &block_id in body {
+        let block = match cfg.get_block(block_id) {
+            Ok(block) => block,
+            Err(_) => continue,
+        };
+        
+        for instr in &block.instructions {
+            if let Instruction::Assign { target, value } = instr {
+                if *target == var_id {
+                    match value {
+                        // 加算代入: var = var + const
+                        Value::BinaryOp { op: BinaryOp::Add, left, right } => {
+                            if let Value::VarRef(left_var) = left.as_ref() {
+                                if *left_var == var_id && matches!(right.as_ref(), Value::ConstInt(_)) {
+                                    return true;
+                                }
+                            }
+                        },
+                        // インクリメント: ++var または var++
+                        Value::UnaryOp { op: UnaryOp::PreInc | UnaryOp::PostInc, operand } => {
+                            if let Value::VarRef(op_var) = operand.as_ref() {
+                                if *op_var == var_id {
+                                    return true;
+                                }
+                            }
+                        },
+                        // 複合代入演算子: var += const
+                        Value::CompoundAssign { op: BinaryOp::Add, left, right } => {
+                            if let Value::VarRef(left_var) = left.as_ref() {
+                                if *left_var == var_id && matches!(right.as_ref(), Value::ConstInt(_)) {
+                                    return true;
+                                }
+                            }
+                        },
+                        // メソッド呼び出し: var.next() または var.advance()
+                        Value::MethodCall { object, method_name, .. } => {
+                            if let Value::VarRef(obj_var) = object.as_ref() {
+                                if *obj_var == var_id && (method_name == "next" || method_name == "advance") {
+                                    return true;
+                                }
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    false
+}
+
+// コレクション反復ループかどうかを判定
+fn is_collection_iteration(cfg: &ControlFlowGraph, header: usize, body: &HashSet<usize>) -> bool {
+    // イテレータ変数の候補を特定
+    let mut iterator_candidates = HashSet::new();
+    
+    // ヘッダーブロックでイテレータ関連の初期化を探す
+    if let Ok(header_block) = cfg.get_block(header) {
+        for instr in &header_block.instructions {
+            if let Instruction::Assign { target, value } = instr {
+                match value {
+                    // コレクション.iterator() パターン
+                    Value::MethodCall { method_name, .. } => {
+                        if method_name == "iterator" || method_name == "iter" || method_name == "into_iter" {
+                            iterator_candidates.insert(*target);
+                        }
+                    },
+                    // イテレータ初期化パターン
+                    Value::New { type_name, .. } => {
+                        if type_name.contains("Iterator") || type_name.contains("Iter") {
+                            iterator_candidates.insert(*target);
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    // ループ終了条件でイテレータ.hasNext()のようなパターンを探す
+    if let Ok(header_block) = cfg.get_block(header) {
+        if let Some(Terminator::ConditionalBranch { condition, .. }) = &header_block.terminator {
             match condition {
-                // nullチェックやエラーチェックは通常falseに偏る
-                Value::BinaryOp { op: BinaryOp::Eq, left, right } => {
-                    if self.is_null_check(left, right) {
-                        return (0.1, 0.9); // nullと等しい確率は低い
+                Value::MethodCall { object, method_name, .. } => {
+                    if method_name == "hasNext" || method_name == "has_next" {
+                        if let Value::VarRef(var_id) = object.as_ref() {
+                            iterator_candidates.insert(*var_id);
+                        }
                     }
                 },
-                Value::BinaryOp { op: BinaryOp::Ne, left, right } => {
-                    if self.is_null_check(left, right) {
-                        return (0.9, 0.1); // nullと等しくない確率は高い
-                    }
-                },
-                Value::BinaryOp { op: BinaryOp::Lt, .. } | 
-                Value::BinaryOp { op: BinaryOp::Le, .. } |
-                Value::BinaryOp { op: BinaryOp::Gt, .. } |
-                Value::BinaryOp { op: BinaryOp::Ge, .. } => {
-                    if self.is_loop_condition(block_id, cfg) {
-                        return (0.9, 0.1); // ループ条件は通常trueに偏る
+                Value::UnaryOp { op: UnaryOp::Not, operand } => {
+                    if let Value::MethodCall { object, method_name, .. } = operand.as_ref() {
+                        if method_name == "is_empty" || method_name == "isEmpty" {
+                            if let Value::VarRef(var_id) = object.as_ref() {
+                                iterator_candidates.insert(*var_id);
+                            }
+                        }
                     }
                 },
                 _ => {}
             }
         }
-        
-        // デフォルト値
-        (0.5, 0.5)
     }
     
+    // ループ本体でイテレータ要素アクセスを探す
+    if !iterator_candidates.is_empty() && has_iterator_element_access(cfg, &iterator_candidates, body) {
+        return true;
+    }
+    
+    // 配列/リストインデックスアクセスパターンを探す
+    let mut index_vars = HashSet::new();
+    let mut collection_vars = HashSet::new();
+    
+    // インデックス変数の初期化を探す
+    if let Ok(header_block) = cfg.get_block(header) {
+        for instr in &header_block.instructions {
+            if let Instruction::Assign { target, value } = instr {
+                if let Value::ConstInt(0) = value {
+                    index_vars.insert(*target);
+                }
+            }
+        }
+    }
+    
+    // インデックス変数の増加を確認
+    for &var_id in &index_vars {
+        if is_incremented_in_loop(cfg, var_id, body) {
+            // ループ本体でインデックスを使った配列アクセスを探す
+            for &block_id in body {
+                if let Ok(block) = cfg.get_block(block_id) {
+                    for instr in &block.instructions {
+                        if let Instruction::Assign { value, .. } = instr {
+                            if let Value::IndexAccess { array, index } = value {
+                                if let Value::VarRef(idx_var) = index.as_ref() {
+                                    if *idx_var == var_id {
+                                        if let Value::VarRef(arr_var) = array.as_ref() {
+                                            collection_vars.insert(*arr_var);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 終了条件が配列長との比較かチェック
+    if !index_vars.is_empty() && !collection_vars.is_empty() {
+        if let Ok(header_block) = cfg.get_block(header) {
+            if let Some(Terminator::ConditionalBranch { condition, .. }) = &header_block.terminator {
+                match condition {
+                    Value::BinaryOp { op: BinaryOp::Lt, left, right } => {
+                        if let Value::VarRef(left_var) = left.as_ref() {
+                            if index_vars.contains(left_var) {
+                                if let Value::MethodCall { object, method_name, .. } = right.as_ref() {
+                                    if method_name == "length" || method_name == "size" || method_name == "len" {
+                                        if let Value::VarRef(obj_var) = object.as_ref() {
+                                            if collection_vars.contains(obj_var) {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    false
+}
     /// nullチェックかどうかを判定
     fn is_null_check(&self, left: &Value, right: &Value) -> bool {
         match (left, right) {
@@ -1884,14 +3893,417 @@ impl CodeGenerator {
     }
     
     /// ループアンロールの実行
+    /// 
+    /// ループアンロールは最適化の一種で、ループの反復回数を減らし、命令レベルの並列性を向上させる技術です。
+    /// この実装では、静的に決定可能な反復回数を持つループに対して、完全または部分的なアンロールを行います。
+    /// 
+    /// # 引数
+    /// * `func_id` - 関数のID
+    /// * `func` - 対象の関数
+    /// * `loop_info` - ループの情報
+    /// * `unroll_factor` - アンロール係数（1の場合はアンロールなし、ループの反復回数と同じ場合は完全アンロール）
+    /// 
+    /// # 戻り値
+    /// * `Result<()>` - 処理の成功または失敗
     fn perform_loop_unrolling(&mut self, func_id: usize, func: &Function, loop_info: &LoopInfo, unroll_factor: usize) -> Result<()> {
         // アンロール情報を記録
         self.loop_unrolling_info.entry(func_id)
             .or_insert_with(HashMap::new)
             .insert(loop_info.header, (loop_info.clone(), unroll_factor));
         
-        // 実際のコード変換はIRレベルで行われるため、ここでは情報のみを記録
+        // アンロール係数が1の場合は変換不要
+        if unroll_factor <= 1 {
+            return Ok(());
+        }
+        
+        // ループヘッダーとボディを取得
+        let header_block = &func.blocks[loop_info.header];
+        let latch_block = &func.blocks[loop_info.latch];
+        
+        // ループの終了条件を分析
+        let exit_condition = self.analyze_loop_exit_condition(func, loop_info)?;
+        
+        // インダクション変数の情報を取得
+        let induction_vars = self.identify_induction_variables(func, loop_info)?;
+        
+        // メインのインダクション変数を特定
+        if let Some(main_var) = induction_vars.first() {
+            // アンロールされたコードの生成準備
+            let mut unrolled_blocks = Vec::new();
+            let mut unrolled_instructions = Vec::new();
+            
+            // 各反復のコードを生成
+            for i in 0..unroll_factor {
+                // i番目の反復のコードをクローン
+                for &block_id in &loop_info.body_blocks {
+                    let block = &func.blocks[block_id];
+                    let mut new_instructions = Vec::new();
+                    
+                    // ブロック内の各命令を処理
+                    for instr in &block.instructions {
+                        // インダクション変数の更新を調整
+                        let new_instr = if self.is_induction_variable_update(instr, &main_var.name) {
+                            self.adjust_induction_variable_update(instr, i, unroll_factor)?
+                        } else {
+                            // その他の命令は変数名を調整してクローン
+                            self.clone_instruction_with_suffix(instr, &format!("_unroll_{}", i))?
+                        };
+                        
+                        new_instructions.push(new_instr);
+                    }
+                    
+                    // 新しいブロックを作成
+                    let new_block = BasicBlock {
+                        id: self.next_block_id(),
+                        name: format!("{}_unroll_{}", block.name, i),
+                        instructions: new_instructions,
+                        terminator: self.adjust_terminator(&block.terminator, i, unroll_factor, loop_info)?,
+                    };
+                    
+                    unrolled_blocks.push(new_block);
+                }
+            }
+            
+            // 新しいループ条件を生成（残りの反復用）
+            let new_condition = self.generate_new_loop_condition(&exit_condition, unroll_factor)?;
+            
+            // アンロールされたコードとオリジナルのループを接続
+            self.connect_unrolled_code(func_id, loop_info, unrolled_blocks, new_condition)?;
+            
+            // 最適化メトリクスを更新
+            self.update_optimization_metrics(func_id, loop_info, unroll_factor);
+        }
+        
         Ok(())
+    }
+    
+    /// ループの終了条件を分析する
+    fn analyze_loop_exit_condition(&self, func: &Function, loop_info: &LoopInfo) -> Result<ExitCondition> {
+        // ループの終了条件を表す構造体
+        let mut exit_condition = ExitCondition {
+            condition_block: 0,
+            condition_instr: None,
+            branch_instr: None,
+            induction_var: String::new(),
+            comparison_op: BinaryOp::Eq,
+            limit_value: Value::Constant(0),
+        };
+        
+        // ループヘッダーから分岐命令を検索
+        let header_block = &func.blocks[loop_info.header];
+        if let Terminator::ConditionalBranch { condition, then_block, else_block } = &header_block.terminator {
+            exit_condition.condition_block = loop_info.header;
+            exit_condition.branch_instr = Some(header_block.terminator.clone());
+            
+            // 条件式を分析
+            if let Value::Variable(var_name) = condition {
+                // 条件変数を定義している命令を検索
+                for (i, instr) in header_block.instructions.iter().enumerate() {
+                    if let Instruction::BinaryOp { result, op, left, right } = instr {
+                        if result == var_name {
+                            exit_condition.condition_instr = Some(instr.clone());
+                            exit_condition.comparison_op = *op;
+                            
+                            // インダクション変数と制限値を特定
+                            if let (Value::Variable(var), Value::Constant(limit)) = (&**left, &**right) {
+                                exit_condition.induction_var = var.clone();
+                                exit_condition.limit_value = right.clone();
+                            } else if let (Value::Constant(limit), Value::Variable(var)) = (&**left, &**right) {
+                                exit_condition.induction_var = var.clone();
+                                exit_condition.limit_value = left.clone();
+                                // 比較演算子を反転
+                                exit_condition.comparison_op = match op {
+                                    BinaryOp::Lt => BinaryOp::Gt,
+                                    BinaryOp::Le => BinaryOp::Ge,
+                                    BinaryOp::Gt => BinaryOp::Lt,
+                                    BinaryOp::Ge => BinaryOp::Le,
+                                    _ => *op,
+                                };
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(exit_condition)
+    }
+    
+    /// インダクション変数を特定する
+    fn identify_induction_variables(&self, func: &Function, loop_info: &LoopInfo) -> Result<Vec<InductionVariable>> {
+        let mut induction_vars = Vec::new();
+        
+        // ループ内の各ブロックを検査
+        for &block_id in &loop_info.body_blocks {
+            let block = &func.blocks[block_id];
+            
+            // 各命令を検査
+            for instr in &block.instructions {
+                if let Instruction::BinaryOp { result, op, left, right } = instr {
+                    // 加算または減算の命令を検索
+                    if *op == BinaryOp::Add || *op == BinaryOp::Sub {
+                        if let (Value::Variable(var), Value::Constant(step)) = (&**left, &**right) {
+                            // 変数が自分自身に加算/減算されているか確認
+                            if var == result {
+                                let step_value = if *op == BinaryOp::Add { *step } else { -(*step) };
+                                
+                                // 初期値を検索
+                                if let Some(initial) = self.find_induction_variable_initial_value(func, loop_info, var) {
+                                    induction_vars.push(InductionVariable {
+                                        name: var.clone(),
+                                        initial_value: initial,
+                                        step: step_value,
+                                        update_block: block_id,
+                                        update_instruction: instr.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(induction_vars)
+    }
+    
+    /// インダクション変数の更新命令かどうかを判定
+    fn is_induction_variable_update(&self, instr: &Instruction, var_name: &str) -> bool {
+        if let Instruction::BinaryOp { result, op, left, right } = instr {
+            if result == var_name && (*op == BinaryOp::Add || *op == BinaryOp::Sub) {
+                if let Value::Variable(left_var) = &**left {
+                    return left_var == var_name;
+                }
+            }
+        }
+        false
+    }
+    
+    /// インダクション変数の更新命令を調整
+    fn adjust_induction_variable_update(&self, instr: &Instruction, iteration: usize, unroll_factor: usize) -> Result<Instruction> {
+        if let Instruction::BinaryOp { result, op, left, right } = instr {
+            if let Value::Constant(step) = &**right {
+                // ステップサイズを調整
+                let adjusted_step = step * (unroll_factor as i64);
+                let new_right = Box::new(Value::Constant(adjusted_step));
+                
+                return Ok(Instruction::BinaryOp {
+                    result: result.clone(),
+                    op: *op,
+                    left: left.clone(),
+                    right: new_right,
+                });
+            }
+        }
+        
+        // 調整できない場合は元の命令をそのまま返す
+        Ok(instr.clone())
+    }
+    
+    /// 命令をクローンし、変数名に接尾辞を追加
+    fn clone_instruction_with_suffix(&self, instr: &Instruction, suffix: &str) -> Result<Instruction> {
+        match instr {
+            Instruction::BinaryOp { result, op, left, right } => {
+                let new_result = format!("{}{}", result, suffix);
+                let new_left = self.clone_value_with_suffix(left, suffix)?;
+                let new_right = self.clone_value_with_suffix(right, suffix)?;
+                
+                Ok(Instruction::BinaryOp {
+                    result: new_result,
+                    op: *op,
+                    left: new_left,
+                    right: new_right,
+                })
+            },
+            Instruction::Load { result, address } => {
+                let new_result = format!("{}{}", result, suffix);
+                let new_address = self.clone_value_with_suffix(address, suffix)?;
+                
+                Ok(Instruction::Load {
+                    result: new_result,
+                    address: new_address,
+                })
+            },
+            Instruction::Store { address, value } => {
+                let new_address = self.clone_value_with_suffix(address, suffix)?;
+                let new_value = self.clone_value_with_suffix(value, suffix)?;
+                
+                Ok(Instruction::Store {
+                    address: new_address,
+                    value: new_value,
+                })
+            },
+            Instruction::Call { result, function, arguments } => {
+                let new_result = result.as_ref().map(|r| format!("{}{}", r, suffix));
+                let new_arguments = arguments.iter()
+                    .map(|arg| self.clone_value_with_suffix(arg, suffix))
+                    .collect::<Result<Vec<_>>>()?;
+                
+                Ok(Instruction::Call {
+                    result: new_result,
+                    function: function.clone(),
+                    arguments: new_arguments,
+                })
+            },
+            // その他の命令タイプも同様に処理
+            _ => Ok(instr.clone()),
+        }
+    }
+    
+    /// 値をクローンし、変数名に接尾辞を追加
+    fn clone_value_with_suffix(&self, value: &Value, suffix: &str) -> Result<Box<Value>> {
+        match value {
+            Value::Variable(var) => Ok(Box::new(Value::Variable(format!("{}{}", var, suffix)))),
+            _ => Ok(Box::new(value.clone())),
+        }
+    }
+    
+    /// 終端命令を調整
+    fn adjust_terminator(&self, terminator: &Terminator, iteration: usize, unroll_factor: usize, loop_info: &LoopInfo) -> Result<Terminator> {
+        match terminator {
+            Terminator::ConditionalBranch { condition, then_block, else_block } => {
+                // 最後の反復以外は次のアンロールブロックに分岐
+                if iteration < unroll_factor - 1 {
+                    let next_block = if *then_block == loop_info.header {
+                        // 次のアンロールブロックのIDを計算
+                        self.calculate_next_unrolled_block_id(loop_info, iteration + 1)
+                    } else {
+                        *then_block
+                    };
+                    
+                    let else_target = if *else_block == loop_info.header {
+                        self.calculate_next_unrolled_block_id(loop_info, iteration + 1)
+                    } else {
+                        *else_block
+                    };
+                    
+                    Ok(Terminator::ConditionalBranch {
+                        condition: self.clone_value_with_suffix(condition, &format!("_unroll_{}", iteration))?,
+                        then_block: next_block,
+                        else_block: else_target,
+                    })
+                } else {
+                    // 最後の反復は元のループヘッダーに戻る
+                    Ok(Terminator::ConditionalBranch {
+                        condition: self.clone_value_with_suffix(condition, &format!("_unroll_{}", iteration))?,
+                        then_block: *then_block,
+                        else_block: *else_block,
+                    })
+                }
+            },
+            Terminator::Jump { target } => {
+                // ジャンプ先がループヘッダーの場合は次のアンロールブロックまたは元のループに分岐
+                if *target == loop_info.header {
+                    if iteration < unroll_factor - 1 {
+                        Ok(Terminator::Jump {
+                            target: self.calculate_next_unrolled_block_id(loop_info, iteration + 1),
+                        })
+                    } else {
+                        Ok(Terminator::Jump {
+                            target: loop_info.header,
+                        })
+                    }
+                } else {
+                    Ok(terminator.clone())
+                }
+            },
+            _ => Ok(terminator.clone()),
+        }
+    }
+    
+    /// 次のアンロールブロックのIDを計算
+    fn calculate_next_unrolled_block_id(&self, loop_info: &LoopInfo, iteration: usize) -> usize {
+        // 実際の実装ではブロックIDの割り当て方法に依存
+        // ここでは簡略化のため、仮の計算方法を示す
+        loop_info.header + 1000 + iteration
+    }
+    
+    /// 新しいループ条件を生成
+    fn generate_new_loop_condition(&self, exit_condition: &ExitCondition, unroll_factor: usize) -> Result<Instruction> {
+        // インダクション変数の増分を考慮した新しい条件を生成
+        if let Value::Constant(limit) = &exit_condition.limit_value {
+            // アンロール係数に基づいて調整された制限値を計算
+            let adjusted_limit = match exit_condition.comparison_op {
+                BinaryOp::Lt | BinaryOp::Le => {
+                    // 例: i < 100 の場合、i < (100 - (100 % 4)) となる
+                    // これにより、メインループは96まで実行し、残りは別処理
+                    limit - (limit % (unroll_factor as i64))
+                },
+                BinaryOp::Gt | BinaryOp::Ge => {
+                    // 下限値の場合も同様に調整
+                    limit + ((unroll_factor as i64) - (limit % (unroll_factor as i64))) % (unroll_factor as i64)
+                },
+                _ => *limit,
+            };
+            
+            // 新しい条件命令を生成
+            Ok(Instruction::BinaryOp {
+                result: format!("{}_adjusted", exit_condition.induction_var),
+                op: exit_condition.comparison_op,
+                left: Box::new(Value::Variable(exit_condition.induction_var.clone())),
+                right: Box::new(Value::Constant(adjusted_limit)),
+            })
+        } else {
+            // 定数でない場合は元の条件をそのまま使用
+            Ok(exit_condition.condition_instr.clone().unwrap_or(Instruction::Nop))
+        }
+    }
+    
+    /// アンロールされたコードと元のループを接続
+    fn connect_unrolled_code(&mut self, func_id: usize, loop_info: &LoopInfo, unrolled_blocks: Vec<BasicBlock>, new_condition: Instruction) -> Result<()> {
+        // この関数は実際のIR変換時に呼び出される
+        // ここでは変換情報を記録するだけ
+        self.unrolled_code_info.entry(func_id)
+            .or_insert_with(Vec::new)
+            .push(UnrolledCodeInfo {
+                loop_header: loop_info.header,
+                unrolled_blocks: unrolled_blocks.iter().map(|b| b.id).collect(),
+                new_condition,
+            });
+        
+        Ok(())
+    }
+    
+    /// 最適化メトリクスを更新
+    fn update_optimization_metrics(&mut self, func_id: usize, loop_info: &LoopInfo, unroll_factor: usize) {
+        // 最適化の効果を追跡
+        let instruction_count = loop_info.body_blocks.iter()
+            .map(|&block_id| self.get_function(func_id).blocks[block_id].instructions.len())
+            .sum::<usize>();
+        
+        let estimated_reduction = if unroll_factor > 1 {
+            // 制御オーバーヘッドの削減量を推定
+            let control_overhead = loop_info.body_blocks.len(); // 分岐命令の数
+            let iterations_saved = (100 / unroll_factor) * (unroll_factor - 1); // 100を仮の反復回数とする
+            control_overhead * iterations_saved
+        } else {
+            0
+        };
+        
+        // メトリクスを記録
+        self.optimization_metrics.entry(func_id)
+            .or_insert_with(HashMap::new)
+            .insert(OptimizationType::LoopUnrolling, OptimizationMetric {
+                optimization_type: OptimizationType::LoopUnrolling,
+                target: format!("loop_{}", loop_info.header),
+                instruction_count_before: instruction_count,
+                instruction_count_after: instruction_count * unroll_factor,
+                estimated_cycles_saved: estimated_reduction,
+                applied: unroll_factor > 1,
+            });
+    }
+    
+    /// 次のブロックIDを取得
+    fn next_block_id(&self) -> usize {
+        // 実際の実装では一意のIDを生成する必要がある
+        // ここでは簡略化のため、仮の実装を示す
+        static mut NEXT_ID: usize = 10000;
+        unsafe {
+            let id = NEXT_ID;
+            NEXT_ID += 1;
+            id
+        }
     }
     
     /// ループの出口ブロックを特定
@@ -1926,16 +4338,45 @@ impl CodeGenerator {
         }
         
         if predecessors.len() == 1 {
+            // 単一の前任ブロックがある場合、それをプリヘッダーとして使用
             loop_info.preheader = Some(*predecessors.iter().next().unwrap());
-        } else {
-            // 複数の前任がある場合、プリヘッダーの作成が必要
-            // （実際の作成はIRレベルで行われる）
+        } else if predecessors.is_empty() {
+            // 前任ブロックがない場合（関数のエントリーブロックなど）
             loop_info.preheader = None;
+        } else {
+            // 複数の前任ブロックがある場合、新しいプリヘッダーが必要
+            // 実際の作成はIRレベルで行われるが、ここでは情報を記録
+            self.loop_transformation_queue.entry(func_id)
+                .or_insert_with(Vec::new)
+                .push(LoopTransformation::CreatePreheader {
+                    loop_id: loop_info.id,
+                    header: loop_info.header,
+                    predecessors: predecessors.clone()
+                });
+            
+            // プリヘッダーは後で作成されることを示す特別な値を設定
+            // 実際のブロックIDは変換フェーズで割り当てられる
+            loop_info.preheader = Some(PREHEADER_PENDING_CREATION);
+            
+            // 最適化のためのメタデータを記録
+            loop_info.optimization_metadata.insert(
+                "multiple_predecessors".to_string(),
+                format!("{:?}", predecessors)
+            );
+        }
+        
+        // ループのプリヘッダー情報をデバッグログに記録
+        if let Some(logger) = &self.optimization_logger {
+            logger.log_loop_preheader_info(
+                func_id,
+                loop_info.id,
+                loop_info.preheader,
+                &predecessors
+            );
         }
         
         Ok(())
     }
-    
     /// インダクション変数の増分を検索
     fn find_induction_variable_increment(&self, func: &Function, loop_info: &LoopInfo, var: &str) -> Option<i64> {
         for &block_id in &loop_info.body_blocks {
